@@ -1,0 +1,22 @@
+# Canonical manifest v1 example. Values are intentionally the reviewed
+# Blender 5.2.0 Linux amd64 release; this file is documentation, not a
+# second registry source.
+schema: 1
+id: blender
+name: Blender
+summary: 3D creation suite
+homepage: https://www.blender.org/
+categories: [game-development, graphics]
+platform:
+  os: linux
+  arch: amd64
+release:
+  version: "5.2.0"
+  url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz
+  sha256: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
+  archive: tar.xz
+application:
+  executable: blender
+desktop:
+  enabled: true
+  categories: [Graphics]
