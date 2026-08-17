@@ -45,6 +45,12 @@ grep -F 'chmod 0755 remote/tarlink-linux-amd64 remote/tarlink-linux-arm64' "$rel
 test "$(grep -Fc 'git ls-remote origin' "$release_workflow")" -ge 2
 grep -F 'EXPECTED_SHA: ${{ github.sha }}' "$release_workflow" >/dev/null
 test "$(grep -Fc 'cmp -- "release-assets/$name" "remote/$name"' "$release_workflow")" -ge 2
+test "$(grep -Fc 'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"' "$release_workflow")" -ge 2
+test "$(grep -Fc "gh api --header 'Accept: application/octet-stream' \"\$asset_url\"" "$release_workflow")" -ge 2
+if grep -F 'gh release download "$RELEASE_TAG"' "$release_workflow" >/dev/null; then
+	printf '%s\n' 'draft assets must be downloaded through the authenticated asset API' >&2
+	exit 1
+fi
 if grep -E '^  release:|types:[[:space:]]*\[published\]' "$release_workflow" >/dev/null; then
 	printf '%s\n' 'release workflow must not run from a published-release event' >&2
 	exit 1

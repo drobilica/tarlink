@@ -350,8 +350,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          release_pages="$RUNNER_TEMP/tarlink-release-pages.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$release_pages"
+          release_count=$(jq -r --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)] | length' "$release_pages")
+          test "$release_count" = 1 || {
+            echo "expected exactly one draft release for tag $RELEASE_TAG, found $release_count" >&2
+            exit 1
+          }
+          release_id=$(jq -er --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)][0].id' "$release_pages")
+          release_json="$RUNNER_TEMP/tarlink-draft-release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" >"$release_json"
+          test "$(jq -r '.draft' "$release_json")" = true
+          test "$(jq -r '.tag_name' "$release_json")" = "$RELEASE_TAG"
+          expected=$(printf '%s\n' checksums.txt tarlink-linux-amd64 tarlink-linux-arm64 | LC_ALL=C sort)
+          actual=$(jq -r '.assets[].name' "$release_json" | LC_ALL=C sort)
+          test "$actual" = "$expected"
           mkdir -p remote
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir remote --pattern tarlink-linux-amd64 --pattern tarlink-linux-arm64 --pattern checksums.txt
+          while IFS=$'\t' read -r name asset_url; do
+            case "$name" in
+              checksums.txt|tarlink-linux-amd64|tarlink-linux-arm64) ;;
+              *) echo "unexpected draft asset: $name" >&2; exit 1 ;;
+            esac
+            test -n "$asset_url"
+            gh api --header 'Accept: application/octet-stream' "$asset_url" >"remote/$name"
+          done < <(jq -r '.assets[] | [.name, .url] | @tsv' "$release_json")
 
       - name: Restore executable modes for downloaded draft
         shell: bash
@@ -409,8 +431,30 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          release_pages="$RUNNER_TEMP/tarlink-release-pages.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$release_pages"
+          release_count=$(jq -r --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)] | length' "$release_pages")
+          test "$release_count" = 1 || {
+            echo "expected exactly one draft release for tag $RELEASE_TAG, found $release_count" >&2
+            exit 1
+          }
+          release_id=$(jq -er --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)][0].id' "$release_pages")
+          release_json="$RUNNER_TEMP/tarlink-draft-release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" >"$release_json"
+          test "$(jq -r '.draft' "$release_json")" = true
+          test "$(jq -r '.tag_name' "$release_json")" = "$RELEASE_TAG"
+          expected=$(printf '%s\n' checksums.txt tarlink-linux-amd64 tarlink-linux-arm64 | LC_ALL=C sort)
+          actual=$(jq -r '.assets[].name' "$release_json" | LC_ALL=C sort)
+          test "$actual" = "$expected"
           mkdir -p remote
-          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir remote --pattern tarlink-linux-amd64 --pattern tarlink-linux-arm64 --pattern checksums.txt
+          while IFS=$'\t' read -r name asset_url; do
+            case "$name" in
+              checksums.txt|tarlink-linux-amd64|tarlink-linux-arm64) ;;
+              *) echo "unexpected draft asset: $name" >&2; exit 1 ;;
+            esac
+            test -n "$asset_url"
+            gh api --header 'Accept: application/octet-stream' "$asset_url" >"remote/$name"
+          done < <(jq -r '.assets[] | [.name, .url] | @tsv' "$release_json")
 
       - name: Restore executable modes for downloaded draft
         shell: bash
