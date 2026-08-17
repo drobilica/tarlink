@@ -372,6 +372,18 @@ func (x *extractor) extractTar(r io.Reader) error {
 		if h.Mode < 0 || h.Mode&^07777 != 0 || h.Mode&07000 != 0 {
 			return fmt.Errorf("%w: special permission bits", ErrEntryType)
 		}
+		if h.Typeflag == tar.TypeXGlobalHeader {
+			// archive/tar has already consumed and bounded this POSIX PAX
+			// metadata record to 1 MiB. Go deliberately does not apply global
+			// records to later entries. It creates no filesystem object, but any
+			// metadata name is still subjected to the normal path policy.
+			if h.Name != "" {
+				if _, err := validatePath(h.Name, x.limits); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		name, err := validatePath(h.Name, x.limits)
 		if err != nil {
 			return err

@@ -231,6 +231,20 @@ func TestTarAcceptsContainedSharedLibrarySymlinkChain(t *testing.T) {
 	}
 }
 
+func TestTarAcceptsBoundedPAXGlobalMetadata(t *testing.T) {
+	data := tarFixture(t, []tar.Header{
+		{Typeflag: tar.TypeXGlobalHeader, PAXRecords: map[string]string{"comment": "registry commit metadata"}},
+		{Name: "app/file", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+	})
+	destination := t.TempDir()
+	if err := Extract(context.Background(), bytes.NewReader(data), destination, FormatTarGz, Limits{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(destination, "app", "file")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTarRejectsEscapingAndNonLocalSymlinks(t *testing.T) {
 	for _, target := range []string{"../outside", "../../outside", "/outside", `C:\outside`, "dir/target"} {
 		t.Run(strings.ReplaceAll(target, "/", "_"), func(t *testing.T) {
