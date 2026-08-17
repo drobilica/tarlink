@@ -18,6 +18,7 @@ const help = `TarLink turns portable Linux application archives into managed app
 
 Usage:
   tarlink registry sync
+  tarlink registry validate <path>
   tarlink search <query> [--json]
   tarlink install <app>
   tarlink update <app>
@@ -26,7 +27,8 @@ Usage:
   tarlink info <app> [--json]
   tarlink versions <app> [--json]
   tarlink rollback <app>
-  tarlink remove <app>
+  tarlink uninstall <app>
+  tarlink uninstall --all
   tarlink tui
   tarlink version
 `
@@ -56,10 +58,18 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	var err error
 	switch arguments[0] {
 	case "registry":
-		if len(arguments) != 2 || arguments[1] != "sync" {
-			return r.invalid("usage: tarlink registry sync")
+		if len(arguments) == 2 && arguments[1] == "sync" {
+			err = r.Service.SyncRegistry(ctx, r.progress())
+			break
 		}
-		err = r.Service.SyncRegistry(ctx, r.progress())
+		if len(arguments) == 3 && arguments[1] == "validate" {
+			err = r.Service.ValidateRegistry(ctx, arguments[2])
+			if err == nil {
+				_, err = fmt.Fprintln(r.Stdout, "Registry is valid")
+			}
+			break
+		}
+		return r.invalid("usage: tarlink registry sync | tarlink registry validate <path>")
 	case "search":
 		value, jsonOutput, parseErr := oneValueJSON(arguments[1:])
 		if parseErr != nil {
@@ -138,14 +148,21 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		if err == nil {
 			err = r.printResult("Rolled back", result)
 		}
-	case "remove":
+	case "uninstall":
+		if len(arguments) == 2 && arguments[1] == "--all" {
+			err = r.Service.UninstallAll(ctx, r.progress())
+			if err == nil {
+				_, err = io.WriteString(r.Stdout, "Uninstalled all applications\n")
+			}
+			break
+		}
 		value, parseErr := oneValue(arguments[1:])
 		if parseErr != nil {
-			return r.invalid("usage: tarlink remove <app>")
+			return r.invalid("usage: tarlink uninstall <app> | tarlink uninstall --all")
 		}
-		err = r.Service.Remove(ctx, value, r.progress())
+		err = r.Service.Uninstall(ctx, value, r.progress())
 		if err == nil {
-			_, err = fmt.Fprintf(r.Stdout, "Removed %s\n", value)
+			_, err = fmt.Fprintf(r.Stdout, "Uninstalled %s\n", value)
 		}
 	case "tui":
 		if len(arguments) != 1 {

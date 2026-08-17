@@ -136,3 +136,89 @@ func TestSyncIsTransactional(t *testing.T) {
 		t.Fatalf("conflicting registry sync error = %v", err)
 	}
 }
+
+func TestSyncRetainsOnlyCurrentAndPreviousGenerations(t *testing.T) {
+	payload := registryArchive(t, createRegistry(t))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(payload)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	syncer := &Syncer{
+		CacheRoot: filepath.Join(root, "cache", "registry"),
+		LocksRoot: filepath.Join(root, "state", "locks"),
+		Client:    &download.Client{HTTP: server.Client(), RedirectLimit: 2},
+		sourceURL: server.URL,
+		allowedURL: func(candidate *url.URL) bool {
+			return candidate != nil && candidate.Host == server.Listener.Addr().String()
+		},
+	}
+
+	targets := make([]string, 0, 3)
+	for range 3 {
+		if err := syncer.Sync(context.Background()); err != nil {
+			t.Fatalf("Sync() error = %v", err)
+		}
+		target, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		targets = append(targets, filepath.Join(syncer.CacheRoot, target))
+	}
+
+	if _, err := os.Stat(targets[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old registry generation still exists: %v", err)
+	}
+	for _, retained := range targets[1:] {
+		if info, err := os.Stat(retained); err != nil || !info.IsDir() {
+			t.Fatalf("retained registry generation %q info=%v error=%v", retained, info, err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(syncer.CacheRoot, "generations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("generation count = %d, want 2", len(entries))
+	}
+}
+
+func TestSyncKeepsActivatedGenerationAfterDirectorySyncFailure(t *testing.T) {
+	payload := registryArchive(t, createRegistry(t))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(payload)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	syncer := &Syncer{
+		CacheRoot: filepath.Join(root, "cache", "registry"),
+		LocksRoot: filepath.Join(root, "state", "locks"),
+		Client:    &download.Client{HTTP: server.Client(), RedirectLimit: 2},
+		sourceURL: server.URL,
+		allowedURL: func(candidate *url.URL) bool {
+			return candidate != nil && candidate.Host == server.Listener.Addr().String()
+		},
+	}
+	if err := syncer.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected cache directory sync failure")
+	syncer.syncCache = func(string) error { return injected }
+	if err := syncer.Sync(context.Background()); !errors.Is(err, injected) {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	after, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+	if err != nil || after == before {
+		t.Fatalf("current before=%q after=%q error=%v", before, after, err)
+	}
+	if _, err := Open(syncer.CacheRoot); err != nil {
+		t.Fatalf("activated registry is unavailable after sync failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(syncer.CacheRoot, after)); err != nil {
+		t.Fatalf("activated generation was removed: %v", err)
+	}
+}

@@ -1,83 +1,75 @@
-TarLink turns portable Linux application archives into managed applications.
+# TarLink
 
-It replaces manual extraction and ad-hoc PATH setup with rootless, versioned installs, stable executable links, desktop integration, explicit updates, and nearly instantaneous rollback. Its initial catalog focuses on game-development tools, emulators, and graphics/content tools.
+TarLink installs portable Linux applications as rootless, versioned, user-owned software.
 
-TarLink is deliberately constrained: manifests cannot execute shell commands or arbitrary code, releases come only from the official reviewed registry, and the client writes only to its XDG directories and narrowly named user integrations. TarLink does not install system dependencies. It verifies the reviewed artifact bytes but does not sandbox or guarantee the security of the upstream application at runtime.
+```sh
+curl -fsSL https://raw.githubusercontent.com/drobilica/tarlink/main/install.sh | sh
+```
+
+Then install an application. TarLink fetches and validates the official registry automatically:
+
+```sh
+tarlink install blender
+```
+
+No root access, `sudo`, Go installation, shell-profile modification, daemon, or system package is required. The installer places one statically linked Go binary at `~/.local/bin/tarlink` and warns when that directory is not in `PATH`.
 
 ## Status
 
-v0.1 supports Linux amd64 only. Other operating systems and architectures are rejected. The official registry contains Blender 5.2.0, whose reviewed binary passed TarLink's complete safe-extraction acceptance test. Godot and BizHawk are omitted until authoritative upstream binary SHA-256 evidence is available.
+TarLink is pre-1.0. Its manifest and command interfaces may change without compatibility layers until the project explicitly approaches 1.0.
 
-## Install
+Release assets are raw `tarlink-linux-amd64` and `tarlink-linux-arm64` binaries plus `checksums.txt`. Application manifests remain architecture-specific, so an application is installable only when its manifest matches the running Linux architecture. The official registry currently provides reviewed amd64 manifests for Blender and Godot.
 
-Install the latest command with Go:
+## Commands
 
 ```sh
-go install github.com/drobilica/tarlink/cmd/tarlink@latest
+tarlink search blender
+tarlink install blender
+tarlink update blender
+tarlink rollback blender
+tarlink uninstall blender
 ```
 
-The command is expected to be available in `$(go env GOPATH)/bin` (or the configured Go binary directory). TarLink uses the current user's XDG data, state, and cache directories; it never writes to system installation paths.
+Additional commands include `list`, `info`, `versions`, `update --all`, `tui`, and `version`. Structured JSON is available for `search`, `list`, `info`, and `versions` with `--json`.
 
-## Security model in one page
+TarLink downloads the registry automatically when it is absent. A validated cache younger than 24 hours is used without networking. When the cache is stale, TarLink attempts a transactional refresh and falls back to the last successfully validated generation if the network is unavailable. Force a refresh with:
 
-- Only the official registry is accepted. Registry generations and the current pointer are validated before use.
-- Release URLs must be HTTPS and match the per-application approved source prefix.
-- Downloads are bounded at 8 GiB, have explicit timeouts and a five-redirect limit, and are checked against the manifest's lowercase SHA-256.
-- Only `tar.gz`, `tar.xz`, and ZIP archives are accepted. Archive names are canonicalized and bounded; absolute paths, traversal, invalid UTF-8, hardlinks, devices, FIFOs, sockets, and unknown entries are rejected. Symlinks are accepted only as same-directory library-style chains that terminate at an extracted regular file; they can never be extraction parents.
-- Extraction is bounded to 100,000 entries, 24 GiB total, 8 GiB per file, 8 GiB compressed input, 4,096 path bytes, depth 64, and a 1 GiB XZ dictionary.
-- Installation is staged and activated atomically through a relative symlink. A failed install cannot replace the active version.
-- TarLink has no hooks, arbitrary commands, custom destinations, plugin system, telemetry, daemon, self-update mechanism, or runtime sandbox dependency.
-
-See [the architecture](docs/architecture.md), [security model](docs/security-model.md), [security policy](SECURITY.md), and [the threat model](docs/threat-model.md) for the complete design.
-
-## Common commands
-
-The command-line surface is intentionally small:
-
-```text
+```sh
 tarlink registry sync
-tarlink search <query>
-tarlink info <app-id>
-tarlink install <app-id>
-tarlink update <app-id>
-tarlink update --all
-tarlink list
-tarlink versions <app-id>
-tarlink rollback <app-id>
-tarlink remove <app-id>
-tarlink tui
-tarlink version
 ```
 
-`update --all` evaluates applications in stable ID order, continues after an individual failure, and reports every result. Its process exit is non-zero if any application failed; it does not roll back successful applications merely because another application failed.
+Registry maintainers validate a checkout with:
 
-Structured JSON is available for `search`, `list`, `info`, and `versions` with `--json`. Standard output then contains JSON only; diagnostics remain on standard error and failures remain machine-detectable by exit status.
+```sh
+tarlink registry validate .
+```
 
-## Exit status
+## Remove TarLink
 
-The process exits with a non-zero status for errors. Exit statuses are:
+The following command is a **full purge**. It removes every application and version managed by TarLink, TarLink-owned executable links and desktop entries, registry and artifact caches, TarLink state and locks, and the TarLink binary itself:
 
-| Status | Meaning |
-| ---: | --- |
-| 0 | Success |
-| 2 | Invalid arguments or usage |
-| 3 | Unsupported platform |
-| 4 | Registry validation or availability failure |
-| 5 | Network/download failure |
-| 6 | Checksum mismatch |
-| 7 | Archive validation or extraction failure |
-| 8 | Application not found |
-| 9 | Already installed |
-| 10 | Application is not installed |
-| 11 | No update available |
-| 12 | Lock conflict |
-| 13 | State corruption |
-| 14 | Filesystem permission error |
-| 15 | Existing-file or ownership conflict |
-| 16 | Root execution refused |
-| 1 | Other unexpected failure |
+```sh
+curl -fsSL https://raw.githubusercontent.com/drobilica/tarlink/main/uninstall.sh | sh
+```
+
+The Go binary performs and validates managed cleanup first. The shell removes the binary only after cleanup succeeds. Unrelated user files are not removed; ownership conflicts or corrupt state stop the purge with an error.
+
+If the canonical `~/.local/bin/tarlink` binary is already missing, rerun the installer and then rerun the removal command. The removal script deliberately refuses binaries found elsewhere on `PATH` and refuses a symlink at the canonical path.
+
+## Security
+
+- The official registry URL is compiled into TarLink; alternate registries are not accepted.
+- Manifests are strict data and cannot run commands, hooks, scripts, or arbitrary arguments.
+- Release artifacts and redirects must use HTTPS. Downloads are bounded, timed out, and verified before extraction with the authoritative upstream algorithm recorded by the registry: SHA-256 or SHA-512. MD5, SHA-1, malformed digests, and missing verification are rejected.
+- Only `tar.gz`, `tar.xz`, and ZIP are accepted. Extraction rejects traversal, hardlinks, devices, special files, and unsafe symlinks, while retaining all documented size and depth limits.
+- Installation uses staging, versioned directories, atomic activation, strict state, per-application locks, one previous rollback version, and explicit ownership validation.
+- TarLink never invokes external programs and has no CGO, plugins, telemetry, daemon, self-update, custom install destinations, or system dependencies.
+
+TarLink verifies that downloaded bytes match the reviewed registry digest. The official mutable registry is the trust anchor; its checksum-source field records reviewer provenance but is not fetched at runtime. TarLink does not sandbox or guarantee the safety of an upstream application after activation. See [the architecture](docs/architecture.md), [security model](docs/security-model.md), [security policy](SECURITY.md), and [threat model](docs/threat-model.md).
 
 ## Development
+
+End users should use `install.sh`. Contributors with Go installed may use `go install github.com/drobilica/tarlink/cmd/tarlink@latest` for development.
 
 ```sh
 gofmt -w .
@@ -87,8 +79,4 @@ go test -race ./...
 CGO_ENABLED=0 go build ./...
 ```
 
-Contributions must preserve the boundaries in [AGENTS.md](AGENTS.md). See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
-
-## License
-
-TarLink is open source under the Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+TarLink is licensed under Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

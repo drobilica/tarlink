@@ -13,7 +13,10 @@ platform:
 release:
   version: "5.2.0"
   url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz
-  sha256: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
+  verification:
+    algorithm: sha256
+    digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
+    source: https://download.blender.org/release/Blender5.2/blender-5.2.0.sha256
   archive: tar.xz
 application:
   executable: blender

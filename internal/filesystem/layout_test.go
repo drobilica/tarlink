@@ -24,6 +24,22 @@ func TestLayoutForAndRejectsRelativeXDG(t *testing.T) {
 	}); err == nil {
 		t.Fatal("relative XDG value accepted")
 	}
+	if _, err := LayoutFor(home, func(k string) string {
+		if k == "XDG_DATA_HOME" {
+			return filepath.Join(filepath.Dir(home), "outside")
+		}
+		return ""
+	}); err == nil {
+		t.Fatal("XDG value outside home accepted")
+	}
+	if _, err := LayoutFor(home, func(k string) string {
+		if k == "XDG_STATE_HOME" {
+			return filepath.Join(home, "state\ninjected")
+		}
+		return ""
+	}); err == nil {
+		t.Fatal("control character in XDG value accepted")
+	}
 }
 
 func TestNewLayoutHonorsTemporaryHome(t *testing.T) {
@@ -119,5 +135,19 @@ func TestSafeRemoveUnlinksNestedSymlink(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outside, "keep")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCheckOwnedDirectoryWithinRejectsAncestorSymlink(t *testing.T) {
+	home := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Mkdir(filepath.Join(outside, "apps"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(home, "data")); err != nil {
+		t.Fatal(err)
+	}
+	if err := CheckOwnedDirectoryWithin(home, filepath.Join(home, "data", "apps")); !errors.Is(err, ErrSymlink) {
+		t.Fatalf("ancestor symlink error = %v", err)
 	}
 }

@@ -19,11 +19,11 @@ go test -race ./...
 CGO_ENABLED=0 go build ./...
 ```
 
-5. Describe security impact, migration concerns, and failure/rollback behavior in the pull request.
+5. Describe security impact and failure/rollback behavior in the pull request. Pre-1.0 changes should delete obsolete designs rather than add compatibility layers.
 
 ## Registry changes
 
-Registry updates must use authoritative upstream HTTPS release URLs and exact lowercase SHA-256 values. Do not add an application merely to fill a catalog slot. Godot and BizHawk remain omitted until authoritative upstream binary hashes are available.
+Registry updates must use authoritative upstream HTTPS release and checksum-source URLs plus the exact lowercase digest for the algorithm upstream publishes. SHA-256 and SHA-512 are supported; do not substitute an algorithm or derive a replacement digest. Validate the registry with TarLink itself: `tarlink registry validate .`.
 
 ## Review expectations
 

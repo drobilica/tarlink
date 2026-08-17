@@ -40,6 +40,7 @@ type Manager struct {
 	Limits      archive.Limits
 	LockTimeout time.Duration
 	fail        func(stage string) error
+	writeState  func(filesystem.Layout, state.State) (bool, error)
 }
 
 func New(layout filesystem.Layout, client *download.Client) *Manager {
@@ -49,7 +50,23 @@ func New(layout filesystem.Layout, client *download.Client) *Manager {
 	return &Manager{Layout: layout, Client: client, Limits: archive.DefaultLimits()}
 }
 
-func (manager *Manager) Install(ctx context.Context, item *manifest.Manifest, allowed download.URLPolicy, progress Progress) (Outcome, error) {
+func (manager *Manager) Install(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
+	var outcome Outcome
+	err := manager.WithLifecycle(ctx, func() error {
+		var err error
+		outcome, err = manager.installUnlocked(ctx, item, progress)
+		return err
+	})
+	return outcome, err
+}
+
+func (manager *Manager) installUnlocked(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
+	if item == nil {
+		return Outcome{}, errors.New("manifest is nil")
+	}
+	if err := item.Validate(); err != nil {
+		return Outcome{}, fmt.Errorf("invalid manifest: %w", err)
+	}
 	if err := manager.Layout.Ensure(); err != nil {
 		return Outcome{}, err
 	}
@@ -73,20 +90,42 @@ func (manager *Manager) Install(ctx context.Context, item *manifest.Manifest, al
 	} else if !os.IsNotExist(err) {
 		return Outcome{}, err
 	}
-	return manager.installVersion(ctx, item, nil, allowed, progress)
+	return manager.installVersion(ctx, item, nil, progress)
 }
 
-func (manager *Manager) Update(ctx context.Context, item *manifest.Manifest, allowed download.URLPolicy, progress Progress) (Outcome, error) {
+func (manager *Manager) Update(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
+	var outcome Outcome
+	err := manager.WithLifecycle(ctx, func() error {
+		var err error
+		outcome, err = manager.updateUnlocked(ctx, item, progress)
+		return err
+	})
+	return outcome, err
+}
+
+func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
+	if item == nil {
+		return Outcome{}, errors.New("manifest is nil")
+	}
+	if err := item.Validate(); err != nil {
+		return Outcome{}, fmt.Errorf("invalid manifest: %w", err)
+	}
 	lock, err := manager.lock(ctx, item.ID)
 	if err != nil {
 		return Outcome{}, err
 	}
 	defer lock.Release()
+	if err := manager.validateManagedRoots(); err != nil {
+		return Outcome{}, err
+	}
 	installed, err := state.LoadForApp(manager.Layout, item.ID)
 	if os.IsNotExist(err) {
 		return Outcome{}, ErrNotInstalled
 	}
 	if err != nil {
+		return Outcome{}, err
+	}
+	if err := manager.validateManagedApp(item.ID); err != nil {
 		return Outcome{}, err
 	}
 	if installed.Current == item.Release.Version {
@@ -98,20 +137,36 @@ func (manager *Manager) Update(ctx context.Context, item *manifest.Manifest, all
 	if installed.Previous == item.Release.Version {
 		return manager.activateRetained(item.ID, installed, progress)
 	}
-	return manager.installVersion(ctx, item, &installed, allowed, progress)
+	return manager.installVersion(ctx, item, &installed, progress)
 }
 
 func (manager *Manager) Rollback(ctx context.Context, appID string, progress Progress) (Outcome, error) {
+	var outcome Outcome
+	err := manager.WithLifecycle(ctx, func() error {
+		var err error
+		outcome, err = manager.rollbackUnlocked(ctx, appID, progress)
+		return err
+	})
+	return outcome, err
+}
+
+func (manager *Manager) rollbackUnlocked(ctx context.Context, appID string, progress Progress) (Outcome, error) {
 	lock, err := manager.lock(ctx, appID)
 	if err != nil {
 		return Outcome{}, err
 	}
 	defer lock.Release()
+	if err := manager.validateManagedRoots(); err != nil {
+		return Outcome{}, err
+	}
 	installed, err := state.LoadForApp(manager.Layout, appID)
 	if os.IsNotExist(err) {
 		return Outcome{}, ErrNotInstalled
 	}
 	if err != nil {
+		return Outcome{}, err
+	}
+	if err := manager.validateManagedApp(appID); err != nil {
 		return Outcome{}, err
 	}
 	if installed.Previous == "" {
@@ -120,12 +175,21 @@ func (manager *Manager) Rollback(ctx context.Context, appID string, progress Pro
 	return manager.activateRetained(appID, installed, progress)
 }
 
-func (manager *Manager) Remove(ctx context.Context, appID string, progress Progress) error {
+func (manager *Manager) Uninstall(ctx context.Context, appID string, progress Progress) error {
+	return manager.WithLifecycle(ctx, func() error { return manager.uninstallUnlocked(ctx, appID, progress) })
+}
+
+func (manager *Manager) uninstallUnlocked(ctx context.Context, appID string, progress Progress) error {
 	lock, err := manager.lock(ctx, appID)
 	if err != nil {
 		return err
 	}
 	defer lock.Release()
+	for _, root := range []string{manager.Layout.States, manager.Layout.Apps} {
+		if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, root); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
 	installed, err := state.LoadForApp(manager.Layout, appID)
 	if os.IsNotExist(err) {
 		return ErrNotInstalled
@@ -133,45 +197,85 @@ func (manager *Manager) Remove(ctx context.Context, appID string, progress Progr
 	if err != nil {
 		return err
 	}
+	if err := installed.ValidateForLayout(manager.Layout); err != nil {
+		return err
+	}
 	spec, err := manager.integrationSpec(installed, "", nil)
 	if err != nil {
 		return err
 	}
-	if err := integration.ValidateOwned(spec); err != nil {
+	if err := integration.ValidateOwnedForRemoval(spec); err != nil {
 		return err
 	}
 	manager.report(progress, "cleaning", 0, 0)
-	if err := manager.inject("before_remove"); err != nil {
+	if err := manager.inject("before_uninstall"); err != nil {
 		return err
 	}
 	if err := integration.RemoveOwned(spec); err != nil {
 		return err
 	}
 	appRoot := filepath.Join(manager.Layout.Apps, appID)
-	if err := filesystem.SafeRemove(manager.Layout.Apps, appRoot); err != nil {
+	if err := filesystem.SafeRemoveIfExists(manager.Layout.Apps, appRoot); err != nil {
 		return err
 	}
 	statePath, err := manager.Layout.StatePath(appID)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(statePath); err != nil {
+	if err := removeStateFile(statePath); err != nil {
 		return err
 	}
 	manager.report(progress, "complete", 0, 0)
 	return nil
 }
 
-func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, allowed download.URLPolicy, progress Progress) (outcome Outcome, returnErr error) {
+func (manager *Manager) UninstallLocked(ctx context.Context, appID string, progress Progress) error {
+	return manager.uninstallUnlocked(ctx, appID, progress)
+}
+
+func (manager *Manager) WithLifecycle(ctx context.Context, operation func() error) error {
+	if operation == nil {
+		return errors.New("lifecycle operation is nil")
+	}
+	lock, err := locking.AcquireDirectoryWithTimeout(ctx, manager.Layout.Home, manager.LockTimeout)
+	if err != nil {
+		return err
+	}
+	operationErr := operation()
+	if releaseErr := lock.Release(); releaseErr != nil {
+		return errors.Join(operationErr, releaseErr)
+	}
+	return operationErr
+}
+
+func removeStateFile(path string) error {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("state path is not a regular file")
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, progress Progress) (outcome Outcome, returnErr error) {
 	manager.report(progress, "downloading", 0, 0)
 	artifacts := filepath.Join(manager.Layout.Cache, "artifacts")
 	if err := filesystem.SecureMkdirAll(artifacts, 0o700); err != nil {
 		return Outcome{}, err
 	}
-	artifactPath := filepath.Join(artifacts, item.Release.SHA256+"."+strings.ReplaceAll(item.Release.Archive, ".", "-"))
+	verification := item.Release.Verification
+	artifactPath := filepath.Join(artifacts, verification.Algorithm+"-"+verification.Digest+"."+strings.ReplaceAll(item.Release.Archive, ".", "-"))
 	_, err := manager.Client.FetchArtifact(ctx, download.ArtifactRequest{
-		URL: item.Release.URL, SHA256: item.Release.SHA256, Destination: artifactPath,
-		AllowedURL:     allowed,
+		URL: item.Release.URL, Algorithm: verification.Algorithm, Digest: verification.Digest,
+		Destination:    artifactPath,
 		ReportProgress: func(current, total int64) { manager.report(progress, "downloading", current, total) },
 	})
 	if err != nil {
@@ -220,6 +324,9 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 	} else if err != nil {
 		return Outcome{}, err
 	}
+	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, appRoot); err != nil {
+		return Outcome{}, err
+	}
 	keepAppRoot := false
 	defer func() {
 		if appRootCreated && !keepAppRoot {
@@ -238,6 +345,9 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 	manager.report(progress, "installing", 0, 0)
 	if err := os.Rename(applicationRoot, finalPath); err != nil {
 		return Outcome{}, fmt.Errorf("publish version: %w", err)
+	}
+	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, finalPath); err != nil {
+		return Outcome{}, err
 	}
 	keepFinal := false
 	defer func() {
@@ -337,14 +447,17 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 	if err := manager.inject("before_state"); err != nil {
 		return Outcome{}, err
 	}
-	if err := state.WriteForApp(manager.Layout, newState); err != nil {
-		return Outcome{}, err
+	stateCommitted, stateErr := manager.persistState(newState)
+	if stateCommitted {
+		keepActivation = true
+		keepFinal = true
+		keepAppRoot = true
+		keepIntegration = true
+		outcome.State = newState
 	}
-	keepActivation = true
-	keepFinal = true
-	keepAppRoot = true
-	keepIntegration = true
-	outcome.State = newState
+	if stateErr != nil {
+		return outcome, stateErr
+	}
 
 	if previousVersion != "" && previousVersion != newState.Current && previousVersion != newState.Previous {
 		manager.report(progress, "cleaning", 0, 0)
@@ -361,6 +474,9 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 
 func (manager *Manager) activateRetained(appID string, installed state.State, progress Progress) (Outcome, error) {
 	appRoot := filepath.Join(manager.Layout.Apps, appID)
+	if err := manager.validateManagedApp(appID, installed.Current, installed.Previous); err != nil {
+		return Outcome{}, err
+	}
 	retained, err := manager.Layout.AppPath(appID, installed.Previous)
 	if err != nil {
 		return Outcome{}, err
@@ -390,12 +506,56 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	if err := manager.inject("before_state"); err != nil {
 		return Outcome{}, err
 	}
-	if err := state.WriteForApp(manager.Layout, installed); err != nil {
-		return Outcome{}, err
+	stateCommitted, stateErr := manager.persistState(installed)
+	if stateCommitted {
+		committed = true
 	}
-	committed = true
+	if stateErr != nil {
+		return Outcome{State: installed}, stateErr
+	}
 	manager.report(progress, "complete", 0, 0)
 	return Outcome{State: installed}, nil
+}
+
+func (manager *Manager) validateManagedApp(appID string, versions ...string) error {
+	if err := filesystem.ValidateID(appID); err != nil {
+		return err
+	}
+	if err := manager.validateManagedRoots(); err != nil {
+		return err
+	}
+	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, filepath.Join(manager.Layout.Apps, appID)); err != nil {
+		return err
+	}
+	for _, version := range versions {
+		if version == "" {
+			continue
+		}
+		path, err := manager.Layout.AppPath(appID, version)
+		if err != nil {
+			return err
+		}
+		if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manager *Manager) validateManagedRoots() error {
+	for _, path := range []string{manager.Layout.States, manager.Layout.Apps} {
+		if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manager *Manager) persistState(installed state.State) (bool, error) {
+	if manager.writeState != nil {
+		return manager.writeState(manager.Layout, installed)
+	}
+	return state.WriteForAppWithCommit(manager.Layout, installed)
 }
 
 func (manager *Manager) integrationSpec(installed state.State, name string, categories []string) (integration.Spec, error) {

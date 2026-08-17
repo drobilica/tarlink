@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/drobilica/tarlink/internal/filesystem"
 )
 
 func testState() State {
@@ -47,6 +49,52 @@ func TestWriteLoadAndCorruptPreserved(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(p); string(b) != `{"schema":1,"app":"demo","current":""}` {
 		t.Fatal("corrupt file changed")
+	}
+}
+
+func TestWriteReportsPostRenameSyncFailureAsCommitted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	injected := errors.New("injected directory sync failure")
+	committed, err := write(path, testState(), func(string) error { return injected })
+	if !committed || !errors.Is(err, injected) {
+		t.Fatalf("committed=%t error=%v", committed, err)
+	}
+	loaded, loadErr := Load(path)
+	if loadErr != nil || loaded.Current != testState().Current {
+		t.Fatalf("state=%#v error=%v", loaded, loadErr)
+	}
+}
+
+func TestValidateForLayoutRequiresCanonicalOwnedPaths(t *testing.T) {
+	home := t.TempDir()
+	layout, err := filesystem.LayoutFor(home, func(name string) string {
+		switch name {
+		case "XDG_DATA_HOME":
+			return filepath.Join(home, "data")
+		case "XDG_STATE_HOME":
+			return filepath.Join(home, "state")
+		case "XDG_CACHE_HOME":
+			return filepath.Join(home, "cache")
+		default:
+			return ""
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := State{
+		Schema: Schema, App: "demo", Current: "1.2.3", Executable: "bin/demo",
+		Integration: Integration{
+			ExecutableLink:   filepath.Join(layout.Bin, "demo"),
+			ExecutableTarget: filepath.Join(layout.Apps, "demo", "current", "bin", "demo"),
+		},
+	}
+	if err := value.ValidateForLayout(layout); err != nil {
+		t.Fatalf("canonical state rejected: %v", err)
+	}
+	value.Integration.ExecutableLink = filepath.Join(home, "unrelated", "demo")
+	if err := value.ValidateForLayout(layout); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("unrelated integration accepted: %v", err)
 	}
 }
 

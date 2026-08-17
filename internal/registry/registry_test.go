@@ -1,11 +1,12 @@
 package registry
 
 import (
-	"net/url"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testManifest = `schema: 1
@@ -18,8 +19,11 @@ platform: {os: linux, arch: amd64}
 release:
   version: "5.2.0"
   url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz
-  sha256: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
   archive: tar.xz
+  verification:
+    algorithm: sha256
+    digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
+    source: https://download.blender.org/release/Blender5.2/blender-5.2.0.sha256
 application: {executable: blender}
 desktop: {enabled: true, categories: [Graphics]}
 `
@@ -27,34 +31,21 @@ desktop: {enabled: true, categories: [Graphics]}
 func createRegistry(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	for _, directory := range []string{"apps/blender", "policy", "index"} {
-		if err := os.MkdirAll(filepath.Join(root, directory), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(root, "apps/blender/manifest.yaml"), []byte(testManifest), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "apps", "blender"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	policy := "schema: 1\nsources:\n  blender:\n    - https://download.blender.org/release/Blender5.2/\n"
-	if err := os.WriteFile(filepath.Join(root, "policy/approved-sources.yaml"), []byte(policy), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	manifests, err := loadManifests(filepath.Join(root, "apps"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	index, err := IndexBytes(GenerateIndex(manifests))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "index/index.json"), index, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(testManifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root
 }
 
 func TestValidateTreeAndSearch(t *testing.T) {
-	catalog, err := ValidateTree(createRegistry(t))
+	root := createRegistry(t)
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("registry documentation\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := ValidateTree(root)
 	if err != nil {
 		t.Fatalf("ValidateTree() error = %v", err)
 	}
@@ -66,47 +57,36 @@ func TestValidateTreeAndSearch(t *testing.T) {
 	}
 }
 
-func TestPolicyRejectsCanonicalizationEscape(t *testing.T) {
-	catalog, err := ValidateTree(createRegistry(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	candidate, err := url.Parse("https://download.blender.org/release/Blender5.2/%2e%2e/other/artifact.tar.xz")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if catalog.Policy.Allows("blender", candidate) {
-		t.Fatal("noncanonical approved-source escape was accepted")
-	}
-}
-
-func TestValidateTreeRejectsStaleIndexAndUnapprovedURL(t *testing.T) {
-	t.Run("stale index", func(t *testing.T) {
+func TestValidateTreeRejectsInvalidApplicationData(t *testing.T) {
+	t.Run("manifest URL", func(t *testing.T) {
 		root := createRegistry(t)
-		if err := os.WriteFile(filepath.Join(root, "index/index.json"), []byte(`{"schema":1,"apps":[]}`), 0o644); err != nil {
+		path := filepath.Join(root, "apps", "blender", "manifest.yaml")
+		content, err := os.ReadFile(path)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ValidateTree(root); err == nil {
-			t.Fatal("stale index unexpectedly accepted")
-		}
-	})
-	t.Run("unapproved URL", func(t *testing.T) {
-		root := createRegistry(t)
-		path := filepath.Join(root, "apps/blender/manifest.yaml")
-		content, _ := os.ReadFile(path)
-		content = []byte(strings.Replace(string(content), "download.blender.org", "evil.example", 1))
+		content = []byte(strings.Replace(string(content), "https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz", "http://example.test/blender.tar.xz", 1))
 		if err := os.WriteFile(path, content, 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := ValidateTree(root); err == nil {
-			t.Fatal("unapproved URL unexpectedly accepted")
+			t.Fatal("insecure manifest URL unexpectedly accepted")
+		}
+	})
+	t.Run("extra file", func(t *testing.T) {
+		root := createRegistry(t)
+		if err := os.WriteFile(filepath.Join(root, "apps", "blender", "notes"), []byte("unexpected"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ValidateTree(root); err == nil {
+			t.Fatal("extra application file unexpectedly accepted")
 		}
 	})
 }
 
 func TestValidateTreeRejectsSymlink(t *testing.T) {
 	root := createRegistry(t)
-	if err := os.Symlink("manifest.yaml", filepath.Join(root, "apps/blender/extra")); err != nil {
+	if err := os.Symlink("blender", filepath.Join(root, "apps", "alias")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ValidateTree(root); err == nil {
@@ -114,7 +94,35 @@ func TestValidateTreeRejectsSymlink(t *testing.T) {
 	}
 }
 
-func TestRegistryWorkingTreeCompatibility(t *testing.T) {
+func TestOpenRejectsEscapingCurrentPointer(t *testing.T) {
+	cache := t.TempDir()
+	if err := os.Symlink("../outside", filepath.Join(cache, "current")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(cache); err == nil {
+		t.Fatal("escaping current pointer unexpectedly accepted")
+	}
+	if err := os.Remove(filepath.Join(cache, "current")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(cache); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("missing registry error = %v", err)
+	}
+}
+
+func TestCatalogStaleness(t *testing.T) {
+	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	catalog := &Catalog{FetchedAt: now.Add(-23 * time.Hour)}
+	if catalog.Stale(now, DefaultMaxAge) {
+		t.Fatal("23-hour-old registry reported stale")
+	}
+	catalog.FetchedAt = now.Add(-DefaultMaxAge)
+	if !catalog.Stale(now, DefaultMaxAge) {
+		t.Fatal("24-hour-old registry reported fresh")
+	}
+}
+
+func TestRegistryWorkingTreeIntegration(t *testing.T) {
 	root := os.Getenv("TARLINK_REGISTRY_WORKTREE")
 	if root == "" {
 		t.Skip("set TARLINK_REGISTRY_WORKTREE for cross-repository acceptance")
@@ -125,9 +133,11 @@ func TestRegistryWorkingTreeCompatibility(t *testing.T) {
 	}
 	catalog, err := ValidateTree(absolute)
 	if err != nil {
-		t.Fatalf("registry working tree is incompatible with the client: %v", err)
+		t.Fatalf("registry working tree failed client validation: %v", err)
 	}
-	if catalog.Manifests["blender"] == nil {
-		t.Fatal("reviewed Blender manifest is missing")
+	for _, id := range []string{"blender", "godot"} {
+		if catalog.Manifests[id] == nil {
+			t.Fatalf("reviewed %s manifest is missing", id)
+		}
 	}
 }

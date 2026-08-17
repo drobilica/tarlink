@@ -1,0 +1,48 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Linux release binaries
+        env:
+          CGO_ENABLED: 0
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          RELEASE_VERSION=${RELEASE_TAG#v}
+          case "$RELEASE_VERSION" in
+            ''|*[!0-9A-Za-z.-]*) echo "unsupported release tag: $RELEASE_TAG" >&2; exit 1 ;;
+          esac
+          LDFLAGS="-X github.com/drobilica/tarlink/internal/version.Current=$RELEASE_VERSION"
+          mkdir -p dist
+          GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$LDFLAGS" -o dist/tarlink-linux-amd64 ./cmd/tarlink
+          GOOS=linux GOARCH=arm64 go build -trimpath -ldflags "$LDFLAGS" -o dist/tarlink-linux-arm64 ./cmd/tarlink
+
+      - name: Create release checksums
+        working-directory: dist
+        run: sha256sum tarlink-linux-amd64 tarlink-linux-arm64 > checksums.txt
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$RELEASE_TAG" dist/tarlink-linux-amd64 dist/tarlink-linux-arm64 dist/checksums.txt --clobber

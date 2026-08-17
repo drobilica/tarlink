@@ -2,45 +2,49 @@
 
 ## Trusted
 
-- TarLink code.
+- TarLink code and release workflow.
 - The reviewed official TarLink registry.
-- The local user account under which TarLink runs.
+- The local user account running TarLink.
 
 ## Potentially hostile
 
-- Downloaded archives, filenames, and archive metadata.
-- Malformed registry data and unexpected filesystem state.
-- Network failures and responses.
-- A concurrent TarLink process.
+- Downloaded archives, names, metadata, redirects, and compressed streams.
+- Malformed registry manifests and repository archives.
+- Corrupt state and unexpected local filesystem objects.
+- Network failure and concurrent cooperating TarLink processes.
 
 ## Assets
 
-- The user's existing files and active application.
+- Unrelated user files and integrations.
+- The active and previous managed application versions.
 - The integrity of downloaded application bytes.
-- Registry policy and manifest identity.
-- The confidentiality of local state and cache metadata.
+- The identity and provenance of registry manifests.
+- Local state and cache integrity.
 
 ## Adversaries
 
-1. A malicious or compromised registry mirror, release host, or redirect target.
-2. A malicious release archive attempting path traversal, link traversal, device creation, or resource exhaustion.
-3. A local unprivileged process racing files in the staging or cache directories.
-4. A malformed registry, manifest, network response, or compressed stream.
+1. A malicious or compromised release host, checksum host, or redirect target.
+2. A malicious archive attempting traversal, unsafe links, special files, or resource exhaustion.
+3. A concurrent TarLink process racing integration, state, staging, activation, or purge paths.
+4. Accidental state corruption or a user file occupying a TarLink-managed name.
 
 ## Mitigations
 
 | Threat | Control |
 | --- | --- |
-| Wrong release bytes | HTTPS approved-source policy and SHA-256 verification |
-| Registry substitution | Official source only, validated immutable generation, relative `current` |
-| Zip-slip / tar traversal | UTF-8, canonical relative path validation and depth/length limits |
+| Wrong release bytes | Strict SHA-256/SHA-512 digest from reviewed upstream checksum provenance |
+| Weak or ambiguous verification | Explicit algorithm, fixed digest length, lowercase hex, HTTPS source; MD5/SHA-1 rejected |
+| Alternate registry substitution | Exact compiled HTTPS source, bounded staged archive, direct manifest validation, normalized immutable generation |
+| Offline or failed refresh | Previously validated cache remains active; absent/invalid cache cannot fall back |
+| Zip-slip / tar traversal | UTF-8 canonical relative paths with depth and length limits |
 | Symlink or hardlink escape | Hardlinks rejected; symlinks confined to same-directory regular-file chains; parent `lstat`; exclusive creation |
-| Device/FIFO/socket abuse | All special and unknown entry types rejected |
-| Decompression bomb | Entry, byte, file, archive-input, and XZ dictionary bounds |
-| Partial activation | Staging, same-filesystem rename, atomic relative symlink and state writes |
-| Concurrent update corruption | Per-application locks and deterministic `update --all` behavior |
-| Resource starvation | Explicit network timeouts, redirect cap, response caps, and context cancellation |
+| Device or special-file abuse | Devices, FIFOs, sockets, special bits, and unknown types rejected |
+| Decompression bomb | Entry, byte, file, archive-input, depth, and XZ dictionary bounds |
+| Partial activation | Staging, same-filesystem rename, atomic relative link, atomic state |
+| Concurrent mutation | Shared lifecycle `flock`, narrower registry/per-application locks, and non-overwriting integration creation |
+| Arbitrary deletion | Canonical layout-bound state, pre-deletion integration validation, contained exact-root removal |
+| Broad purge | Only fixed TarLink product roots and recorded narrow integrations are candidates; shared parents survive |
 
-## Outside TarLink's security boundary
+## Outside the boundary
 
-TarLink does not claim to sandbox the installed application. Once activated, the application runs with the user's normal permissions and can access whatever that user can access. Supply-chain authenticity beyond HTTPS, registry policy, and SHA-256 is outside the current design; signed metadata is a future, separately reviewed feature.
+TarLink does not sandbox installed applications. After activation, an application runs with the user's permissions. A malicious process already running as the same user can mutate that user's TarLink directories and is outside the local-attacker boundary; the ownership checks are designed for accidental state corruption, unexpected objects, and cooperating TarLink concurrency. The mutable official registry is trusted and not signed: compromise of that registry alone can replace both an artifact URL and its digest. Runtime fetching of `verification.source` and signed registry metadata would require separate designs.

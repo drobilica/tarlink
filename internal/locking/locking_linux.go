@@ -74,26 +74,71 @@ func AcquireWithTimeout(ctx context.Context, path string, timeout time.Duration)
 		_ = f.Close()
 		return nil, errors.New("lock path is not a regular file")
 	}
+	return acquireOpened(ctx, f, timeout)
+}
+
+func AcquireDirectoryWithTimeout(ctx context.Context, directory string, timeout time.Duration) (*Lock, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory {
+		return nil, errors.New("lock directory must be absolute and clean")
+	}
+	info, err := os.Lstat(directory)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, filesystem.ErrSymlink
+	}
+	if !info.IsDir() {
+		return nil, errors.New("lock path is not a directory")
+	}
+	fd, err := syscall.Open(directory, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), directory)
+	if f == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open lock directory")
+	}
+	var infoStat syscall.Stat_t
+	if err := syscall.Fstat(fd, &infoStat); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if infoStat.Mode&syscall.S_IFMT != syscall.S_IFDIR {
+		_ = f.Close()
+		return nil, errors.New("lock path is not a directory")
+	}
+	return acquireOpened(ctx, f, timeout)
+}
+
+func acquireOpened(ctx context.Context, file *os.File, timeout time.Duration) (*Lock, error) {
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
-	try := func() error { return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) }
+	try := func() error { return syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) }
 	for {
-		err = try()
+		err := try()
 		if err == nil {
-			return &Lock{file: f}, nil
+			return &Lock{file: file}, nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
-			_ = f.Close()
+			_ = file.Close()
 			return nil, fmt.Errorf("flock: %w", err)
 		}
 		select {
 		case <-ctx.Done():
-			_ = f.Close()
+			_ = file.Close()
 			return nil, ctx.Err()
 		case <-deadline.C:
-			_ = f.Close()
+			_ = file.Close()
 			return nil, ErrConflict
 		case <-ticker.C:
 		}

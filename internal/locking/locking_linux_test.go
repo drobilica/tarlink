@@ -45,3 +45,27 @@ func TestRejectsSymlinkLockPath(t *testing.T) {
 		t.Fatal("symlink lock accepted")
 	}
 }
+
+func TestDirectoryLockSharesIdentityAcrossAcquisitions(t *testing.T) {
+	directory := t.TempDir()
+	first, err := AcquireDirectoryWithTimeout(context.Background(), directory, 100*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := AcquireDirectoryWithTimeout(ctx, directory, 20*time.Millisecond); !errors.Is(err, ErrConflict) {
+		t.Fatalf("second directory lock error = %v", err)
+	}
+	if err := first.Release(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := AcquireDirectoryWithTimeout(context.Background(), directory, 100*time.Millisecond)
+	if err != nil {
+		t.Fatalf("reacquire directory lock error = %v", err)
+	}
+	if err := second.Release(); err != nil {
+		t.Fatal(err)
+	}
+}

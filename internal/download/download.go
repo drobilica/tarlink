@@ -4,10 +4,12 @@ package download
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"net"
 	"net/http"
@@ -34,15 +36,15 @@ var (
 
 type Progress func(downloaded, total int64)
 
-// URLPolicy must approve the initial URL and every redirect destination.
+// URLPolicy approves registry URLs and every redirect destination.
 type URLPolicy func(*url.URL) bool
 
 type ArtifactRequest struct {
 	URL            string
-	SHA256         string
+	Algorithm      string
+	Digest         string
 	Destination    string
 	MaxBytes       int64
-	AllowedURL     URLPolicy
 	ReportProgress Progress
 }
 
@@ -55,10 +57,11 @@ type RegistryRequest struct {
 }
 
 type Result struct {
-	Path   string
-	SHA256 string
-	Bytes  int64
-	Cached bool
+	Path      string
+	Algorithm string
+	Digest    string
+	Bytes     int64
+	Cached    bool
 }
 
 type Client struct {
@@ -85,43 +88,53 @@ func NewClient() *Client {
 }
 
 func (c *Client) FetchArtifact(ctx context.Context, request ArtifactRequest) (Result, error) {
-	if !validDigest(request.SHA256) {
-		return Result{}, errors.New("artifact SHA-256 must be 64 lowercase hexadecimal characters")
-	}
-	parsed, err := parseHTTPS(request.URL)
-	if err != nil {
+	if err := validateDigest(request.Algorithm, request.Digest); err != nil {
 		return Result{}, err
 	}
-	if request.AllowedURL == nil || !request.AllowedURL(parsed) {
-		return Result{}, errors.New("download URL is outside the approved source policy")
+	_, err := parseHTTPS(request.URL)
+	if err != nil {
+		return Result{}, err
 	}
 	if request.MaxBytes <= 0 {
 		request.MaxBytes = DefaultMaxArtifactBytes
 	}
-	if result, ok := validCached(request.Destination, request.SHA256, request.MaxBytes); ok {
+	if result, ok := validCached(request.Destination, request.Algorithm, request.Digest, request.MaxBytes); ok {
 		result.Cached = true
 		return result, nil
 	}
-	return c.fetch(ctx, request.URL, request.Destination, request.MaxBytes, request.SHA256, request.AllowedURL, request.ReportProgress)
+	return c.fetch(ctx, request.URL, request.Destination, request.MaxBytes, request.Algorithm, request.Digest, nil, request.ReportProgress)
 }
 
 // FetchRegistry intentionally has no checksum parameter: the official registry
 // endpoint is built into TarLink, and all downloaded registry contents are
 // staged and strictly validated before activation.
 func (c *Client) FetchRegistry(ctx context.Context, request RegistryRequest) (Result, error) {
+	if request.AllowedURL == nil {
+		return Result{}, errors.New("registry URL policy is not configured")
+	}
 	if request.MaxBytes <= 0 {
 		request.MaxBytes = DefaultMaxRegistryBytes
 	}
-	return c.fetch(ctx, request.URL, request.Destination, request.MaxBytes, "", request.AllowedURL, request.ReportProgress)
+	return c.fetch(ctx, request.URL, request.Destination, request.MaxBytes, "", "", request.AllowedURL, request.ReportProgress)
 }
 
-func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes int64, expected string, allowed URLPolicy, progress Progress) (Result, error) {
+func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes int64, algorithm, expected string, allowed URLPolicy, progress Progress) (Result, error) {
 	parsed, err := parseHTTPS(rawURL)
 	if err != nil {
 		return Result{}, err
 	}
-	if allowed == nil || !allowed(parsed) {
-		return Result{}, errors.New("download URL is outside the approved source policy")
+	if allowed != nil && !allowed(parsed) {
+		return Result{}, errors.New("download URL is not the official registry endpoint")
+	}
+	if (algorithm == "") != (expected == "") {
+		return Result{}, errors.New("download verification must specify both algorithm and digest")
+	}
+	var hasher hash.Hash
+	if algorithm != "" {
+		hasher, err = newHasher(algorithm, expected)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	if destination == "" || !filepath.IsAbs(destination) {
 		return Result{}, errors.New("download destination must be an absolute path")
@@ -144,11 +157,11 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 		if redirects > limit || len(via) > limit {
 			return fmt.Errorf("redirect limit of %d exceeded", limit)
 		}
-		if req.URL.Scheme != "https" {
-			return errors.New("HTTPS redirect downgrade rejected")
+		if _, err := parseHTTPS(req.URL.String()); err != nil {
+			return fmt.Errorf("invalid HTTPS redirect: %w", err)
 		}
-		if !allowed(req.URL) {
-			return errors.New("redirect destination is outside the approved source policy")
+		if allowed != nil && !allowed(req.URL) {
+			return errors.New("redirect destination is not the official registry endpoint")
 		}
 		return nil
 	}
@@ -192,16 +205,22 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 		return Result{}, fmt.Errorf("secure temporary download: %w", err)
 	}
 
-	hasher := sha256.New()
 	limited := io.LimitReader(resp.Body, maxBytes+1)
-	written, err := copyWithProgress(io.MultiWriter(temporary, hasher), limited, resp.ContentLength, progress)
+	writer := io.Writer(temporary)
+	if hasher != nil {
+		writer = io.MultiWriter(temporary, hasher)
+	}
+	written, err := copyWithProgress(writer, limited, resp.ContentLength, progress)
 	if err != nil {
 		return Result{}, fmt.Errorf("write download: %w", err)
 	}
 	if written > maxBytes {
 		return Result{}, ErrTooLarge
 	}
-	digest := hex.EncodeToString(hasher.Sum(nil))
+	digest := ""
+	if hasher != nil {
+		digest = hex.EncodeToString(hasher.Sum(nil))
+	}
 	if expected != "" && digest != expected {
 		return Result{}, fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, expected, digest)
 	}
@@ -218,7 +237,7 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 		return Result{}, fmt.Errorf("flush download directory: %w", err)
 	}
 	keep = true
-	return Result{Path: destination, SHA256: digest, Bytes: written}, nil
+	return Result{Path: destination, Algorithm: algorithm, Digest: digest, Bytes: written}, nil
 }
 
 func parseHTTPS(raw string) (*url.URL, error) {
@@ -232,7 +251,7 @@ func parseHTTPS(raw string) (*url.URL, error) {
 	return parsed, nil
 }
 
-func validCached(path, expected string, maxBytes int64) (Result, bool) {
+func validCached(path, algorithm, expected string, maxBytes int64) (Result, bool) {
 	info, err := os.Lstat(path)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxBytes {
 		return Result{}, false
@@ -246,7 +265,10 @@ func validCached(path, expected string, maxBytes int64) (Result, bool) {
 	if err != nil || !os.SameFile(info, openedInfo) || !openedInfo.Mode().IsRegular() || openedInfo.Size() > maxBytes {
 		return Result{}, false
 	}
-	hasher := sha256.New()
+	hasher, err := newHasher(algorithm, expected)
+	if err != nil {
+		return Result{}, false
+	}
 	written, err := io.Copy(hasher, io.LimitReader(file, maxBytes+1))
 	if err != nil || written > maxBytes {
 		return Result{}, false
@@ -257,15 +279,35 @@ func validCached(path, expected string, maxBytes int64) (Result, bool) {
 		_ = os.Remove(path)
 		return Result{}, false
 	}
-	return Result{Path: path, SHA256: digest, Bytes: written}, true
+	return Result{Path: path, Algorithm: algorithm, Digest: digest, Bytes: written}, true
 }
 
-func validDigest(value string) bool {
-	if len(value) != sha256.Size*2 || value != strings.ToLower(value) {
-		return false
+func validateDigest(algorithm, value string) error {
+	_, err := newHasher(algorithm, value)
+	return err
+}
+
+func newHasher(algorithm, value string) (hash.Hash, error) {
+	var hasher hash.Hash
+	var size int
+	switch algorithm {
+	case "sha256":
+		hasher = sha256.New()
+		size = sha256.Size
+	case "sha512":
+		hasher = sha512.New()
+		size = sha512.Size
+	default:
+		return nil, fmt.Errorf("unsupported artifact verification algorithm %q", algorithm)
+	}
+	if len(value) != size*2 || value != strings.ToLower(value) {
+		return nil, fmt.Errorf("artifact verification digest must be exactly %d lowercase hexadecimal characters", size*2)
 	}
 	decoded, err := hex.DecodeString(value)
-	return err == nil && len(decoded) == sha256.Size
+	if err != nil || len(decoded) != size {
+		return nil, fmt.Errorf("artifact verification digest must be exactly %d lowercase hexadecimal characters", size*2)
+	}
+	return hasher, nil
 }
 
 func copyWithProgress(destination io.Writer, source io.Reader, total int64, progress Progress) (int64, error) {

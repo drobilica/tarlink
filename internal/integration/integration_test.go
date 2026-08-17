@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/drobilica/tarlink/internal/filesystem"
 )
 
 func testSpec(root string) Spec {
@@ -64,6 +66,18 @@ func TestEnsureRefusesUnrelatedFiles(t *testing.T) {
 	}
 }
 
+func TestAtomicCreateReportsPostLinkSyncFailureAsCommitted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "desktop")
+	injected := errors.New("injected directory sync failure")
+	committed, err := atomicCreateWithSync(path, []byte("owned"), 0o600, func(string) error { return injected })
+	if !committed || !errors.Is(err, injected) {
+		t.Fatalf("committed=%t error=%v", committed, err)
+	}
+	if content, readErr := os.ReadFile(path); readErr != nil || string(content) != "owned" {
+		t.Fatalf("content=%q error=%v", content, readErr)
+	}
+}
+
 func TestRemoveRefusesReplacedIntegration(t *testing.T) {
 	spec := testSpec(t.TempDir())
 	paths, _, err := Ensure(spec)
@@ -103,5 +117,53 @@ func TestRemoveRefusesModifiedDesktopWithOwnershipMarker(t *testing.T) {
 	}
 	if _, err := os.Lstat(paths.ExecutableLink); err != nil {
 		t.Fatalf("executable link was removed despite conflict: %v", err)
+	}
+}
+
+func TestRemoveOwnedIsRetryableWhenIntegrationIsAlreadyMissing(t *testing.T) {
+	spec := testSpec(t.TempDir())
+	paths, _, err := Ensure(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(paths.ExecutableLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveOwned(spec); err != nil {
+		t.Fatalf("RemoveOwned() error = %v", err)
+	}
+	if _, err := os.Lstat(paths.DesktopEntry); !os.IsNotExist(err) {
+		t.Fatalf("desktop entry remains: %v", err)
+	}
+	if err := RemoveOwned(spec); err != nil {
+		t.Fatalf("second RemoveOwned() error = %v", err)
+	}
+}
+
+func TestRemoveOwnedRejectsSymlinkedIntegrationParent(t *testing.T) {
+	root := t.TempDir()
+	spec := testSpec(root)
+	paths, _, err := Ensure(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(paths.ExecutableLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Dir(paths.ExecutableLink)); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Dir(paths.ExecutableLink)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executable)), filepath.Join(outside, spec.ID)); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveOwned(spec); !errors.Is(err, filesystem.ErrSymlink) {
+		t.Fatalf("RemoveOwned() error = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(outside, spec.ID)); err != nil {
+		t.Fatalf("outside integration changed: %v", err)
 	}
 }

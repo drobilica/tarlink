@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -26,6 +25,7 @@ type Syncer struct {
 	sourceURL   string
 	allowedURL  download.URLPolicy
 	lockTimeout time.Duration
+	syncCache   func(string) error
 }
 
 func (s *Syncer) Sync(ctx context.Context) error {
@@ -101,10 +101,11 @@ func (s *Syncer) Sync(ctx context.Context) error {
 			_ = filesystem.SafeRemove(generations, generation)
 		}
 	}()
-	for _, name := range []string{"apps", "policy", "index"} {
-		if err := copyTree(filepath.Join(sourceRoot, name), filepath.Join(generation, name)); err != nil {
-			return fmt.Errorf("stage validated registry %s: %w", name, err)
-		}
+	if err := os.Rename(filepath.Join(sourceRoot, "apps"), filepath.Join(generation, "apps")); err != nil {
+		return fmt.Errorf("stage validated registry applications: %w", err)
+	}
+	if err := normalizeTree(filepath.Join(generation, "apps")); err != nil {
+		return fmt.Errorf("normalize registry permissions: %w", err)
 	}
 	if _, err := ValidateTree(generation); err != nil {
 		return fmt.Errorf("validate sanitized registry: %w", err)
@@ -112,10 +113,18 @@ func (s *Syncer) Sync(ctx context.Context) error {
 	if err := syncTree(generation); err != nil {
 		return fmt.Errorf("flush registry generation: %w", err)
 	}
-	if err := activateGeneration(s.CacheRoot, generation); err != nil {
+	if err := pruneGenerations(s.CacheRoot, generations, generation); err != nil {
+		return fmt.Errorf("prune registry generations: %w", err)
+	}
+	syncCache := s.syncCache
+	if syncCache == nil {
+		syncCache = syncDirectory
+	}
+	activated, err := activateGeneration(s.CacheRoot, generation, syncCache)
+	published = activated
+	if err != nil {
 		return fmt.Errorf("activate registry: %w", err)
 	}
-	published = true
 	s.report("complete", 0, 0)
 	return nil
 }
@@ -143,40 +152,76 @@ func singleRoot(root string) (string, error) {
 	return filepath.Join(root, entries[0].Name()), nil
 }
 
-func copyTree(source, destination string) error {
-	return filepath.WalkDir(source, func(current string, entry fs.DirEntry, walkErr error) error {
+func normalizeTree(root string) error {
+	return filepath.WalkDir(root, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return errors.New("registry copy encountered a symlink")
+			return errors.New("registry generation contains a symlink")
 		}
-		relative, err := filepath.Rel(source, current)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(destination, relative)
 		if entry.IsDir() {
-			return os.Mkdir(target, 0o700)
+			return os.Chmod(current, 0o700)
 		}
 		if !entry.Type().IsRegular() {
-			return fmt.Errorf("registry copy encountered unsupported file %q", current)
+			return fmt.Errorf("registry generation contains unsupported file %q", current)
 		}
-		input, err := os.Open(current)
-		if err != nil {
-			return err
-		}
-		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
-			_ = input.Close()
-			return err
-		}
-		_, copyErr := io.Copy(output, io.LimitReader(input, 16<<20+1))
-		inputErr := input.Close()
-		syncErr := output.Sync()
-		outputErr := output.Close()
-		return errors.Join(copyErr, inputErr, syncErr, outputErr)
+		return os.Chmod(current, 0o600)
 	})
+}
+
+func pruneGenerations(cacheRoot, generations, incoming string) error {
+	keep := map[string]bool{filepath.Clean(incoming): true}
+	current, err := activeGeneration(cacheRoot, generations)
+	if err != nil {
+		return err
+	}
+	if current != "" {
+		keep[current] = true
+	}
+	entries, err := os.ReadDir(generations)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Join(generations, entry.Name())
+		if keep[path] {
+			continue
+		}
+		if entry.Type()&os.ModeSymlink != 0 || !entry.IsDir() || !strings.HasPrefix(entry.Name(), "generation-") {
+			return fmt.Errorf("unexpected registry generation entry %q", entry.Name())
+		}
+		if err := filesystem.SafeRemove(generations, path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func activeGeneration(cacheRoot, generations string) (string, error) {
+	current := filepath.Join(cacheRoot, "current")
+	info, err := os.Lstat(current)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return "", errors.New("registry current path is occupied by a non-symlink")
+	}
+	target, err := os.Readlink(current)
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(target) {
+		return "", errors.New("registry current pointer must be relative")
+	}
+	path := filepath.Clean(filepath.Join(cacheRoot, target))
+	if filepath.Dir(path) != filepath.Clean(generations) || !strings.HasPrefix(filepath.Base(path), "generation-") {
+		return "", errors.New("registry current pointer is not a direct generation")
+	}
+	return path, nil
 }
 
 func syncTree(root string) error {
@@ -207,39 +252,46 @@ func syncTree(root string) error {
 	return nil
 }
 
-func activateGeneration(cacheRoot, generation string) error {
+func activateGeneration(cacheRoot, generation string, syncCache func(string) error) (bool, error) {
 	current := filepath.Join(cacheRoot, "current")
 	if info, err := os.Lstat(current); err == nil {
 		if info.Mode()&os.ModeSymlink == 0 {
-			return errors.New("registry current path is occupied by a non-symlink")
+			return false, errors.New("registry current path is occupied by a non-symlink")
 		}
 	} else if !os.IsNotExist(err) {
-		return err
+		return false, err
 	}
 	temporary, err := os.CreateTemp(cacheRoot, ".current-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	temporaryPath := temporary.Name()
 	if err := temporary.Close(); err != nil {
 		_ = os.Remove(temporaryPath)
-		return err
+		return false, err
 	}
 	if err := os.Remove(temporaryPath); err != nil {
-		return err
+		return false, err
 	}
 	relative, err := filepath.Rel(cacheRoot, generation)
 	if err != nil || filepath.IsAbs(relative) || strings.HasPrefix(relative, "..") {
-		return errors.New("registry generation escapes cache root")
+		return false, errors.New("registry generation escapes cache root")
 	}
 	if err := os.Symlink(relative, temporaryPath); err != nil {
-		return err
+		return false, err
 	}
 	if err := os.Rename(temporaryPath, current); err != nil {
 		_ = os.Remove(temporaryPath)
-		return err
+		return false, err
 	}
-	directory, err := os.Open(cacheRoot)
+	if err := syncCache(cacheRoot); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
 	if err != nil {
 		return err
 	}

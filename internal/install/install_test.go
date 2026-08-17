@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,7 +96,9 @@ func (server artifactServer) manifest(version string) *manifest.Manifest {
 	return &manifest.Manifest{
 		Schema: 1, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
-		Release:     manifest.Release{Version: version, URL: server.server.URL, SHA256: hex.EncodeToString(digest[:]), Archive: "tar.gz"},
+		Release: manifest.Release{Version: version, URL: server.server.URL, Verification: manifest.Verification{
+			Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.server.URL + "/SHA256SUMS",
+		}, Archive: "tar.gz"},
 		Application: manifest.Application{Executable: "bin/run"},
 		Desktop:     manifest.Desktop{Enabled: true, Categories: []string{"Utility"}},
 	}
@@ -108,13 +109,11 @@ func managerFor(t *testing.T, layout filesystem.Layout, server artifactServer) *
 	return New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
 }
 
-func allowAllHTTPS(candidate *url.URL) bool { return candidate != nil && candidate.Scheme == "https" }
-
-func TestLifecycleInstallUpdateRollbackRemove(t *testing.T) {
+func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	layout := testLayout(t)
 	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, v1Server)
-	installed, err := manager.Install(context.Background(), v1Server.manifest("v1"), allowAllHTTPS, nil)
+	installed, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil)
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}
@@ -125,7 +124,7 @@ func TestLifecycleInstallUpdateRollbackRemove(t *testing.T) {
 
 	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
 	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
-	updated, err := manager.Update(context.Background(), v2Server.manifest("v2"), allowAllHTTPS, nil)
+	updated, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil)
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -150,8 +149,8 @@ func TestLifecycleInstallUpdateRollbackRemove(t *testing.T) {
 	if err := os.WriteFile(unrelated, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Remove(context.Background(), "fixture", nil); err != nil {
-		t.Fatalf("Remove() error = %v", err)
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(err) {
 		t.Fatalf("application root remains: %v", err)
@@ -161,11 +160,28 @@ func TestLifecycleInstallUpdateRollbackRemove(t *testing.T) {
 	}
 }
 
+func TestInstallVerificationFailurePrecedesExtraction(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	item := server.manifest("v1")
+	item.Release.Verification.Digest = strings.Repeat("0", 64)
+	manager := managerFor(t, layout, server)
+	if _, err := manager.Install(context.Background(), item, nil); !errors.Is(err, download.ErrChecksumMismatch) {
+		t.Fatalf("Install() error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(err) {
+		t.Fatalf("application root exists after verification failure: %v", err)
+	}
+	if _, err := state.LoadForApp(layout, "fixture"); !os.IsNotExist(err) {
+		t.Fatalf("state exists after verification failure: %v", err)
+	}
+}
+
 func TestUpdateStateFailureRestoresCurrentAndCleansNewVersion(t *testing.T) {
 	layout := testLayout(t)
 	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, v1Server)
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), allowAllHTTPS, nil); err != nil {
+	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
 		t.Fatal(err)
 	}
 	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
@@ -176,7 +192,7 @@ func TestUpdateStateFailureRestoresCurrentAndCleansNewVersion(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := manager.Update(context.Background(), v2Server.manifest("v2"), allowAllHTTPS, nil); err == nil {
+	if _, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil); err == nil {
 		t.Fatal("Update() unexpectedly succeeded")
 	}
 	assertCurrent(t, layout, "fixture", "v1")
@@ -189,6 +205,96 @@ func TestUpdateStateFailureRestoresCurrentAndCleansNewVersion(t *testing.T) {
 	}
 }
 
+func TestUpdatePostCommitStateSyncFailureKeepsConsistentVersion(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	injected := errors.New("injected post-rename state sync failure")
+	manager.writeState = func(layout filesystem.Layout, installed state.State) (bool, error) {
+		committed, err := state.WriteForAppWithCommit(layout, installed)
+		if err != nil {
+			return committed, err
+		}
+		return true, injected
+	}
+	if outcome, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil); !errors.Is(err, injected) || outcome.State.Current != "v2" {
+		t.Fatalf("Update() outcome=%#v error=%v", outcome, err)
+	}
+	assertCurrent(t, layout, "fixture", "v2")
+	installed, err := state.LoadForApp(layout, "fixture")
+	if err != nil || installed.Current != "v2" || installed.Previous != "v1" {
+		t.Fatalf("state = %#v, %v", installed, err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture", "v2")); err != nil {
+		t.Fatalf("committed version missing: %v", err)
+	}
+}
+
+func TestUpdateRejectsSymlinkedApplicationRoot(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	appRoot := filepath.Join(layout.Apps, "fixture")
+	if err := os.Rename(appRoot, appRoot+"-saved"); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "keep")
+	if err := os.WriteFile(sentinel, []byte("user owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, appRoot); err != nil {
+		t.Fatal(err)
+	}
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	if _, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil); !errors.Is(err, filesystem.ErrSymlink) {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if content, err := os.ReadFile(sentinel); err != nil || string(content) != "user owned" {
+		t.Fatalf("outside sentinel changed: %q, %v", content, err)
+	}
+}
+
+func TestRollbackRejectsSymlinkedAppsRoot(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
+		t.Fatal(err)
+	}
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	if _, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(layout.Apps, layout.Apps+"-saved"); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "keep")
+	if err := os.WriteFile(sentinel, []byte("user owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, layout.Apps); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Rollback(context.Background(), "fixture", nil); !errors.Is(err, filesystem.ErrSymlink) {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	if content, err := os.ReadFile(sentinel); err != nil || string(content) != "user owned" {
+		t.Fatalf("outside sentinel changed: %q, %v", content, err)
+	}
+}
+
 func TestInstallRefusesIntegrationConflict(t *testing.T) {
 	layout := testLayout(t)
 	conflict := filepath.Join(layout.Bin, "fixture")
@@ -197,7 +303,7 @@ func TestInstallRefusesIntegrationConflict(t *testing.T) {
 	}
 	server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, server)
-	if _, err := manager.Install(context.Background(), server.manifest("v1"), allowAllHTTPS, nil); !errors.Is(err, integration.ErrConflict) {
+	if _, err := manager.Install(context.Background(), server.manifest("v1"), nil); !errors.Is(err, integration.ErrConflict) {
 		t.Fatalf("Install() error = %v", err)
 	}
 	content, _ := os.ReadFile(conflict)
@@ -219,13 +325,13 @@ func TestMutationsReportPerApplicationLockConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), allowAllHTTPS, nil); !errors.Is(err, locking.ErrConflict) {
+	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); !errors.Is(err, locking.ErrConflict) {
 		t.Fatalf("conflicting install error = %v", err)
 	}
 	if err := held.Release(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), allowAllHTTPS, nil); err != nil {
+	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -241,10 +347,10 @@ func TestMutationsReportPerApplicationLockConflict(t *testing.T) {
 		run  func() error
 	}{
 		{"update", func() error {
-			_, err := manager.Update(context.Background(), v2Server.manifest("v2"), allowAllHTTPS, nil)
+			_, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil)
 			return err
 		}},
-		{"remove", func() error { return manager.Remove(context.Background(), "fixture", nil) }},
+		{"uninstall", func() error { return manager.Uninstall(context.Background(), "fixture", nil) }},
 		{"rollback", func() error {
 			_, err := manager.Rollback(context.Background(), "fixture", nil)
 			return err
@@ -258,6 +364,20 @@ func TestMutationsReportPerApplicationLockConflict(t *testing.T) {
 		})
 	}
 	assertCurrent(t, layout, "fixture", "v1")
+}
+
+func TestMutationsReportLifecycleLockConflict(t *testing.T) {
+	layout := testLayout(t)
+	manager := New(layout, nil)
+	manager.LockTimeout = 20 * time.Millisecond
+	held, err := locking.AcquireDirectoryWithTimeout(context.Background(), layout.Home, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Release()
+	if _, err := manager.Rollback(context.Background(), "fixture", nil); !errors.Is(err, locking.ErrConflict) {
+		t.Fatalf("lifecycle conflict error = %v", err)
+	}
 }
 
 func assertCurrent(t *testing.T, layout filesystem.Layout, appID, version string) {

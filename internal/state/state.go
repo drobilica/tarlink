@@ -93,6 +93,26 @@ func (s State) Validate() error {
 	return nil
 }
 
+func (s State) ValidateForLayout(l filesystem.Layout) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	appRoot := filepath.Join(l.Apps, s.App)
+	expectedLink := filepath.Join(l.Bin, s.App)
+	expectedTarget := filepath.Join(appRoot, "current", filepath.FromSlash(s.Executable))
+	if s.Integration.ExecutableLink != expectedLink || s.Integration.ExecutableTarget != expectedTarget {
+		return fmt.Errorf("%w: integration paths do not match the canonical layout", ErrCorrupt)
+	}
+	expectedDesktop := ""
+	if s.DesktopEnabled {
+		expectedDesktop = filepath.Join(l.Desktop, "tarlink-"+s.App+".desktop")
+	}
+	if s.Integration.DesktopEntry != expectedDesktop {
+		return fmt.Errorf("%w: desktop path does not match the canonical layout", ErrCorrupt)
+	}
+	return nil
+}
+
 func validateExecutable(value string) error {
 	if value == "" || len(value) > 4096 || !utf8.ValidString(value) || strings.ContainsAny(value, `\\$%`) || strings.HasPrefix(value, "/") || path.IsAbs(value) || path.Clean(value) != value || value == "." || strings.HasPrefix(value, "../") || strings.Count(value, "/")+1 > 64 {
 		return errors.New("must be a canonical relative path")
@@ -231,66 +251,85 @@ func Load(path string) (State, error) {
 }
 
 func Write(path string, s State) error {
+	_, err := write(path, s, syncDirectory)
+	return err
+}
+
+func write(path string, s State, syncDir func(string) error) (bool, error) {
 	if err := s.Validate(); err != nil {
-		return err
+		return false, err
 	}
 	b, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
-		return err
+		return false, err
 	}
 	b = append(b, '\n')
 	dir := filepath.Dir(path)
 	if err := filesystem.SecureMkdirAll(dir, 0700); err != nil {
-		return err
+		return false, err
 	}
 	if fi, err := os.Lstat(path); err == nil {
 		if fi.Mode()&os.ModeSymlink != 0 {
-			return filesystem.ErrSymlink
+			return false, filesystem.ErrSymlink
 		}
 		if !fi.Mode().IsRegular() {
-			return fmt.Errorf("state path is not a regular file")
+			return false, fmt.Errorf("state path is not a regular file")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+		return false, err
 	}
 	tmp, err := os.CreateTemp(dir, ".state-*.tmp")
 	if err != nil {
-		return err
+		return false, err
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	if err := tmp.Chmod(0600); err != nil {
 		_ = tmp.Close()
-		return err
+		return false, err
 	}
 	if _, err := tmp.Write(b); err != nil {
 		_ = tmp.Close()
-		return err
+		return false, err
 	}
 	if err := tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return err
+		return false, err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return false, err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return err
+		return false, err
 	}
-	d, err := os.Open(dir)
+	if err := syncDir(dir); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
 	if err != nil {
 		return err
 	}
-	defer d.Close()
-	return d.Sync()
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func WriteForApp(l filesystem.Layout, s State) error {
+	_, err := WriteForAppWithCommit(l, s)
+	return err
+}
+
+// WriteForAppWithCommit reports whether the atomic rename completed even when
+// the following directory durability flush fails.
+func WriteForAppWithCommit(l filesystem.Layout, s State) (bool, error) {
 	p, err := l.StatePath(s.App)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return Write(p, s)
+	return write(p, s, syncDirectory)
 }
 
 func LoadForApp(l filesystem.Layout, appID string) (State, error) {

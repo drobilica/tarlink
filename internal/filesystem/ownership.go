@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,48 @@ var (
 	ErrOutsideRoot = errors.New("path is outside owned root")
 	ErrSymlink     = errors.New("symlink is not an owned path")
 )
+
+func CheckOwnedDirectory(path string) error {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return ErrOutsideRoot
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return ErrSymlink
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("owned path is not a directory")
+	}
+	if err := rejectSymlinkComponents(filepath.Dir(path), path); err != nil {
+		return err
+	}
+	return nil
+}
+
+// CheckOwnedDirectoryWithin requires root and every component through path to
+// be real directories without following symlinks.
+func CheckOwnedDirectoryWithin(root, path string) error {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !filepath.IsAbs(path) || filepath.Clean(path) != path || !contained(root, path) {
+		return ErrOutsideRoot
+	}
+	if err := rejectSymlinkComponents(root, path); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return ErrSymlink
+	}
+	if !info.IsDir() {
+		return errors.New("owned path is not a directory")
+	}
+	return nil
+}
 
 func contained(root, path string) bool {
 	if !filepath.IsAbs(root) || !filepath.IsAbs(path) {
@@ -89,4 +132,13 @@ func SafeRemove(root, path string) error {
 		return err
 	}
 	return nil
+}
+
+func SafeRemoveIfExists(root, path string) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return SafeRemove(root, path)
 }

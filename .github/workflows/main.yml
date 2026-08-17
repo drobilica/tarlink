@@ -31,6 +31,12 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Installer test
+        run: ./tests/install_test.sh
+
+      - name: Uninstaller test
+        run: ./tests/uninstall_test.sh
+
       - name: Race test
         run: go test -race ./...
 

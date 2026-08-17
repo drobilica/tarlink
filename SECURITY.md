@@ -15,9 +15,9 @@ Do not include real credentials, private registry URLs, or user data in a report
 
 ## Scope
 
-Reports involving archive extraction, path/link traversal, checksum or HTTPS policy bypasses, registry generation validation, atomic activation, state corruption, privilege escalation, or denial of service are high priority. TarLink does not sandbox installed applications; bugs in an application after activation are outside TarLink's boundary unless TarLink caused the unsafe execution.
+Reports involving archive extraction, path/link traversal, digest or HTTPS bypasses, registry generation validation, ownership validation, purge deletion, atomic activation, state corruption, privilege escalation, or denial of service are high priority. TarLink does not sandbox installed applications; bugs in an application after activation are outside TarLink's boundary unless TarLink caused the unsafe execution.
 
-The project supports Linux amd64 and rootless operation. A report requiring root or a system service is not representative of the supported deployment model.
+The project supports rootless Linux amd64 and arm64 clients. Application availability remains manifest-architecture-specific. A report requiring root or a system service is not representative of the supported deployment model.
 
 ## Security guarantees
 

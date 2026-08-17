@@ -25,7 +25,6 @@ type Progress struct {
 	AppID      string        `json:"app_id,omitempty"`
 	BytesDone  int64         `json:"bytes_done,omitempty"`
 	BytesTotal int64         `json:"bytes_total,omitempty"`
-	Message    string        `json:"message,omitempty"`
 }
 
 type ProgressSink func(Progress)
@@ -66,13 +65,15 @@ type Service interface {
 	Install(context.Context, string, ProgressSink) (Result, error)
 	Update(context.Context, string, ProgressSink) (Result, error)
 	UpdateAll(context.Context, ProgressSink) (UpdateAllResult, error)
-	Remove(context.Context, string, ProgressSink) error
+	Uninstall(context.Context, string, ProgressSink) error
+	UninstallAll(context.Context, ProgressSink) error
 	Rollback(context.Context, string, ProgressSink) (Result, error)
 	List(context.Context) ([]Application, error)
 	Info(context.Context, string) (Application, error)
 	Search(context.Context, string) ([]Application, error)
 	Versions(context.Context, string) ([]Version, error)
 	SyncRegistry(context.Context, ProgressSink) error
+	ValidateRegistry(context.Context, string) error
 }
 
 type ErrorCode string

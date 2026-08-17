@@ -5,7 +5,6 @@ package manifest
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -46,10 +45,16 @@ type Platform struct {
 }
 
 type Release struct {
-	Version string `yaml:"version" json:"version"`
-	URL     string `yaml:"url" json:"url"`
-	SHA256  string `yaml:"sha256" json:"sha256"`
-	Archive string `yaml:"archive" json:"archive"`
+	Version      string       `yaml:"version" json:"version"`
+	URL          string       `yaml:"url" json:"url"`
+	Verification Verification `yaml:"verification" json:"verification"`
+	Archive      string       `yaml:"archive" json:"archive"`
+}
+
+type Verification struct {
+	Algorithm string `yaml:"algorithm" json:"algorithm"`
+	Digest    string `yaml:"digest" json:"digest"`
+	Source    string `yaml:"source" json:"source"`
 }
 
 type Application struct {
@@ -143,7 +148,11 @@ func validateManifestShape(document *yaml.Node) error {
 	if _, err := requiredMapping(root["platform"], "platform", []string{"os", "arch"}, nil); err != nil {
 		return err
 	}
-	if _, err := requiredMapping(root["release"], "release", []string{"version", "url", "sha256", "archive"}, nil); err != nil {
+	release, err := requiredMapping(root["release"], "release", []string{"version", "url", "verification", "archive"}, nil)
+	if err != nil {
+		return err
+	}
+	if _, err := requiredMapping(release["verification"], "release.verification", []string{"algorithm", "digest", "source"}, nil); err != nil {
 		return err
 	}
 	if _, err := requiredMapping(root["application"], "application", []string{"executable"}, nil); err != nil {
@@ -211,7 +220,7 @@ func (m Manifest) Validate() error {
 	if m.Platform.OS != "linux" {
 		return fmt.Errorf("unsupported operating system %q", m.Platform.OS)
 	}
-	if m.Platform.Arch != "amd64" {
+	if m.Platform.Arch != "amd64" && m.Platform.Arch != "arm64" {
 		return fmt.Errorf("unsupported architecture %q", m.Platform.Arch)
 	}
 	if err := constrainedText("release version", m.Release.Version, 1, 128); err != nil {
@@ -223,8 +232,14 @@ func (m Manifest) Validate() error {
 	if err := validateHTTPSURL("release URL", m.Release.URL); err != nil {
 		return err
 	}
-	if !ValidSHA256(m.Release.SHA256) {
-		return errors.New("release sha256 must be exactly 64 lowercase hexadecimal characters")
+	if err := validateHTTPSURL("release verification source", m.Release.Verification.Source); err != nil {
+		return err
+	}
+	if m.Release.Verification.Source == m.Release.URL {
+		return errors.New("release verification source must be a separate checksum metadata URL")
+	}
+	if err := ValidateDigest(m.Release.Verification.Algorithm, m.Release.Verification.Digest); err != nil {
+		return err
 	}
 	switch m.Release.Archive {
 	case "tar.gz", "tar.xz", "zip":
@@ -250,12 +265,24 @@ func ValidID(id string) bool {
 	return len(id) <= 80 && idPattern.MatchString(id)
 }
 
-func ValidSHA256(value string) bool {
-	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
-		return false
+func ValidateDigest(algorithm, value string) error {
+	var size int
+	switch algorithm {
+	case "sha256":
+		size = 32
+	case "sha512":
+		size = 64
+	default:
+		return fmt.Errorf("unsupported release verification algorithm %q", algorithm)
+	}
+	if len(value) != size*2 || strings.ToLower(value) != value {
+		return fmt.Errorf("release verification digest must be exactly %d lowercase hexadecimal characters", size*2)
 	}
 	decoded, err := hex.DecodeString(value)
-	return err == nil && len(decoded) == sha256.Size
+	if err != nil || len(decoded) != size {
+		return fmt.Errorf("release verification digest must be exactly %d lowercase hexadecimal characters", size*2)
+	}
+	return nil
 }
 
 // ValidateRelativePath accepts only canonical slash-separated paths below an

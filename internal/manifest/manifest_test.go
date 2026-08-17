@@ -19,7 +19,10 @@ platform:
 release:
   version: "5.2.0"
   url: https://download.blender.org/release/Blender5.2/blender.tar.xz
-  sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  verification:
+    algorithm: sha256
+    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256
   archive: tar.xz
 application:
   executable: blender
@@ -39,17 +42,51 @@ func TestParseValidManifest(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsSHA512Verification(t *testing.T) {
+	sha512Manifest := strings.Replace(validManifest,
+		"algorithm: sha256\n    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"algorithm: sha512\n    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", 1)
+	if _, err := Parse(strings.NewReader(sha512Manifest)); err != nil {
+		t.Fatalf("Parse() SHA-512 error = %v", err)
+	}
+}
+
+func TestParseAcceptsArm64Manifest(t *testing.T) {
+	arm64Manifest := strings.Replace(validManifest, "arch: amd64", "arch: arm64", 1)
+	if _, err := Parse(strings.NewReader(arm64Manifest)); err != nil {
+		t.Fatalf("Parse() arm64 error = %v", err)
+	}
+}
+
 func TestParseRejectsInvalidManifest(t *testing.T) {
 	tests := map[string]func(string) string{
 		"unknown field": func(s string) string { return s + "script: echo unsafe\n" },
 		"script-like nested field": func(s string) string {
 			return strings.Replace(s, "  executable: blender", "  executable: blender\n  command: ./blender", 1)
 		},
-		"missing sha": func(s string) string {
-			return strings.Replace(s, "  sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n", "", 1)
+		"missing verification": func(s string) string {
+			return strings.Replace(s, "  verification:\n    algorithm: sha256\n    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n    source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
 		},
-		"malformed sha": func(s string) string {
+		"malformed digest": func(s string) string {
 			return strings.Replace(s, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "xyz", 1)
+		},
+		"unsupported algorithm": func(s string) string {
+			return strings.Replace(s, "algorithm: sha256", "algorithm: md5", 1)
+		},
+		"sha512 wrong length": func(s string) string {
+			return strings.Replace(s, "algorithm: sha256", "algorithm: sha512", 1)
+		},
+		"uppercase digest": func(s string) string {
+			return strings.Replace(s, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef", 1)
+		},
+		"invalid verification source": func(s string) string {
+			return strings.Replace(s, "source: https://download.blender.org", "source: http://download.blender.org", 1)
+		},
+		"verification source credentials": func(s string) string {
+			return strings.Replace(s, "source: https://download.blender.org", "source: https://user:pass@download.blender.org", 1)
+		},
+		"verification source is release": func(s string) string {
+			return strings.Replace(s, "source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256", "source: https://download.blender.org/release/Blender5.2/blender.tar.xz", 1)
 		},
 		"HTTP URL": func(s string) string {
 			return strings.Replace(s, "https://download.blender.org", "http://download.blender.org", 1)
@@ -63,11 +100,10 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 		"Windows path": func(s string) string {
 			return strings.Replace(s, "executable: blender", `executable: 'C:\\blender.exe'`, 1)
 		},
-		"unsupported archive":      func(s string) string { return strings.Replace(s, "archive: tar.xz", "archive: 7z", 1) },
-		"unsupported OS":           func(s string) string { return strings.Replace(s, "os: linux", "os: windows", 1) },
-		"unsupported architecture": func(s string) string { return strings.Replace(s, "arch: amd64", "arch: arm64", 1) },
-		"second document":          func(s string) string { return s + "---\nschema: 1\n" },
-		"YAML alias":               func(s string) string { return strings.Replace(s, "name: Blender", "name: &n Blender", 1) },
+		"unsupported archive": func(s string) string { return strings.Replace(s, "archive: tar.xz", "archive: 7z", 1) },
+		"unsupported OS":      func(s string) string { return strings.Replace(s, "os: linux", "os: windows", 1) },
+		"second document":     func(s string) string { return s + "---\nschema: 1\n" },
+		"YAML alias":          func(s string) string { return strings.Replace(s, "name: Blender", "name: &n Blender", 1) },
 		"missing desktop enabled": func(s string) string {
 			return strings.Replace(s, "  enabled: true\n", "", 1)
 		},

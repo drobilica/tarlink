@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/drobilica/tarlink/internal/archive"
 	"github.com/drobilica/tarlink/internal/download"
@@ -23,31 +24,39 @@ import (
 )
 
 type Core struct {
-	layout    filesystem.Layout
-	installer *install.Manager
-	syncer    *registry.Syncer
+	layout         filesystem.Layout
+	installer      *install.Manager
+	syncer         *registry.Syncer
+	now            func() time.Time
+	registryMaxAge time.Duration
+	goos           string
+	goarch         string
 }
 
 func NewCore(layout filesystem.Layout, client *download.Client) (*Core, error) {
-	if err := CheckEnvironment(); err != nil {
-		return nil, err
-	}
 	installer := install.New(layout, client)
 	syncer := &registry.Syncer{
 		CacheRoot: filepath.Join(layout.Cache, "registry"),
 		LocksRoot: layout.Locks,
 		Client:    client,
 	}
-	return &Core{layout: layout, installer: installer, syncer: syncer}, nil
+	return &Core{
+		layout: layout, installer: installer, syncer: syncer,
+		now: time.Now, registryMaxAge: registry.DefaultMaxAge,
+		goos: runtime.GOOS, goarch: runtime.GOARCH,
+	}, nil
 }
 
 func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
-	item, catalog, err := core.resolve(appID)
+	item, _, err := core.resolve(ctx, appID, sink)
 	if err != nil {
 		return Result{}, err
 	}
-	core.emit(sink, ProgressResolving, appID, 0, 0, "")
-	outcome, err := core.installer.Install(ctx, item, core.allowed(catalog, appID), core.progress(sink, appID))
+	if err := core.checkManifestPlatform(item); err != nil {
+		return Result{}, err
+	}
+	core.emit(sink, ProgressResolving, appID, 0, 0)
+	outcome, err := core.installer.Install(ctx, item, core.progress(sink, appID))
 	if err != nil {
 		return Result{}, classify("install "+appID, err)
 	}
@@ -55,12 +64,15 @@ func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) 
 }
 
 func (core *Core) Update(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
-	item, catalog, err := core.resolve(appID)
+	item, _, err := core.resolve(ctx, appID, sink)
 	if err != nil {
 		return Result{}, err
 	}
-	core.emit(sink, ProgressResolving, appID, 0, 0, "")
-	outcome, err := core.installer.Update(ctx, item, core.allowed(catalog, appID), core.progress(sink, appID))
+	if err := core.checkManifestPlatform(item); err != nil {
+		return Result{}, err
+	}
+	core.emit(sink, ProgressResolving, appID, 0, 0)
+	outcome, err := core.installer.Update(ctx, item, core.progress(sink, appID))
 	if err != nil {
 		return Result{}, classify("update "+appID, err)
 	}
@@ -92,16 +104,6 @@ func (core *Core) UpdateAll(ctx context.Context, sink ProgressSink) (UpdateAllRe
 	return result, nil
 }
 
-func (core *Core) Remove(ctx context.Context, appID string, sink ProgressSink) error {
-	if err := filesystem.ValidateID(appID); err != nil {
-		return &Error{Code: CodeInvalidArguments, Op: "remove", Err: err}
-	}
-	if err := core.installer.Remove(ctx, appID, core.progress(sink, appID)); err != nil {
-		return classify("remove "+appID, err)
-	}
-	return nil
-}
-
 func (core *Core) Rollback(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
 	if err := filesystem.ValidateID(appID); err != nil {
 		return Result{}, &Error{Code: CodeInvalidArguments, Op: "rollback", Err: err}
@@ -118,7 +120,7 @@ func (core *Core) List(context.Context) ([]Application, error) {
 	if err != nil {
 		return nil, err
 	}
-	catalog, catalogErr := core.catalog()
+	catalog, catalogErr := registry.Open(filepath.Join(core.layout.Cache, "registry"))
 	result := make([]Application, 0, len(states))
 	for _, installed := range states {
 		value := Application{
@@ -135,8 +137,8 @@ func (core *Core) List(context.Context) ([]Application, error) {
 	return result, nil
 }
 
-func (core *Core) Info(_ context.Context, appID string) (Application, error) {
-	item, _, err := core.resolve(appID)
+func (core *Core) Info(ctx context.Context, appID string) (Application, error) {
+	item, _, err := core.resolve(ctx, appID, nil)
 	if err != nil {
 		return Application{}, err
 	}
@@ -150,8 +152,8 @@ func (core *Core) Info(_ context.Context, appID string) (Application, error) {
 	return applicationFrom(item, &installed), nil
 }
 
-func (core *Core) Search(_ context.Context, query string) ([]Application, error) {
-	catalog, err := core.catalog()
+func (core *Core) Search(ctx context.Context, query string) ([]Application, error) {
+	catalog, err := core.catalog(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -190,32 +192,78 @@ func (core *Core) Versions(_ context.Context, appID string) ([]Version, error) {
 }
 
 func (core *Core) SyncRegistry(ctx context.Context, sink ProgressSink) error {
-	core.syncer.Progress = func(stage string, current, total int64) {
-		mapped := ProgressStage(stage)
-		if stage == "validating" {
-			mapped = ProgressVerifying
-		}
-		core.emit(sink, mapped, "", current, total, "")
-	}
-	if err := core.syncer.Sync(ctx); err != nil {
+	if err := core.installer.WithLifecycle(ctx, func() error { return core.syncRegistry(ctx, sink) }); err != nil {
 		return classify("registry sync", err)
 	}
 	return nil
 }
 
-func (core *Core) catalog() (*registry.Catalog, error) {
-	catalog, err := registry.Open(filepath.Join(core.layout.Cache, "registry"))
+func (core *Core) ValidateRegistry(_ context.Context, root string) error {
+	absolute, err := filepath.Abs(root)
 	if err != nil {
-		return nil, classify("open registry", err)
+		return classify("registry validate", err)
 	}
-	return catalog, nil
+	if _, err := registry.ValidateTree(absolute); err != nil {
+		return classify("registry validate", err)
+	}
+	return nil
 }
 
-func (core *Core) resolve(appID string) (*manifest.Manifest, *registry.Catalog, error) {
+func (core *Core) syncRegistry(ctx context.Context, sink ProgressSink) error {
+	core.syncer.Progress = func(stage string, current, total int64) {
+		mapped := ProgressStage(stage)
+		if stage == "validating" {
+			mapped = ProgressVerifying
+		}
+		core.emit(sink, mapped, "", current, total)
+	}
+	return core.syncer.Sync(ctx)
+}
+
+func (core *Core) catalog(ctx context.Context, sink ProgressSink) (*registry.Catalog, error) {
+	cacheRoot := filepath.Join(core.layout.Cache, "registry")
+	cached, cacheErr := registry.Open(cacheRoot)
+	now := time.Now
+	if core.now != nil {
+		now = core.now
+	}
+	maxAge := core.registryMaxAge
+	if maxAge <= 0 {
+		maxAge = registry.DefaultMaxAge
+	}
+	if cacheErr == nil && !cached.Stale(now(), maxAge) {
+		return cached, nil
+	}
+	var syncErr error
+	if lifecycleErr := core.installer.WithLifecycle(ctx, func() error {
+		syncErr = core.syncRegistry(ctx, sink)
+		return syncErr
+	}); lifecycleErr != nil {
+		syncErr = lifecycleErr
+	}
+	if syncErr != nil {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+		}
+		if cacheErr == nil {
+			return cached, nil
+		}
+		return nil, classify("refresh registry", syncErr)
+	}
+	refreshed, err := registry.Open(cacheRoot)
+	if err != nil {
+		return nil, classify("open refreshed registry", err)
+	}
+	return refreshed, nil
+}
+
+func (core *Core) resolve(ctx context.Context, appID string, sink ProgressSink) (*manifest.Manifest, *registry.Catalog, error) {
 	if err := filesystem.ValidateID(appID); err != nil {
 		return nil, nil, &Error{Code: CodeInvalidArguments, Op: "resolve application", Err: err}
 	}
-	catalog, err := core.catalog()
+	catalog, err := core.catalog(ctx, sink)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -226,8 +274,22 @@ func (core *Core) resolve(appID string) (*manifest.Manifest, *registry.Catalog, 
 	return item, catalog, nil
 }
 
-func (core *Core) allowed(catalog *registry.Catalog, appID string) download.URLPolicy {
-	return func(candidate *url.URL) bool { return catalog.Policy.Allows(appID, candidate) }
+func (core *Core) checkManifestPlatform(item *manifest.Manifest) error {
+	goos, goarch := core.goos, core.goarch
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+	if item.Platform.OS != goos || item.Platform.Arch != goarch {
+		return &Error{
+			Code: CodeUnsupportedPlatform,
+			Op:   "resolve application",
+			Err:  fmt.Errorf("%s is available for %s/%s, not %s/%s", item.ID, item.Platform.OS, item.Platform.Arch, goos, goarch),
+		}
+	}
+	return nil
 }
 
 func (core *Core) installedStates() ([]state.State, error) {
@@ -272,13 +334,13 @@ func applicationFrom(item *manifest.Manifest, installed *state.State) Applicatio
 
 func (core *Core) progress(sink ProgressSink, appID string) install.Progress {
 	return func(stage string, current, total int64) {
-		core.emit(sink, ProgressStage(stage), appID, current, total, "")
+		core.emit(sink, ProgressStage(stage), appID, current, total)
 	}
 }
 
-func (core *Core) emit(sink ProgressSink, stage ProgressStage, appID string, current, total int64, message string) {
+func (core *Core) emit(sink ProgressSink, stage ProgressStage, appID string, current, total int64) {
 	if sink != nil {
-		sink(Progress{Stage: stage, AppID: appID, BytesDone: current, BytesTotal: total, Message: message})
+		sink(Progress{Stage: stage, AppID: appID, BytesDone: current, BytesTotal: total})
 	}
 }
 

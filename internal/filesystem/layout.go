@@ -45,7 +45,7 @@ func LayoutFor(home string, getenv func(string) string) (Layout, error) {
 	if getenv == nil {
 		getenv = func(string) string { return "" }
 	}
-	if !filepath.IsAbs(home) || filepath.Clean(home) != home {
+	if !validLayoutPath(home) || !filepath.IsAbs(home) || filepath.Clean(home) != home {
 		return Layout{}, errors.New("home must be an absolute, clean path")
 	}
 	resolve := func(name, fallback string) (string, error) {
@@ -53,8 +53,8 @@ func LayoutFor(home string, getenv func(string) string) (Layout, error) {
 		if value == "" {
 			value = fallback
 		}
-		if !filepath.IsAbs(value) || filepath.Clean(value) != value {
-			return "", fmt.Errorf("%s must be an absolute, clean path", name)
+		if !validLayoutPath(value) || !filepath.IsAbs(value) || filepath.Clean(value) != value || !contained(home, value) {
+			return "", fmt.Errorf("%s must be an absolute, clean path within home", name)
 		}
 		return value, nil
 	}
@@ -79,6 +79,18 @@ func LayoutFor(home string, getenv func(string) string) (Layout, error) {
 	l.Bin = filepath.Join(home, ".local", "bin")
 	l.Desktop = filepath.Join(data, "applications")
 	return l, nil
+}
+
+func validLayoutPath(value string) bool {
+	if value == "" || !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
+		return false
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return false
+		}
+	}
+	return true
 }
 
 // Ensure creates TarLink's private directories. Integration directories are

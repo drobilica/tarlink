@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -418,6 +419,42 @@ func TestBlenderUpstreamArchiveCompatibility(t *testing.T) {
 	}
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode()&0o111 == 0 {
 		t.Fatalf("Blender executable has unsafe or unusable mode %s", info.Mode())
+	}
+}
+
+func TestGodotUpstreamArchiveCompatibility(t *testing.T) {
+	source := os.Getenv("TARLINK_UPSTREAM_GODOT_ARCHIVE")
+	if source == "" {
+		t.Skip("set TARLINK_UPSTREAM_GODOT_ARCHIVE for the upstream acceptance test")
+	}
+	file, err := os.Open(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasher := sha512.New()
+	if _, err := io.Copy(hasher, file); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	const expected = "4ccdab7a48eeccbe8819a2fc1f6262f8d72065d98601bcb3743fcbd7ebd39f373758a788ee3293a05ec5b2c48538266c437404312e372225cd2df273945a2de9"
+	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != expected {
+		t.Fatalf("SHA-512 = %s, want %s", actual, expected)
+	}
+
+	destination := t.TempDir()
+	if err := ExtractPath(context.Background(), source, destination, FormatZip, DefaultLimits()); err != nil {
+		t.Fatalf("safe extraction rejected the reviewed Godot artifact: %v", err)
+	}
+	executable := filepath.Join(destination, "Godot_v4.7.1-stable_linux.x86_64")
+	info, err := os.Lstat(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode()&0o111 == 0 {
+		t.Fatalf("Godot executable has unsafe or unusable mode %s", info.Mode())
 	}
 }
 

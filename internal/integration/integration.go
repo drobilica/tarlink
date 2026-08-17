@@ -57,6 +57,9 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 		content := DesktopFile(spec, paths.ExecutableLink)
 		createdDesktop, err = ensureDesktop(paths.DesktopEntry, spec.ID, content)
 		if err != nil {
+			if createdDesktop {
+				_ = os.Remove(paths.DesktopEntry)
+			}
 			if createdLink {
 				_ = os.Remove(paths.ExecutableLink)
 			}
@@ -86,7 +89,7 @@ func DesktopFile(spec Spec, executableLink string) []byte {
 		"Type=Application",
 		"Name=" + desktopText(spec.Name),
 		"Exec=" + desktopExec(executableLink),
-		"TryExec=" + executableLink,
+		"TryExec=" + desktopExec(executableLink),
 		"Icon=application-x-executable",
 		"Terminal=false",
 		"Categories=" + categories,
@@ -103,10 +106,16 @@ func DesktopDigest(spec Spec, executableLink string) string {
 func ValidateOwned(spec Spec) error {
 	paths := ExpectedPaths(spec)
 	target := filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executable))
+	if err := validateIntegrationParent(paths.ExecutableLink); err != nil {
+		return err
+	}
 	if err := validateSymlink(paths.ExecutableLink, target); err != nil {
 		return err
 	}
 	if spec.DesktopEnabled {
+		if err := validateIntegrationParent(paths.DesktopEntry); err != nil {
+			return err
+		}
 		if err := validateDesktop(paths.DesktopEntry, spec.ID, spec.DesktopSHA256); err != nil {
 			return err
 		}
@@ -114,8 +123,37 @@ func ValidateOwned(spec Spec) error {
 	return nil
 }
 
+func ValidateOwnedForRemoval(spec Spec) error {
+	paths := ExpectedPaths(spec)
+	target := filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executable))
+	if err := validateIntegrationParent(paths.ExecutableLink); err != nil {
+		return err
+	}
+	if err := validateSymlinkForRemoval(paths.ExecutableLink, target); err != nil {
+		return err
+	}
+	if spec.DesktopEnabled {
+		if err := validateIntegrationParent(paths.DesktopEntry); err != nil {
+			return err
+		}
+		if err := validateDesktopForRemoval(paths.DesktopEntry, spec.ID, spec.DesktopSHA256); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateIntegrationParent(path string) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect integration: %w", err)
+	}
+	return filesystem.CheckOwnedDirectory(filepath.Dir(path))
+}
+
 func RemoveOwned(spec Spec) error {
-	if err := ValidateOwned(spec); err != nil {
+	if err := ValidateOwnedForRemoval(spec); err != nil {
 		return err
 	}
 	paths := ExpectedPaths(spec)
@@ -177,14 +215,29 @@ func ensureDesktop(path, id string, content []byte) (bool, error) {
 	if !os.IsNotExist(err) {
 		return false, err
 	}
-	if err := atomicCreate(path, content, 0o644); err != nil {
-		return false, err
-	}
-	return true, nil
+	return atomicCreate(path, content, 0o644)
 }
 
 func validateSymlink(link, target string) error {
 	info, err := os.Lstat(link)
+	if err != nil {
+		return fmt.Errorf("inspect executable integration: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("%w: %s", ErrConflict, link)
+	}
+	existing, err := os.Readlink(link)
+	if err != nil || existing != target {
+		return fmt.Errorf("%w: %s", ErrConflict, link)
+	}
+	return nil
+}
+
+func validateSymlinkForRemoval(link, target string) error {
+	info, err := os.Lstat(link)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("inspect executable integration: %w", err)
 	}
@@ -235,10 +288,23 @@ func validateDesktop(path, id, expectedSHA256 string) error {
 	return nil
 }
 
-func atomicCreate(path string, content []byte, mode os.FileMode) error {
+func validateDesktopForRemoval(path, id, expectedSHA256 string) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect desktop integration: %w", err)
+	}
+	return validateDesktop(path, id, expectedSHA256)
+}
+
+func atomicCreate(path string, content []byte, mode os.FileMode) (bool, error) {
+	return atomicCreateWithSync(path, content, mode, syncDirectory)
+}
+
+func atomicCreateWithSync(path string, content []byte, mode os.FileMode, syncDir func(string) error) (bool, error) {
 	temporary, err := os.CreateTemp(filepath.Dir(path), ".tarlink-desktop-*")
 	if err != nil {
-		return err
+		return false, err
 	}
 	name := temporary.Name()
 	keep := false
@@ -249,38 +315,42 @@ func atomicCreate(path string, content []byte, mode os.FileMode) error {
 		}
 	}()
 	if err := temporary.Chmod(mode); err != nil {
-		return err
+		return false, err
 	}
 	if _, err := temporary.Write(content); err != nil {
-		return err
+		return false, err
 	}
 	if err := temporary.Sync(); err != nil {
-		return err
+		return false, err
 	}
 	if err := temporary.Close(); err != nil {
-		return err
+		return false, err
 	}
 	// Linking a completely written temporary inode into place is atomic and
 	// fails instead of overwriting a concurrently created user file.
 	if err := os.Link(name, path); err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("%w: %s", ErrConflict, path)
+			return false, fmt.Errorf("%w: %s", ErrConflict, path)
 		}
-		return err
+		return false, err
 	}
 	if err := os.Remove(name); err != nil {
-		return err
+		return true, err
 	}
-	directory, err := os.Open(filepath.Dir(path))
+	if err := syncDir(filepath.Dir(path)); err != nil {
+		return true, err
+	}
+	keep = true
+	return true, nil
+}
+
+func syncDirectory(path string) error {
+	directory, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer directory.Close()
-	if err := directory.Sync(); err != nil {
-		return err
-	}
-	keep = true
-	return nil
+	return directory.Sync()
 }
 
 func desktopText(value string) string {
@@ -291,7 +361,7 @@ func desktopText(value string) string {
 }
 
 func desktopExec(value string) string {
-	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "`", "\\`", "$", "\\$", "%", "%%")
+	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "`", "\\`", "$", "\\$", "%", "%%", "\n", " ", "\r", " ")
 	return "\"" + replacer.Replace(value) + "\""
 }
 
