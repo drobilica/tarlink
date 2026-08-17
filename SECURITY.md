@@ -17,7 +17,7 @@ Do not include real credentials, private registry URLs, or user data in a report
 
 Reports involving archive extraction, path/link traversal, digest or HTTPS bypasses, registry generation validation, ownership validation, purge deletion, atomic activation, state corruption, privilege escalation, or denial of service are high priority. TarLink does not sandbox installed applications; bugs in an application after activation are outside TarLink's boundary unless TarLink caused the unsafe execution.
 
-The project supports rootless Linux amd64 and arm64 clients. Application availability remains manifest-architecture-specific. A report requiring root or a system service is not representative of the supported deployment model.
+The project supports rootless Linux amd64 and arm64 clients. Application availability is an exact manifest-platform decision: the client uses its `GOOS`/`GOARCH` pair and never falls back to another variant. A report requiring root or a system service is not representative of the supported deployment model.
 
 ## Security guarantees
 

@@ -23,7 +23,9 @@ CGO_ENABLED=0 go build ./...
 
 ## Registry changes
 
-Registry updates must use authoritative upstream HTTPS release and checksum-source URLs plus the exact lowercase digest for the algorithm upstream publishes. SHA-256 and SHA-512 are supported; do not substitute an algorithm or derive a replacement digest. Validate the registry with TarLink itself: `tarlink registry validate .`.
+Registry updates must use authoritative upstream HTTPS release and checksum-source URLs plus the exact lowercase SHA-256 digest published by upstream. Non-SHA-256 algorithms, substituted algorithms, and derived replacement digests are not accepted. Store each platform manifest at the strict path `apps/<id>/linux-amd64.yaml` or `apps/<id>/linux-arm64.yaml`; do not add a compatibility filename. Validate the registry with TarLink itself: `tarlink registry validate .`.
+
+Platform availability is explicit. The client resolves its exact `GOOS`/`GOARCH` pair and fails when that variant is absent; it never substitutes another platform. For example, Blender is amd64-only when upstream has no Linux arm64 release, while Godot may publish both variants. Keep shared metadata identical across an application's platform manifests.
 
 ## Review expectations
 

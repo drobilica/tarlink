@@ -32,8 +32,8 @@
 
 | Threat | Control |
 | --- | --- |
-| Wrong release bytes | Strict SHA-256/SHA-512 digest from reviewed upstream checksum provenance |
-| Weak or ambiguous verification | Explicit algorithm, fixed digest length, lowercase hex, HTTPS source; MD5/SHA-1 rejected |
+| Wrong release bytes | Strict SHA-256 digest from reviewed upstream checksum provenance |
+| Weak or ambiguous verification | Explicit SHA-256 algorithm, fixed digest length, lowercase hex, HTTPS source; other algorithms rejected |
 | Alternate registry substitution | Exact compiled HTTPS source, bounded staged archive, direct manifest validation, normalized immutable generation |
 | Offline or failed refresh | Previously validated cache remains active; absent/invalid cache cannot fall back |
 | Zip-slip / tar traversal | UTF-8 canonical relative paths with depth and length limits |
