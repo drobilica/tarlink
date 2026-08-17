@@ -7,7 +7,6 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -423,38 +422,48 @@ func TestBlenderUpstreamArchiveCompatibility(t *testing.T) {
 }
 
 func TestGodotUpstreamArchiveCompatibility(t *testing.T) {
-	source := os.Getenv("TARLINK_UPSTREAM_GODOT_ARCHIVE")
-	if source == "" {
-		t.Skip("set TARLINK_UPSTREAM_GODOT_ARCHIVE for the upstream acceptance test")
-	}
-	file, err := os.Open(source)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hasher := sha512.New()
-	if _, err := io.Copy(hasher, file); err != nil {
-		file.Close()
-		t.Fatal(err)
-	}
-	if err := file.Close(); err != nil {
-		t.Fatal(err)
-	}
-	const expected = "4ccdab7a48eeccbe8819a2fc1f6262f8d72065d98601bcb3743fcbd7ebd39f373758a788ee3293a05ec5b2c48538266c437404312e372225cd2df273945a2de9"
-	if actual := hex.EncodeToString(hasher.Sum(nil)); actual != expected {
-		t.Fatalf("SHA-512 = %s, want %s", actual, expected)
-	}
+	for _, test := range []struct {
+		name        string
+		environment string
+		digest      string
+		executable  string
+	}{
+		{name: "amd64", environment: "TARLINK_UPSTREAM_GODOT_ARCHIVE", digest: "c7ff14fd28472c8d4f193043de30278dcf7e5241a1dcf7566b02e27addaa33ba", executable: "Godot_v4.7.1-stable_linux.x86_64"},
+		{name: "arm64", environment: "TARLINK_UPSTREAM_GODOT_ARM64_ARCHIVE", digest: "8f527179cd4ae58b402fa265fe817dc505e5b6b14574f309efe57113be562ac1", executable: "Godot_v4.7.1-stable_linux.arm64"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := os.Getenv(test.environment)
+			if source == "" {
+				t.Skipf("set %s for the upstream acceptance test", test.environment)
+			}
+			file, err := os.Open(source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hasher := sha256.New()
+			if _, err := io.Copy(hasher, file); err != nil {
+				file.Close()
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if actual := hex.EncodeToString(hasher.Sum(nil)); actual != test.digest {
+				t.Fatalf("SHA-256 = %s, want %s", actual, test.digest)
+			}
 
-	destination := t.TempDir()
-	if err := ExtractPath(context.Background(), source, destination, FormatZip, DefaultLimits()); err != nil {
-		t.Fatalf("safe extraction rejected the reviewed Godot artifact: %v", err)
-	}
-	executable := filepath.Join(destination, "Godot_v4.7.1-stable_linux.x86_64")
-	info, err := os.Lstat(executable)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode()&0o111 == 0 {
-		t.Fatalf("Godot executable has unsafe or unusable mode %s", info.Mode())
+			destination := t.TempDir()
+			if err := ExtractPath(context.Background(), source, destination, FormatZip, DefaultLimits()); err != nil {
+				t.Fatalf("safe extraction rejected the reviewed Godot artifact: %v", err)
+			}
+			info, err := os.Lstat(filepath.Join(destination, test.executable))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode()&0o111 == 0 {
+				t.Fatalf("Godot executable has unsafe or unusable mode %s", info.Mode())
+			}
+		})
 	}
 }
 

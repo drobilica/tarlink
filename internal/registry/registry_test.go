@@ -34,7 +34,7 @@ func createRegistry(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(root, "apps", "blender"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(testManifest), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-amd64.yaml"), []byte(testManifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root
@@ -49,18 +49,18 @@ func TestValidateTreeAndSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ValidateTree() error = %v", err)
 	}
-	if got := catalog.Search("3d"); len(got) != 1 || got[0].ID != "blender" {
-		t.Fatalf("Search() = %#v", got)
+	if got := catalog.SearchForPlatform("3d", "linux", "amd64"); len(got) != 1 || got[0].ID != "blender" {
+		t.Fatalf("SearchForPlatform() = %#v", got)
 	}
-	if got := catalog.Search("emulation"); len(got) != 0 {
-		t.Fatalf("Search() = %#v", got)
+	if got := catalog.SearchForPlatform("emulation", "linux", "amd64"); len(got) != 0 {
+		t.Fatalf("SearchForPlatform() = %#v", got)
 	}
 }
 
 func TestValidateTreeRejectsInvalidApplicationData(t *testing.T) {
 	t.Run("manifest URL", func(t *testing.T) {
 		root := createRegistry(t)
-		path := filepath.Join(root, "apps", "blender", "manifest.yaml")
+		path := filepath.Join(root, "apps", "blender", "linux-amd64.yaml")
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -82,6 +82,108 @@ func TestValidateTreeRejectsInvalidApplicationData(t *testing.T) {
 			t.Fatal("extra application file unexpectedly accepted")
 		}
 	})
+}
+
+func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
+	root := createRegistry(t)
+	arm64 := strings.Replace(testManifest, "arch: amd64", "arch: arm64", 1)
+	arm64 = strings.Replace(arm64, `version: "5.2.0"`, `version: "5.2.0-arm64"`, 1)
+	arm64 = strings.Replace(arm64, "executable: blender", "executable: blender-arm64", 1)
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-arm64.yaml"), []byte(arm64), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := ValidateTree(root)
+	if err != nil {
+		t.Fatalf("ValidateTree() error = %v", err)
+	}
+	amd64, err := catalog.ManifestForPlatform("blender", "linux", "amd64")
+	if err != nil {
+		t.Fatalf("amd64 lookup error = %v", err)
+	}
+	if amd64.Release.Version != "5.2.0" || amd64.Application.Executable != "blender" {
+		t.Fatalf("amd64 manifest = %#v", amd64)
+	}
+	arm, err := catalog.ManifestForPlatform("blender", "linux", "arm64")
+	if err != nil {
+		t.Fatalf("arm64 lookup error = %v", err)
+	}
+	if arm.Release.Version != "5.2.0-arm64" || arm.Application.Executable != "blender-arm64" {
+		t.Fatalf("arm64 manifest = %#v", arm)
+	}
+	if got := catalog.SearchForPlatform("3d", "linux", "arm64"); len(got) != 1 || got[0].ID != "blender" || got[0].Release.Version != "5.2.0-arm64" || got[0].Application.Executable != "blender-arm64" {
+		t.Fatalf("arm64 SearchForPlatform() = %#v", got)
+	}
+}
+
+func TestValidateTreeRejectsPlatformLayoutViolations(t *testing.T) {
+	tests := map[string]func(string) (string, string){
+		"legacy manifest filename": func(root string) (string, string) {
+			return filepath.Join(root, "apps", "blender", "manifest.yaml"), testManifest
+		},
+		"mismatched filename": func(root string) (string, string) {
+			return filepath.Join(root, "apps", "blender", "linux-arm64.yaml"), testManifest
+		},
+		"unexpected platform filename": func(root string) (string, string) {
+			return filepath.Join(root, "apps", "blender", "darwin-amd64.yaml"), testManifest
+		},
+	}
+	for name, setup := range tests {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "apps", "blender"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			path, content := setup(root)
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ValidateTree(root); err == nil {
+				t.Fatal("invalid platform layout unexpectedly accepted")
+			}
+		})
+	}
+}
+
+func TestValidateTreeRejectsInconsistentVariantsAndDuplicateNames(t *testing.T) {
+	t.Run("inconsistent shared metadata", func(t *testing.T) {
+		root := createRegistry(t)
+		arm64 := strings.Replace(testManifest, "arch: amd64", "arch: arm64", 1)
+		arm64 = strings.Replace(arm64, "summary: 3D creation suite", "summary: Different summary", 1)
+		if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-arm64.yaml"), []byte(arm64), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ValidateTree(root); err == nil {
+			t.Fatal("inconsistent variants unexpectedly accepted")
+		}
+	})
+	t.Run("duplicate names", func(t *testing.T) {
+		root := createRegistry(t)
+		if err := os.MkdirAll(filepath.Join(root, "apps", "other"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		other := strings.Replace(testManifest, "id: blender", "id: other", 1)
+		if err := os.WriteFile(filepath.Join(root, "apps", "other", "linux-amd64.yaml"), []byte(other), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ValidateTree(root); err == nil {
+			t.Fatal("duplicate names unexpectedly accepted")
+		}
+	})
+}
+
+func TestManifestForPlatformReportsTypedUnavailable(t *testing.T) {
+	root := createRegistry(t)
+	catalog, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = catalog.ManifestForPlatform("blender", "linux", "arm64")
+	if !errors.Is(err, ErrUnavailableForPlatform) {
+		t.Fatalf("ManifestForPlatform() error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "Blender is not available for linux/arm64") {
+		t.Fatalf("ManifestForPlatform() error = %v", err)
+	}
 }
 
 func TestValidateTreeRejectsSymlink(t *testing.T) {
@@ -136,7 +238,7 @@ func TestRegistryWorkingTreeIntegration(t *testing.T) {
 		t.Fatalf("registry working tree failed client validation: %v", err)
 	}
 	for _, id := range []string{"blender", "godot"} {
-		if catalog.Manifests[id] == nil {
+		if catalog.Variants[id] == nil {
 			t.Fatalf("reviewed %s manifest is missing", id)
 		}
 	}

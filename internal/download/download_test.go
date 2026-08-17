@@ -3,7 +3,6 @@ package download
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -13,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/drobilica/tarlink/internal/version"
 )
 
 func TestFetchArtifactVerifiesAndPublishes(t *testing.T) {
@@ -64,38 +65,47 @@ func TestFetchArtifactChecksumFailureLeavesNoFile(t *testing.T) {
 	}
 }
 
-func TestFetchArtifactSupportsSHA512(t *testing.T) {
-	payload := []byte("portable application archive")
-	digest := sha512.Sum512(payload)
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func TestFetchArtifactSetsVersionedUserAgent(t *testing.T) {
+	payload := []byte("versioned user agent")
+	digest := sha256.Sum256(payload)
+	originalVersion := version.Current
+	version.Current = "test-version"
+	t.Cleanup(func() { version.Current = originalVersion })
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != "TarLink/test-version" {
+			t.Errorf("User-Agent = %q, want %q", got, "TarLink/test-version")
+		}
 		_, _ = w.Write(payload)
 	}))
 	defer server.Close()
-	result, err := (&Client{HTTP: server.Client()}).FetchArtifact(context.Background(), ArtifactRequest{
-		URL: server.URL, Algorithm: "sha512", Digest: hex.EncodeToString(digest[:]), Destination: filepath.Join(t.TempDir(), "artifact"),
+
+	_, err := (&Client{HTTP: server.Client()}).FetchArtifact(context.Background(), ArtifactRequest{
+		URL: server.URL, Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Destination: filepath.Join(t.TempDir(), "artifact"),
 	})
 	if err != nil {
-		t.Fatalf("FetchArtifact() SHA-512 error = %v", err)
-	}
-	if result.Algorithm != "sha512" || result.Digest != hex.EncodeToString(digest[:]) {
-		t.Fatalf("unexpected SHA-512 result: %#v", result)
+		t.Fatalf("FetchArtifact() error = %v", err)
 	}
 }
 
-func TestFetchArtifactRejectsSHA512Mismatch(t *testing.T) {
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte("wrong SHA-512 bytes"))
+func TestFetchArtifactUsesDevelopmentUserAgentWhenVersionUnset(t *testing.T) {
+	payload := []byte("development user agent")
+	digest := sha256.Sum256(payload)
+	originalVersion := version.Current
+	version.Current = ""
+	t.Cleanup(func() { version.Current = originalVersion })
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != "TarLink/development" {
+			t.Errorf("User-Agent = %q, want %q", got, "TarLink/development")
+		}
+		_, _ = w.Write(payload)
 	}))
 	defer server.Close()
-	destination := filepath.Join(t.TempDir(), "artifact")
+
 	_, err := (&Client{HTTP: server.Client()}).FetchArtifact(context.Background(), ArtifactRequest{
-		URL: server.URL, Algorithm: "sha512", Digest: strings.Repeat("0", 128), Destination: destination,
+		URL: server.URL, Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Destination: filepath.Join(t.TempDir(), "artifact"),
 	})
-	if !errors.Is(err, ErrChecksumMismatch) {
+	if err != nil {
 		t.Fatalf("FetchArtifact() error = %v", err)
-	}
-	if _, statErr := os.Stat(destination); !os.IsNotExist(statErr) {
-		t.Fatalf("destination unexpectedly exists: %v", statErr)
 	}
 }
 
@@ -147,13 +157,22 @@ func TestFetchArtifactRejectsUnsupportedVerification(t *testing.T) {
 	}{
 		{algorithm: "md5", digest: strings.Repeat("0", 32)},
 		{algorithm: "sha1", digest: strings.Repeat("0", 40)},
-		{algorithm: "sha512", digest: strings.Repeat("0", 64)},
 		{algorithm: "sha256", digest: strings.Repeat("A", 64)},
 	} {
 		base.Algorithm, base.Digest = test.algorithm, test.digest
 		if _, err := client.FetchArtifact(context.Background(), base); err == nil {
 			t.Fatalf("algorithm %q unexpectedly accepted", test.algorithm)
 		}
+	}
+}
+
+func TestFetchArtifactRejectsWellFormedSHA512Verification(t *testing.T) {
+	_, err := NewClient().FetchArtifact(context.Background(), ArtifactRequest{
+		URL: "https://example.com/archive.zip", Algorithm: "sha512", Digest: strings.Repeat("0", 128),
+		Destination: filepath.Join(t.TempDir(), "artifact"),
+	})
+	if err == nil {
+		t.Fatal("FetchArtifact() unexpectedly accepted SHA-512 verification")
 	}
 }
 

@@ -266,15 +266,10 @@ func ValidID(id string) bool {
 }
 
 func ValidateDigest(algorithm, value string) error {
-	var size int
-	switch algorithm {
-	case "sha256":
-		size = 32
-	case "sha512":
-		size = 64
-	default:
+	if algorithm != "sha256" {
 		return fmt.Errorf("unsupported release verification algorithm %q", algorithm)
 	}
+	const size = 32
 	if len(value) != size*2 || strings.ToLower(value) != value {
 		return fmt.Errorf("release verification digest must be exactly %d lowercase hexadecimal characters", size*2)
 	}

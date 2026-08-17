@@ -638,7 +638,7 @@ func (x *extractor) makeFile(name string, src io.Reader, expected int64, executa
 	return nil
 }
 
-// makeSymlink implements the deliberately narrow v0.1 link policy: only a
+// makeSymlink implements the deliberately narrow link policy: only a
 // relative, same-directory, single-component target is accepted. Links are
 // created without following them, may never be used as extraction parents,
 // and are validated after extraction to terminate at an extracted regular

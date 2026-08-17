@@ -4,7 +4,6 @@ package download
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/sha512"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
@@ -20,6 +19,7 @@ import (
 	"time"
 
 	"github.com/drobilica/tarlink/internal/filesystem"
+	"github.com/drobilica/tarlink/internal/version"
 )
 
 const (
@@ -170,7 +170,7 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 	if err != nil {
 		return Result{}, fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "TarLink/0.1")
+	req.Header.Set("User-Agent", userAgent())
 	// Hash and size checks apply to the exact archived bytes, never an
 	// automatically decoded HTTP content encoding.
 	req.Header.Set("Accept-Encoding", "identity")
@@ -240,6 +240,14 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 	return Result{Path: destination, Algorithm: algorithm, Digest: digest, Bytes: written}, nil
 }
 
+func userAgent() string {
+	current := strings.TrimSpace(version.Current)
+	if current == "" {
+		current = "development"
+	}
+	return "TarLink/" + current
+}
+
 func parseHTTPS(raw string) (*url.URL, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil {
@@ -288,18 +296,11 @@ func validateDigest(algorithm, value string) error {
 }
 
 func newHasher(algorithm, value string) (hash.Hash, error) {
-	var hasher hash.Hash
-	var size int
-	switch algorithm {
-	case "sha256":
-		hasher = sha256.New()
-		size = sha256.Size
-	case "sha512":
-		hasher = sha512.New()
-		size = sha512.Size
-	default:
+	if algorithm != "sha256" {
 		return nil, fmt.Errorf("unsupported artifact verification algorithm %q", algorithm)
 	}
+	hasher := sha256.New()
+	const size = sha256.Size
 	if len(value) != size*2 || value != strings.ToLower(value) {
 		return nil, fmt.Errorf("artifact verification digest must be exactly %d lowercase hexadecimal characters", size*2)
 	}

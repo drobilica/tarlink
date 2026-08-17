@@ -100,7 +100,7 @@ func TestSyncIsTransactional(t *testing.T) {
 		t.Fatalf("first Sync() error = %v", err)
 	}
 	catalog, err := Open(syncer.CacheRoot)
-	if err != nil || catalog.Manifests["blender"] == nil {
+	if err != nil || catalog.Variants["blender"] == nil {
 		t.Fatalf("Open() catalog=%#v error=%v", catalog, err)
 	}
 	before, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/install"
 	"github.com/drobilica/tarlink/internal/registry"
+	"github.com/drobilica/tarlink/internal/state"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -47,6 +49,14 @@ func registryRuntimeLayout(t *testing.T) filesystem.Layout {
 }
 
 func registryRuntimeArchive(t *testing.T, version string) []byte {
+	return registryRuntimeArchivePlatforms(t, version, false)
+}
+
+func registryRuntimeArchivePlatforms(t *testing.T, version string, arm64 bool) []byte {
+	return registryRuntimeArchivePlatformVersions(t, version, version+"-arm64", arm64)
+}
+
+func registryRuntimeArchivePlatformVersions(t *testing.T, amd64Version, arm64Version string, arm64 bool) []byte {
 	t.Helper()
 	manifest := `schema: 1
 id: fixture
@@ -56,7 +66,7 @@ homepage: https://example.com/
 categories: [utilities]
 platform: {os: linux, arch: amd64}
 release:
-  version: "` + version + `"
+  version: "` + amd64Version + `"
   url: https://example.com/fixture.tar.gz
   archive: tar.gz
   verification:
@@ -77,7 +87,17 @@ desktop: {enabled: false, categories: []}
 		{name: "tarlink-registry-main/", mode: 0o755},
 		{name: "tarlink-registry-main/apps/", mode: 0o755},
 		{name: "tarlink-registry-main/apps/fixture/", mode: 0o755},
-		{name: "tarlink-registry-main/apps/fixture/manifest.yaml", mode: 0o644, body: []byte(manifest)},
+		{name: "tarlink-registry-main/apps/fixture/linux-amd64.yaml", mode: 0o644, body: []byte(manifest)},
+	}
+	if arm64 {
+		armManifest := strings.Replace(manifest, `version: "`+amd64Version+`"`, `version: "`+arm64Version+`"`, 1)
+		armManifest = strings.Replace(armManifest, "arch: amd64", "arch: arm64", 1)
+		armManifest = strings.Replace(armManifest, "executable: fixture", "executable: fixture-arm64", 1)
+		entries = append(entries, struct {
+			name string
+			mode int64
+			body []byte
+		}{name: "tarlink-registry-main/apps/fixture/linux-arm64.yaml", mode: 0o644, body: []byte(armManifest)})
 	}
 	for _, entry := range entries {
 		typeFlag := byte(tar.TypeDir)
@@ -203,6 +223,66 @@ func TestCatalogUsesValidStaleCacheWhenOffline(t *testing.T) {
 	}
 }
 
+func TestCatalogRejectsCorruptStaleCacheWhenOffline(t *testing.T) {
+	tests := map[string]func(*testing.T, string, string){
+		"current pointer": func(t *testing.T, cacheRoot, generation string) {
+			current := filepath.Join(cacheRoot, "current")
+			if err := os.Remove(current); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("../outside", current); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"generation": func(t *testing.T, _, generation string) {
+			if err := os.RemoveAll(filepath.Join(generation, "apps")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"manifest": func(t *testing.T, _, generation string) {
+			manifestPath := filepath.Join(generation, "apps", "fixture", "linux-amd64.yaml")
+			if err := os.WriteFile(manifestPath, []byte("not a manifest"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, corrupt := range tests {
+		t.Run(name, func(t *testing.T) {
+			offline := false
+			core, requests := registryRuntimeCore(t, func(request *http.Request) (*http.Response, error) {
+				if offline {
+					return nil, errors.New("offline")
+				}
+				return registryResponse(registryRuntimeArchive(t, "1.0"))(request)
+			})
+			if _, err := core.Search(context.Background(), "fixture"); err != nil {
+				t.Fatal(err)
+			}
+			current, err := os.Readlink(filepath.Join(core.syncer.CacheRoot, "current"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			generation := filepath.Join(core.syncer.CacheRoot, current)
+			old := time.Now().Add(-registry.DefaultMaxAge - time.Hour)
+			if err := os.Chtimes(generation, old, old); err != nil {
+				t.Fatal(err)
+			}
+			corrupt(t, core.syncer.CacheRoot, generation)
+			offline = true
+			applications, err := core.Search(context.Background(), "fixture")
+			if err == nil || applications != nil {
+				t.Fatalf("corrupt offline Search() applications=%#v error=%v", applications, err)
+			}
+			if CodeOf(err) != CodeNetwork {
+				t.Fatalf("corrupt offline Search() code=%q error=%v", CodeOf(err), err)
+			}
+			if *requests != 2 {
+				t.Fatalf("registry requests = %d, want 2", *requests)
+			}
+		})
+	}
+}
+
 func TestCatalogDoesNotHideCancellationBehindStaleCache(t *testing.T) {
 	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchive(t, "1.0")))
 	if _, err := core.Search(context.Background(), "fixture"); err != nil {
@@ -243,5 +323,80 @@ func TestExplicitRegistrySyncAlwaysFetches(t *testing.T) {
 	}
 	if *requests != 2 {
 		t.Fatalf("registry requests = %d, want 2", *requests)
+	}
+}
+
+func TestSearchUsesExactRuntimePlatformVariant(t *testing.T) {
+	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchivePlatformVersions(t, "1.0", "2.0", true)))
+	core.goarch = "arm64"
+	applications, err := core.Search(context.Background(), "fixture")
+	if err != nil || len(applications) != 1 || applications[0].ID != "fixture" || applications[0].Name != "Fixture" || applications[0].Summary != "Registry fixture" || applications[0].Homepage != "https://example.com/" || len(applications[0].Categories) != 1 || applications[0].Categories[0] != "utilities" || applications[0].RegistryVersion != "2.0" {
+		t.Fatalf("arm64 Search() applications=%#v error=%v", applications, err)
+	}
+	info, err := core.Info(context.Background(), "fixture")
+	if err != nil || info.ID != "fixture" || info.Name != "Fixture" || info.Summary != "Registry fixture" || info.RegistryVersion != "2.0" {
+		t.Fatalf("arm64 Info() application=%#v error=%v", info, err)
+	}
+	catalog, err := registry.Open(filepath.Join(core.layout.Cache, "registry"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := catalog.ManifestForPlatform("fixture", "linux", "arm64")
+	if err != nil || item.Release.Version != "2.0" || item.Application.Executable != "fixture-arm64" {
+		t.Fatalf("arm64 manifest=%#v error=%v", item, err)
+	}
+}
+
+func TestResolveMissingVariantReturnsTypedUnsupportedPlatform(t *testing.T) {
+	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchive(t, "1.0")))
+	core.goarch = "arm64"
+	_, err := core.Info(context.Background(), "fixture")
+	if CodeOf(err) != CodeUnsupportedPlatform {
+		t.Fatalf("Info() code = %q, error = %v", CodeOf(err), err)
+	}
+	if !strings.Contains(err.Error(), "Fixture is not available for linux/arm64") {
+		t.Fatalf("Info() error = %v", err)
+	}
+}
+
+func TestListDoesNotClaimRegistryDataWithoutRuntimeVariant(t *testing.T) {
+	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchive(t, "1.0")))
+	if err := core.SyncRegistry(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
+		Schema: state.Schema, App: "fixture", Current: "0.9", Executable: "fixture",
+		Integration: state.Integration{
+			ExecutableLink:   filepath.Join(core.layout.Bin, "fixture"),
+			ExecutableTarget: filepath.Join(core.layout.Apps, "fixture", "current", "fixture"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core.goarch = "arm64"
+	applications, err := core.List(context.Background())
+	if err != nil || len(applications) != 1 || applications[0].ID != "fixture" || applications[0].Name != "fixture" || applications[0].InstalledVersion != "0.9" || applications[0].RegistryVersion != "" || applications[0].Summary != "" || applications[0].Homepage != "" || len(applications[0].Categories) != 0 || applications[0].UpdateAvailable {
+		t.Fatalf("List() applications=%#v error=%v", applications, err)
+	}
+}
+
+func TestListPrefersExactRuntimeVariant(t *testing.T) {
+	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchivePlatformVersions(t, "1.0", "2.0", true)))
+	if err := core.SyncRegistry(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
+		Schema: state.Schema, App: "fixture", Current: "1.5", Executable: "fixture",
+		Integration: state.Integration{
+			ExecutableLink:   filepath.Join(core.layout.Bin, "fixture"),
+			ExecutableTarget: filepath.Join(core.layout.Apps, "fixture", "current", "fixture"),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	core.goarch = "arm64"
+	applications, err := core.List(context.Background())
+	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "2.0" || !applications[0].UpdateAvailable {
+		t.Fatalf("arm64 List() applications=%#v error=%v", applications, err)
 	}
 }

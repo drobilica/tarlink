@@ -121,6 +121,7 @@ func (core *Core) List(context.Context) ([]Application, error) {
 		return nil, err
 	}
 	catalog, catalogErr := registry.Open(filepath.Join(core.layout.Cache, "registry"))
+	goos, goarch := core.platform()
 	result := make([]Application, 0, len(states))
 	for _, installed := range states {
 		value := Application{
@@ -128,7 +129,7 @@ func (core *Core) List(context.Context) ([]Application, error) {
 			PreviousVersion: installed.Previous,
 		}
 		if catalogErr == nil {
-			if item, ok := catalog.Manifests[installed.App]; ok {
+			if item := catalog.Variants[installed.App][manifest.Platform{OS: goos, Arch: goarch}]; item != nil {
 				value = applicationFrom(item, &installed)
 			}
 		}
@@ -157,7 +158,8 @@ func (core *Core) Search(ctx context.Context, query string) ([]Application, erro
 	if err != nil {
 		return nil, err
 	}
-	items := catalog.Search(query)
+	goos, goarch := core.platform()
+	items := catalog.SearchForPlatform(query, goos, goarch)
 	result := make([]Application, 0, len(items))
 	for _, item := range items {
 		installed, stateErr := state.LoadForApp(core.layout, item.ID)
@@ -267,21 +269,19 @@ func (core *Core) resolve(ctx context.Context, appID string, sink ProgressSink) 
 	if err != nil {
 		return nil, nil, err
 	}
-	item, err := catalog.Manifest(appID)
+	goos, goarch := core.platform()
+	item, err := catalog.ManifestForPlatform(appID, goos, goarch)
 	if err != nil {
+		if errors.Is(err, registry.ErrUnavailableForPlatform) {
+			return nil, nil, &Error{Code: CodeUnsupportedPlatform, Op: "resolve application", Err: err}
+		}
 		return nil, nil, &Error{Code: CodeNotFound, Op: "resolve application", Err: err}
 	}
 	return item, catalog, nil
 }
 
 func (core *Core) checkManifestPlatform(item *manifest.Manifest) error {
-	goos, goarch := core.goos, core.goarch
-	if goos == "" {
-		goos = runtime.GOOS
-	}
-	if goarch == "" {
-		goarch = runtime.GOARCH
-	}
+	goos, goarch := core.platform()
 	if item.Platform.OS != goos || item.Platform.Arch != goarch {
 		return &Error{
 			Code: CodeUnsupportedPlatform,
@@ -290,6 +290,17 @@ func (core *Core) checkManifestPlatform(item *manifest.Manifest) error {
 		}
 	}
 	return nil
+}
+
+func (core *Core) platform() (string, string) {
+	goos, goarch := core.goos, core.goarch
+	if goos == "" {
+		goos = runtime.GOOS
+	}
+	if goarch == "" {
+		goarch = runtime.GOARCH
+	}
+	return goos, goarch
 }
 
 func (core *Core) installedStates() ([]state.State, error) {

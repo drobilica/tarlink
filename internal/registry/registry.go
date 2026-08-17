@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -20,10 +21,23 @@ const (
 )
 
 var ErrUnavailable = errors.New("validated registry is unavailable")
+var ErrUnavailableForPlatform = errors.New("application is unavailable for this platform")
+
+type PlatformError struct {
+	Name string
+	OS   string
+	Arch string
+}
+
+func (e *PlatformError) Error() string {
+	return fmt.Sprintf("%s is not available for %s/%s", e.Name, e.OS, e.Arch)
+}
+
+func (e *PlatformError) Unwrap() error { return ErrUnavailableForPlatform }
 
 type Catalog struct {
 	FetchedAt time.Time
-	Manifests map[string]*manifest.Manifest
+	Variants  map[string]map[manifest.Platform]*manifest.Manifest
 }
 
 func ValidateTree(root string) (*Catalog, error) {
@@ -41,14 +55,14 @@ func ValidateTree(root string) (*Catalog, error) {
 	if err := rejectSymlinks(appsRoot); err != nil {
 		return nil, err
 	}
-	manifests, err := loadManifests(appsRoot)
+	variants, err := loadManifests(appsRoot)
 	if err != nil {
 		return nil, err
 	}
-	if len(manifests) == 0 {
+	if len(variants) == 0 {
 		return nil, errors.New("registry contains no application manifests")
 	}
-	return &Catalog{FetchedAt: rootInfo.ModTime(), Manifests: manifests}, nil
+	return &Catalog{FetchedAt: rootInfo.ModTime(), Variants: variants}, nil
 }
 
 func Open(cacheRoot string) (*Catalog, error) {
@@ -85,10 +99,22 @@ func (c *Catalog) Stale(now time.Time, maxAge time.Duration) bool {
 	return now.Sub(c.FetchedAt) >= maxAge
 }
 
-func (c *Catalog) Manifest(id string) (*manifest.Manifest, error) {
-	item, ok := c.Manifests[id]
+func (c *Catalog) ManifestForPlatform(id, goos, goarch string) (*manifest.Manifest, error) {
+	if c == nil {
+		return nil, errors.New("registry catalog is nil")
+	}
+	variants, ok := c.Variants[id]
 	if !ok {
 		return nil, fmt.Errorf("application %q is not in the registry", id)
+	}
+	item, ok := variants[manifest.Platform{OS: goos, Arch: goarch}]
+	if !ok {
+		name := id
+		for _, candidate := range variants {
+			name = candidate.Name
+			break
+		}
+		return nil, &PlatformError{Name: name, OS: goos, Arch: goarch}
 	}
 	copy := *item
 	copy.Categories = append([]string(nil), item.Categories...)
@@ -96,10 +122,20 @@ func (c *Catalog) Manifest(id string) (*manifest.Manifest, error) {
 	return &copy, nil
 }
 
-func (c *Catalog) Search(query string) []*manifest.Manifest {
+func (c *Catalog) SearchForPlatform(query, goos, goarch string) []*manifest.Manifest {
+	if c == nil {
+		return nil
+	}
 	query = strings.ToLower(strings.TrimSpace(query))
 	var result []*manifest.Manifest
-	for _, item := range c.Manifests {
+	items := make(map[string]*manifest.Manifest)
+	platform := manifest.Platform{OS: goos, Arch: goarch}
+	for id, variants := range c.Variants {
+		if item, ok := variants[platform]; ok {
+			items[id] = item
+		}
+	}
+	for _, item := range items {
 		haystack := strings.ToLower(strings.Join([]string{item.ID, item.Name, item.Summary, strings.Join(item.Categories, " ")}, " "))
 		if query == "" || strings.Contains(haystack, query) {
 			result = append(result, item)
@@ -109,12 +145,12 @@ func (c *Catalog) Search(query string) []*manifest.Manifest {
 	return result
 }
 
-func loadManifests(appsRoot string) (map[string]*manifest.Manifest, error) {
+func loadManifests(appsRoot string) (map[string]map[manifest.Platform]*manifest.Manifest, error) {
 	entries, err := os.ReadDir(appsRoot)
 	if err != nil {
 		return nil, fmt.Errorf("read registry applications: %w", err)
 	}
-	result := make(map[string]*manifest.Manifest, len(entries))
+	variants := make(map[string]map[manifest.Platform]*manifest.Manifest, len(entries))
 	names := make(map[string]string, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !manifest.ValidID(entry.Name()) {
@@ -125,32 +161,77 @@ func loadManifests(appsRoot string) (map[string]*manifest.Manifest, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(children) != 1 || children[0].Name() != "manifest.yaml" || !children[0].Type().IsRegular() {
-			return nil, fmt.Errorf("application directory %q must contain only a regular manifest.yaml", entry.Name())
+		if len(children) == 0 || len(children) > 2 {
+			return nil, fmt.Errorf("application directory %q must contain one or two platform manifests", entry.Name())
 		}
-		file, err := os.Open(filepath.Join(directory, "manifest.yaml"))
-		if err != nil {
-			return nil, err
+		appVariants := make(map[manifest.Platform]*manifest.Manifest, len(children))
+		var representative *manifest.Manifest
+		for _, child := range children {
+			expected, ok := platformFilename(child.Name())
+			if !ok {
+				return nil, fmt.Errorf("application directory %q contains unexpected file %q", entry.Name(), child.Name())
+			}
+			filePath := filepath.Join(directory, child.Name())
+			info, err := os.Lstat(filePath)
+			if err != nil {
+				return nil, err
+			}
+			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+				return nil, fmt.Errorf("application manifest %q must be a regular file", child.Name())
+			}
+			file, err := os.Open(filePath)
+			if err != nil {
+				return nil, err
+			}
+			item, parseErr := manifest.Parse(file)
+			closeErr := file.Close()
+			if parseErr != nil {
+				return nil, fmt.Errorf("validate %s manifest: %w", entry.Name(), parseErr)
+			}
+			if closeErr != nil {
+				return nil, closeErr
+			}
+			if item.ID != entry.Name() {
+				return nil, fmt.Errorf("manifest ID %q does not match directory %q", item.ID, entry.Name())
+			}
+			if item.Platform != expected {
+				return nil, fmt.Errorf("manifest %q platform %s/%s does not match filename %q", child.Name(), item.Platform.OS, item.Platform.Arch, child.Name())
+			}
+			if _, duplicate := appVariants[item.Platform]; duplicate {
+				return nil, fmt.Errorf("duplicate platform %s/%s for application %q", item.Platform.OS, item.Platform.Arch, item.ID)
+			}
+			if representative == nil {
+				representative = item
+			} else if !sameApplicationMetadata(representative, item) {
+				return nil, fmt.Errorf("platform manifests for application %q have inconsistent shared metadata", item.ID)
+			}
+			foldedName := strings.ToLower(item.Name)
+			if previous, duplicate := names[foldedName]; duplicate && previous != item.ID {
+				return nil, fmt.Errorf("duplicate application name %q for %s and %s", item.Name, previous, item.ID)
+			}
+			names[foldedName] = item.ID
+			appVariants[item.Platform] = item
 		}
-		item, parseErr := manifest.Parse(file)
-		closeErr := file.Close()
-		if parseErr != nil {
-			return nil, fmt.Errorf("validate %s manifest: %w", entry.Name(), parseErr)
-		}
-		if closeErr != nil {
-			return nil, closeErr
-		}
-		if item.ID != entry.Name() {
-			return nil, fmt.Errorf("manifest ID %q does not match directory %q", item.ID, entry.Name())
-		}
-		foldedName := strings.ToLower(item.Name)
-		if previous, duplicate := names[foldedName]; duplicate {
-			return nil, fmt.Errorf("duplicate application name %q for %s and %s", item.Name, previous, item.ID)
-		}
-		names[foldedName] = item.ID
-		result[item.ID] = item
+		variants[entry.Name()] = appVariants
 	}
-	return result, nil
+	return variants, nil
+}
+
+func platformFilename(name string) (manifest.Platform, bool) {
+	switch name {
+	case "linux-amd64.yaml":
+		return manifest.Platform{OS: "linux", Arch: "amd64"}, true
+	case "linux-arm64.yaml":
+		return manifest.Platform{OS: "linux", Arch: "arm64"}, true
+	default:
+		return manifest.Platform{}, false
+	}
+}
+
+func sameApplicationMetadata(left, right *manifest.Manifest) bool {
+	return left.ID == right.ID && left.Name == right.Name && left.Summary == right.Summary &&
+		left.Homepage == right.Homepage && reflect.DeepEqual(left.Categories, right.Categories) &&
+		reflect.DeepEqual(left.Desktop, right.Desktop)
 }
 
 func rejectSymlinks(root string) error {
