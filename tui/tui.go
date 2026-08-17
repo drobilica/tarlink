@@ -22,6 +22,7 @@ const (
 	screenDetails
 	screenVersions
 	screenRollback
+	screenUninstall
 )
 
 type loadedMsg struct {
@@ -48,20 +49,23 @@ type operationMsg struct {
 }
 
 type model struct {
-	ctx       context.Context
-	service   app.Service
-	screen    screen
-	returnTo  screen
-	available []app.Application
-	installed []app.Application
-	versions  []app.Version
-	selected  int
-	detail    *app.Application
-	searching bool
-	query     string
-	busy      string
-	status    string
-	err       error
+	ctx                 context.Context
+	service             app.Service
+	screen              screen
+	returnTo            screen
+	versionsFromDetails bool
+	confirmTo           screen
+	confirmSet          bool
+	available           []app.Application
+	installed           []app.Application
+	versions            []app.Version
+	selected            int
+	detail              *app.Application
+	searching           bool
+	query               string
+	busy                string
+	status              string
+	err                 error
 }
 
 // Run starts the terminal renderer. All application changes are delegated to
@@ -119,6 +123,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if message.move {
 			m.screen = message.next
+			m.confirmSet = false
+			if m.screen != screenDetails {
+				m.detail = nil
+			}
 		}
 		return m, m.loadCmd()
 	case tea.KeyPressMsg:
@@ -163,6 +171,9 @@ func (m model) View() tea.View {
 			fmt.Fprintf(&body, "%s\n\n%s\n\nID: %s\nRegistry: %s\nInstalled: %s\nCategories: %s\nHomepage: %s\n",
 				m.detail.Name, m.detail.Summary, m.detail.ID, m.detail.RegistryVersion,
 				installedLabel(*m.detail), strings.Join(m.detail.Categories, ", "), m.detail.Homepage)
+			if m.detail.InstalledVersion != "" {
+				body.WriteString("\nActions: Enter Update  v Versions  r Rollback  x Uninstall\n")
+			}
 		}
 	case screenVersions:
 		body.WriteString("VERSIONS\n\n")
@@ -174,9 +185,20 @@ func (m model) View() tea.View {
 		if m.detail != nil {
 			fmt.Fprintf(&body, "Switch %s from %s to its retained previous version?\n\nEnter Confirm   Esc Cancel\n", m.detail.Name, m.detail.InstalledVersion)
 		}
+	case screenUninstall:
+		body.WriteString("UNINSTALL\n\n")
+		if m.detail != nil {
+			fmt.Fprintf(&body, "Remove %s (%s) and its installed files?\n\nThis action cannot be undone.\n\nEnter Confirm   Esc Cancel\n", m.detail.Name, m.detail.ID)
+		} else {
+			body.WriteString("No installed application selected.\n\nEsc Cancel\n")
+		}
 	}
 
-	body.WriteString("\n↑/↓ Select  Enter Open/Act  Esc Back  / Search  i Installed  u Updates  v Versions  r Rollback  q Quit\n")
+	if m.screen == screenRollback || m.screen == screenUninstall {
+		body.WriteString("\nEnter Confirm   Esc Cancel   q Quit\n")
+	} else {
+		body.WriteString("\n↑/↓ Select  Enter Open/Act  Esc Back  / Search  i Installed  u Updates  v Versions  r Rollback  x Uninstall  q Quit\n")
+	}
 	return tea.NewView(body.String())
 }
 
@@ -235,17 +257,23 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.screen = screenUpdates
 		m.selected = 0
 	case "esc":
-		if m.screen == screenRollback {
-			m.screen = m.returnTo
+		if m.screen == screenRollback || m.screen == screenUninstall {
+			m.screen = m.confirmationTarget()
+			m.confirmSet = false
 			if m.screen != screenDetails {
 				m.detail = nil
 			}
 		} else if m.screen == screenDetails || m.screen == screenVersions {
-			m.screen = m.returnTo
-			if m.screen != screenDetails {
-				m.detail = nil
+			if m.screen == screenVersions && m.versionsFromDetails {
+				m.screen = screenDetails
+			} else {
+				m.screen = m.returnTo
+				if m.screen != screenDetails {
+					m.detail = nil
+				}
 			}
 			m.versions = nil
+			m.versionsFromDetails = false
 		} else {
 			m.screen = screenAvailable
 			m.selected = 0
@@ -255,6 +283,13 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if id := m.selectedID(); id != "" {
 				m.busy = "Rolling back"
 				return m, m.rollbackCmd(id)
+			}
+			return m, nil
+		}
+		if m.screen == screenUninstall {
+			if id := m.selectedID(); id != "" && m.selectedInstalled() {
+				m.busy = "Uninstalling"
+				return m, m.uninstallCmd(id)
 			}
 			return m, nil
 		}
@@ -271,15 +306,34 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "v":
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.setDetail(id)
-			m.returnTo = m.screen
+			if m.screen == screenDetails {
+				m.versionsFromDetails = true
+			} else if m.screen != screenVersions {
+				m.returnTo = m.screen
+				m.versionsFromDetails = false
+			}
 			m.busy = "Loading versions"
 			return m, m.versionsCmd(id)
 		}
 	case "r":
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.setDetail(id)
-			m.returnTo = m.screen
+			if m.screen != screenDetails && m.screen != screenVersions {
+				m.returnTo = m.screen
+			}
+			m.confirmTo = m.screen
+			m.confirmSet = true
 			m.screen = screenRollback
+		}
+	case "x", "d", "delete":
+		if id := m.selectedID(); id != "" && m.selectedInstalled() {
+			m.setDetail(id)
+			if m.screen != screenDetails && m.screen != screenVersions {
+				m.returnTo = m.screen
+			}
+			m.confirmTo = m.screen
+			m.confirmSet = true
+			m.screen = screenUninstall
 		}
 	}
 	m.clampSelection()
@@ -350,6 +404,27 @@ func (m model) rollbackCmd(id string) tea.Cmd {
 	}
 }
 
+func (m model) uninstallCmd(id string) tea.Cmd {
+	return func() tea.Msg {
+		err := m.service.Uninstall(m.ctx, id, nil)
+		if err != nil {
+			return operationMsg{err: err}
+		}
+		next := m.confirmationTarget()
+		if next == screenVersions {
+			next = screenDetails
+		}
+		return operationMsg{message: "Uninstalled " + id, next: next, move: true}
+	}
+}
+
+func (m model) confirmationTarget() screen {
+	if m.confirmSet {
+		return m.confirmTo
+	}
+	return m.returnTo
+}
+
 func (m *model) setDetail(id string) {
 	for _, value := range m.installed {
 		if value.ID == id {
@@ -364,13 +439,22 @@ func (m *model) refreshDetail() {
 	if m.detail == nil {
 		return
 	}
+	id := m.detail.ID
 	for _, value := range m.available {
-		if value.ID == m.detail.ID {
+		if value.ID == id {
 			copy := value
 			m.detail = &copy
 			return
 		}
 	}
+	for _, value := range m.installed {
+		if value.ID == id {
+			copy := value
+			m.detail = &copy
+			return
+		}
+	}
+	m.detail = nil
 }
 
 func (m model) visibleApplications() []app.Application {
@@ -385,7 +469,7 @@ func (m model) visibleApplications() []app.Application {
 }
 
 func (m model) selectedID() string {
-	if m.detail != nil && (m.screen == screenDetails || m.screen == screenVersions || m.screen == screenRollback) {
+	if m.detail != nil && (m.screen == screenDetails || m.screen == screenVersions || m.screen == screenRollback || m.screen == screenUninstall) {
 		return m.detail.ID
 	}
 	visible := m.visibleApplications()
