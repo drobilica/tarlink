@@ -1,0 +1,302 @@
+// Package state persists TarLink's schema-1 per-application state record.
+package state
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/drobilica/tarlink/internal/filesystem"
+)
+
+const Schema = 1
+
+type Integration struct {
+	ExecutableLink   string `json:"executable_link"`
+	ExecutableTarget string `json:"executable_target"`
+	DesktopEntry     string `json:"desktop_entry"`
+	DesktopSHA256    string `json:"desktop_sha256"`
+}
+
+type State struct {
+	Schema         int         `json:"schema"`
+	App            string      `json:"app"`
+	Current        string      `json:"current"`
+	Previous       string      `json:"previous,omitempty"`
+	Executable     string      `json:"executable"`
+	DesktopEnabled bool        `json:"desktop_enabled"`
+	Integration    Integration `json:"integration"`
+}
+
+var ErrCorrupt = errors.New("corrupt state")
+
+func (s State) Validate() error {
+	if s.Schema != Schema {
+		return fmt.Errorf("%w: unsupported schema %d", ErrCorrupt, s.Schema)
+	}
+	if err := filesystem.ValidateID(s.App); err != nil {
+		return fmt.Errorf("%w: app: %v", ErrCorrupt, err)
+	}
+	if err := filesystem.ValidateVersion(s.Current); err != nil {
+		return fmt.Errorf("%w: current version: %v", ErrCorrupt, err)
+	}
+	if s.Previous != "" {
+		if err := filesystem.ValidateVersion(s.Previous); err != nil {
+			return fmt.Errorf("%w: previous version: %v", ErrCorrupt, err)
+		}
+		if s.Previous == s.Current {
+			return fmt.Errorf("%w: current and previous versions must differ", ErrCorrupt)
+		}
+	}
+	if err := validateExecutable(s.Executable); err != nil {
+		return fmt.Errorf("%w: executable: %v", ErrCorrupt, err)
+	}
+	for name, path := range map[string]string{
+		"executable link":   s.Integration.ExecutableLink,
+		"executable target": s.Integration.ExecutableTarget,
+		"desktop entry":     s.Integration.DesktopEntry,
+	} {
+		if path == "" {
+			continue
+		}
+		if !utf8.ValidString(path) || strings.IndexByte(path, 0) >= 0 || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+			return fmt.Errorf("%w: %s must be absolute and clean", ErrCorrupt, name)
+		}
+	}
+	if s.Integration.ExecutableLink == "" || s.Integration.ExecutableTarget == "" {
+		return fmt.Errorf("%w: executable integration paths are required", ErrCorrupt)
+	}
+	if s.DesktopEnabled && s.Integration.DesktopEntry == "" {
+		return fmt.Errorf("%w: desktop entry required when desktop integration is enabled", ErrCorrupt)
+	}
+	if s.DesktopEnabled {
+		if len(s.Integration.DesktopSHA256) != 64 || strings.ToLower(s.Integration.DesktopSHA256) != s.Integration.DesktopSHA256 {
+			return fmt.Errorf("%w: desktop ownership digest is invalid", ErrCorrupt)
+		}
+		for _, value := range s.Integration.DesktopSHA256 {
+			if !(value >= '0' && value <= '9' || value >= 'a' && value <= 'f') {
+				return fmt.Errorf("%w: desktop ownership digest is invalid", ErrCorrupt)
+			}
+		}
+	}
+	if !s.DesktopEnabled && (s.Integration.DesktopEntry != "" || s.Integration.DesktopSHA256 != "") {
+		return fmt.Errorf("%w: desktop ownership fields must be empty when desktop integration is disabled", ErrCorrupt)
+	}
+	return nil
+}
+
+func validateExecutable(value string) error {
+	if value == "" || len(value) > 4096 || !utf8.ValidString(value) || strings.ContainsAny(value, `\\$%`) || strings.HasPrefix(value, "/") || path.IsAbs(value) || path.Clean(value) != value || value == "." || strings.HasPrefix(value, "../") || strings.Count(value, "/")+1 > 64 {
+		return errors.New("must be a canonical relative path")
+	}
+	if len(value) >= 2 && ((value[0] >= 'A' && value[0] <= 'Z') || (value[0] >= 'a' && value[0] <= 'z')) && value[1] == ':' {
+		return errors.New("must not be a Windows drive path")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return errors.New("contains control character")
+		}
+	}
+	return nil
+}
+
+// Decode strictly decodes one JSON document, rejecting unknown fields,
+// duplicate object keys, trailing data, and missing required top-level fields.
+func Decode(data []byte) (State, error) {
+	if err := rejectDuplicateJSON(data); err != nil {
+		return State{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return State{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
+	}
+	for _, required := range []string{"schema", "app", "current", "executable", "desktop_enabled", "integration"} {
+		if _, ok := fields[required]; !ok {
+			return State{}, fmt.Errorf("%w: missing %s", ErrCorrupt, required)
+		}
+	}
+	var integrationFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["integration"], &integrationFields); err != nil {
+		return State{}, fmt.Errorf("%w: integration must be an object", ErrCorrupt)
+	}
+	for _, required := range []string{"executable_link", "executable_target", "desktop_entry", "desktop_sha256"} {
+		if _, ok := integrationFields[required]; !ok {
+			return State{}, fmt.Errorf("%w: integration missing %s", ErrCorrupt, required)
+		}
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	var s State
+	if err := dec.Decode(&s); err != nil {
+		return State{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return State{}, fmt.Errorf("%w: trailing JSON", ErrCorrupt)
+		}
+		return State{}, fmt.Errorf("%w: trailing data: %v", ErrCorrupt, err)
+	}
+	if err := s.Validate(); err != nil {
+		return State{}, err
+	}
+	return s, nil
+}
+
+func rejectDuplicateJSON(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	first, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if err := consumeJSONValue(dec, first); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("trailing JSON")
+		}
+		return err
+	}
+	return nil
+}
+
+func consumeJSONValue(dec *json.Decoder, token json.Token) error {
+	delim, isDelim := token.(json.Delim)
+	if !isDelim || delim != '{' && delim != '[' {
+		return nil
+	}
+	if delim == '[' {
+		for {
+			t, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			if d, ok := t.(json.Delim); ok && d == ']' {
+				return nil
+			}
+			if err := consumeJSONValue(dec, t); err != nil {
+				return err
+			}
+		}
+	}
+	seen := make(map[string]struct{})
+	for {
+		t, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if d, ok := t.(json.Delim); ok && d == '}' {
+			return nil
+		}
+		key, ok := t.(string)
+		if !ok {
+			return errors.New("object key is not a string")
+		}
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("duplicate key %q", key)
+		}
+		seen[key] = struct{}{}
+		value, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		if err := consumeJSONValue(dec, value); err != nil {
+			return err
+		}
+	}
+}
+
+func Load(path string) (State, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return State{}, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 || !fi.Mode().IsRegular() {
+		return State{}, fmt.Errorf("%w: state file is not a regular file", ErrCorrupt)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return State{}, err
+	}
+	return Decode(b)
+}
+
+func Write(path string, s State) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	b, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	dir := filepath.Dir(path)
+	if err := filesystem.SecureMkdirAll(dir, 0700); err != nil {
+		return err
+	}
+	if fi, err := os.Lstat(path); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return filesystem.ErrSymlink
+		}
+		if !fi.Mode().IsRegular() {
+			return fmt.Errorf("state path is not a regular file")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".state-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(b); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+func WriteForApp(l filesystem.Layout, s State) error {
+	p, err := l.StatePath(s.App)
+	if err != nil {
+		return err
+	}
+	return Write(p, s)
+}
+
+func LoadForApp(l filesystem.Layout, appID string) (State, error) {
+	p, err := l.StatePath(appID)
+	if err != nil {
+		return State{}, err
+	}
+	return Load(p)
+}
