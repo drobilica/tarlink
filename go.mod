@@ -25,3 +25,7 @@ require (
 	golang.org/x/sync v0.21.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 )
+
+// v0.1.0 cannot synchronize the official registry because it rejects the
+// bounded POSIX PAX global metadata emitted by GitHub codeload archives.
+retract v0.1.0
