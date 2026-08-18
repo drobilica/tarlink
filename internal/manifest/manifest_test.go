@@ -62,6 +62,32 @@ func TestParseAcceptsWellFormedSHA512Verification(t *testing.T) {
 	}
 }
 
+func TestParseApplicationCategories(t *testing.T) {
+	for _, category := range []string{"game-development", "emulation", "graphics", "development", "utilities", "games"} {
+		t.Run(category, func(t *testing.T) {
+			value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", "categories:\n  - "+category, 1)
+			if _, err := Parse(strings.NewReader(value)); err != nil {
+				t.Fatalf("Parse() category %q error = %v", category, err)
+			}
+		})
+	}
+}
+
+func TestParseRejectsUnknownAndDuplicateApplicationCategories(t *testing.T) {
+	tests := map[string]string{
+		"unknown category":   "categories:\n  - games\n  - unknown",
+		"duplicate category": "categories:\n  - games\n  - games",
+	}
+	for name, categories := range tests {
+		t.Run(name, func(t *testing.T) {
+			value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", categories, 1)
+			if _, err := Parse(strings.NewReader(value)); err == nil {
+				t.Fatal("Parse() unexpectedly succeeded")
+			}
+		})
+	}
+}
+
 func TestParseRejectsInvalidManifest(t *testing.T) {
 	tests := map[string]func(string) string{
 		"unknown field": func(s string) string { return s + "script: echo unsafe\n" },

@@ -214,7 +214,7 @@ func (m Manifest) Validate() error {
 	}
 	if err := validateEnumList("category", m.Categories, map[string]bool{
 		"game-development": true, "emulation": true, "graphics": true,
-		"development": true, "utilities": true,
+		"development": true, "utilities": true, "games": true,
 	}); err != nil {
 		return err
 	}

@@ -17,7 +17,7 @@ id: <lowercase application id>
 name: <display name>
 summary: <short description>
 homepage: <HTTPS URL>
-categories: [game-development | emulation | graphics | development | utilities]
+categories: [game-development | emulation | graphics | development | utilities | games]
 platform:
   os: linux
   arch: amd64 | arm64
