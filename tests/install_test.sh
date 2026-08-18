@@ -245,6 +245,8 @@ mkdir -p "$latest_home"
 HOME=$latest_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$latest_log CURL_ARGS_LOG=$fixture/curl-args.log "$installer" >"$latest_stdout" 2>"$latest_stderr"
 assert_installed_binary "$latest_home"
 test -f "$latest_home/.local/state/tarlink/install.sha256"
+grep -F 'Installing TarLink version: latest' "$latest_stdout" >/dev/null
+grep -F 'TarLink installed successfully.' "$latest_stdout" >/dev/null
 grep '/releases/latest/download/checksums.txt' "$latest_log" >/dev/null
 grep "/releases/latest/download/tarlink-linux-$latest_asset" "$latest_log" >/dev/null
 grep -F -- '-q --fail --location --max-redirs 5 --connect-timeout 15 --max-time 600' "$fixture/curl-args.log" >/dev/null
@@ -318,6 +320,8 @@ if [ -n "$exact_assets" ]; then
 fi
 FAKE_UNAME_M=$explicit_machine HOME=$explicit_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$explicit_log "$installer" v9.9.9 >"$explicit_stdout" 2>"$explicit_stderr"
 assert_installed_binary "$explicit_home"
+grep -F 'Installing TarLink version: v9.9.9' "$explicit_stdout" >/dev/null
+grep -F 'TarLink installed successfully.' "$explicit_stdout" >/dev/null
 grep '/releases/download/v9.9.9/checksums.txt' "$explicit_log" >/dev/null
 grep "/releases/download/v9.9.9/tarlink-linux-$explicit_asset" "$explicit_log" >/dev/null
 

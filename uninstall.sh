@@ -155,13 +155,18 @@ if [ ! -e "$binary" ]; then
 			fail_missing
 		fi
 	done
+	printf 'TarLink is not installed.\n'
 	exit 0
 fi
 verify_owned_binary
 
 expected_digest=$binary_digest
 
-"$binary" uninstall --all
+printf 'Uninstalling TarLink...\n'
+if ! "$binary" uninstall --all; then
+	echo 'uninstall.sh: TarLink uninstall failed' >&2
+	exit 1
+fi
 
 verify_owned_binary
 test "$binary_digest" = "$expected_digest" || {
@@ -175,3 +180,5 @@ for product in "$data_home/tarlink" "$state_home/tarlink" "$cache_home/tarlink";
 	safe_layout_path "$product" || continue
 	rmdir "$product" 2>/dev/null || :
 done
+
+printf 'TarLink uninstalled successfully.\n'

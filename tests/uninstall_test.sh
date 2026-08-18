@@ -42,7 +42,7 @@ UNINSTALL_LOG=$fixture/failure.log UNINSTALL_STATUS=1 HOME=$fake_home PATH="$sha
 test -x "$fake_home/.local/bin/tarlink"
 test "$(cat "$fixture/failure.log")" = 'uninstall --all'
 
-UNINSTALL_LOG=$fixture/success.log HOME=$fake_home PATH="$sha256sum_dir:/usr/bin:/bin" "$uninstaller"
+UNINSTALL_LOG=$fixture/success.log HOME=$fake_home PATH="$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"$fixture/success.stdout"
 test ! -e "$fake_home/.local/bin/tarlink"
 test ! -e "$fake_home/.local/state/tarlink/install.sha256"
 test ! -e "$fake_home/.local/share/tarlink"
@@ -52,6 +52,8 @@ test -d "$fake_home/.local/state"
 test -d "$fake_home/.local/share"
 test -d "$fake_home/.cache"
 test "$(cat "$fixture/success.log")" = 'uninstall --all'
+grep -F 'Uninstalling TarLink...' "$fixture/success.stdout" >/dev/null
+grep -F 'TarLink uninstalled successfully.' "$fixture/success.stdout" >/dev/null
 
 already_home=$fixture/already-home
 mkdir -p "$already_home"

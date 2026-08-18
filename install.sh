@@ -161,6 +161,8 @@ else
 fi
 base_url="$repository/releases/$release_path"
 
+printf 'Installing TarLink version: %s\n' "$release"
+
 mkdir -p "$bin_dir"
 safe_path "$bin_dir" || fail "canonical TarLink binary path contains a symlink: $bin_dir"
 tmp_dir=$(mktemp -d "$bin_dir/.tarlink-install.XXXXXXXX") || fail 'could not create a temporary install directory'
@@ -248,13 +250,17 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 download() {
-	curl -q --fail --location --max-redirs 5 --connect-timeout 15 --max-time 600 --silent --show-error --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$2" "$1"
+	progress_option=--silent
+	if [ "${3:-}" = binary ] && [ -t 2 ]; then
+		progress_option=--progress-bar
+	fi
+	curl -q --fail --location --max-redirs 5 --connect-timeout 15 --max-time 600 "$progress_option" --show-error --proto '=https' --proto-redir '=https' --tlsv1.2 --output "$2" "$1"
 }
 
 checksums="$tmp_dir/checksums.txt"
 binary="$tmp_dir/$asset"
 download "$base_url/checksums.txt" "$checksums" || fail 'could not download checksums.txt'
-download "$base_url/$asset" "$binary" || fail "could not download $asset"
+download "$base_url/$asset" "$binary" binary || fail "could not download $asset"
 test -s "$binary" || fail "downloaded $asset is empty"
 
 expected_hash=$(awk -v asset="$asset" '
@@ -298,6 +304,7 @@ mv -f "$marker_tmp" "$marker" || fail "could not install the ownership marker"
 marker_published=1
 marker_tmp=
 
+printf 'TarLink installed successfully.\n'
 printf 'Installed TarLink at %s\n' "$target"
 case ":${PATH:-}:" in
 	*":$bin_dir:"*) ;;
