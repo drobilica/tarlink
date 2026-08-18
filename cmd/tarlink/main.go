@@ -22,7 +22,7 @@ func main() {
 	if err := app.CheckEnvironment(); err != nil {
 		os.Exit(runner.Fail(err))
 	}
-	if len(os.Args) == 1 || len(os.Args) == 2 && (os.Args[1] == "version" || os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h") {
+	if len(os.Args) == 2 && (os.Args[1] == "version" || os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h") {
 		os.Exit(runner.Run(ctx, os.Args[1:]))
 	}
 	layout, err := filesystem.NewLayout()

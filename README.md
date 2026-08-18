@@ -30,7 +30,7 @@ tarlink rollback blender
 tarlink uninstall blender
 ```
 
-Additional commands include `list`, `info`, `versions`, `update --all`, `tui`, and `version`. In the TUI, `x`/`delete` opens an uninstall confirmation; Enter confirms and Esc cancels. Structured JSON is available for `search`, `list`, `info`, and `versions` with `--json`.
+Additional commands include `list`, `info`, `versions`, `update --all`, and `version`. Running `tarlink` launches the TUI. In the TUI, `x`/`delete` opens an uninstall confirmation; Enter confirms and Esc cancels. Structured JSON is available for `search`, `list`, `info`, and `versions` with `--json`.
 
 TarLink downloads the registry automatically when it is absent. A validated cache younger than 24 hours is used without networking. When the cache is stale, TarLink attempts a transactional refresh and keeps the last successfully validated generation if the network is unavailable. Force a refresh with:
 

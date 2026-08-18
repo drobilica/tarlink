@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/clipperhouse/displaywidth"
 	"github.com/drobilica/tarlink/internal/app"
 )
 
@@ -16,9 +17,15 @@ type fakeService struct {
 	rolledBack      string
 	uninstalled     string
 	uninstallErr    error
+	installProgress []app.Progress
 }
 
-func (f *fakeService) Install(context.Context, string, app.ProgressSink) (app.Result, error) {
+func (f *fakeService) Install(_ context.Context, _ string, sink app.ProgressSink) (app.Result, error) {
+	for _, event := range f.installProgress {
+		if sink != nil {
+			sink(event)
+		}
+	}
 	return app.Result{AppID: "blender", Version: "5.2.0"}, nil
 }
 func (f *fakeService) Update(context.Context, string, app.ProgressSink) (app.Result, error) {
@@ -348,4 +355,68 @@ func TestVersionsFromInstalledListEscapesToList(t *testing.T) {
 	if command != nil || modelAfterBack.screen != screenInstalled || modelAfterBack.detail != nil {
 		t.Fatalf("versions list back-navigation failed: model=%#v command=%v", modelAfterBack, command)
 	}
+}
+
+func TestQuitKeysAndRootEscape(t *testing.T) {
+	m := model{screen: screenAvailable}
+	for _, key := range []string{"q", "ctrl+c"} {
+		updated, command := m.Update(tea.KeyPressMsg{Text: key})
+		if command == nil {
+			t.Fatalf("%s did not quit: %#v", key, updated)
+		}
+	}
+	updated, command := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if command != nil || updated.(model).screen != screenAvailable {
+		t.Fatalf("root escape changed state: %#v", updated)
+	}
+}
+
+func TestResizeAndNarrowRenderingStayWithinWidth(t *testing.T) {
+	value := app.Application{ID: "cafe", Name: "日本語 Application", RegistryVersion: "5.2.0", InstalledVersion: "5.1.0", UpdateAvailable: true}
+	m := model{screen: screenInstalled, installed: []app.Application{value}, width: 24}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 24, Height: 10})
+	m = updated.(model)
+	if m.width != 24 || m.height != 10 {
+		t.Fatalf("resize not stored: %#v", m)
+	}
+	for _, line := range strings.Split(m.View().Content, "\n") {
+		if displayWidth(line) > m.width {
+			t.Fatalf("line exceeds width: %d > %d: %q", displayWidth(line), m.width, line)
+		}
+	}
+}
+
+func TestProgressEventsRenderLifecycleAndUnknownLength(t *testing.T) {
+	service := &fakeService{
+		applications: []app.Application{{ID: "blender", Name: "Blender"}},
+		installProgress: []app.Progress{
+			{Stage: app.ProgressDownloading, BytesDone: 245 << 20, BytesTotal: 365 << 20},
+			{Stage: app.ProgressVerifying, BytesDone: 12, BytesTotal: 0},
+		},
+	}
+	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: service.applications}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("install did not start")
+	}
+	updated, _ = updated.(model).Update(command())
+	progressModel := updated.(model)
+	if !strings.Contains(progressModel.View().Content, "Downloading") || !strings.Contains(progressModel.View().Content, "67%") {
+		t.Fatalf("download progress not rendered: %q", progressModel.View().Content)
+	}
+	updated, command = progressModel.Update(command())
+	progressModel = updated.(model)
+	if command == nil || !strings.Contains(progressModel.View().Content, "Verifying") || strings.Contains(progressModel.View().Content, "%") {
+		t.Fatalf("unknown length progress rendered a percentage: %q", updated.(model).View().Content)
+	}
+	operationMessage := command()
+	completed, refresh := progressModel.Update(operationMessage)
+	if refresh == nil || completed.(model).busy != "" || completed.(model).progress.Stage != "" {
+		t.Fatalf("operation did not clean progress state: %#v", completed)
+	}
+}
+
+func displayWidth(value string) int {
+	return displaywidth.Options{ControlSequences: true}.String(value)
 }

@@ -53,11 +53,29 @@ func (f *fakeService) ValidateRegistry(_ context.Context, root string) error {
 	return nil
 }
 
-func TestNoArgumentsShowsHelp(t *testing.T) {
+func TestNoArgumentsLaunchesTUI(t *testing.T) {
 	var out bytes.Buffer
-	code := (Runner{Stdout: &out, Stderr: &bytes.Buffer{}}).Run(context.Background(), nil)
-	if code != 0 || !bytes.Contains(out.Bytes(), []byte("Usage:")) {
-		t.Fatalf("code=%d output=%q", code, out.String())
+	launched := false
+	runner := Runner{Stdout: &out, Stderr: &bytes.Buffer{}, LaunchTUI: func(context.Context, app.Service, io.Writer, io.Writer) error {
+		launched = true
+		return nil
+	}}
+	if code := runner.Run(context.Background(), nil); code != 0 || !launched {
+		t.Fatalf("code=%d launched=%t output=%q", code, launched, out.String())
+	}
+}
+
+func TestTUICommandIsRejected(t *testing.T) {
+	runner := Runner{Service: &fakeService{}, Stdout: io.Discard, Stderr: io.Discard}
+	if code := runner.Run(context.Background(), []string{"tui"}); code != exitInvalidArguments {
+		t.Fatalf("tui command code=%d", code)
+	}
+}
+
+func TestHelpDoesNotAdvertiseTUICommand(t *testing.T) {
+	var out bytes.Buffer
+	if code := (Runner{Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"help"}); code != 0 || bytes.Contains(out.Bytes(), []byte("tarlink tui")) {
+		t.Fatalf("code=%d help=%q", code, out.String())
 	}
 }
 

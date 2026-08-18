@@ -29,7 +29,6 @@ Usage:
   tarlink rollback <app>
   tarlink uninstall <app>
   tarlink uninstall --all
-  tarlink tui
   tarlink version
 `
 
@@ -48,7 +47,12 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		r.Stderr = io.Discard
 	}
 	if len(arguments) == 0 {
-		_, _ = io.WriteString(r.Stdout, help)
+		if r.LaunchTUI == nil {
+			return r.fail(errors.New("TUI is unavailable"))
+		}
+		if err := r.LaunchTUI(ctx, r.Service, r.Stdout, r.Stderr); err != nil {
+			return r.fail(err)
+		}
 		return 0
 	}
 	if r.Service == nil && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" {
@@ -163,15 +167,6 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		err = r.Service.Uninstall(ctx, value, r.progress())
 		if err == nil {
 			_, err = fmt.Fprintf(r.Stdout, "Uninstalled %s\n", value)
-		}
-	case "tui":
-		if len(arguments) != 1 {
-			return r.invalid("usage: tarlink tui")
-		}
-		if r.LaunchTUI == nil {
-			err = errors.New("TUI is unavailable")
-		} else {
-			err = r.LaunchTUI(ctx, r.Service, r.Stdout, r.Stderr)
 		}
 	case "version":
 		if len(arguments) != 1 {
