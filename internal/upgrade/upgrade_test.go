@@ -146,7 +146,14 @@ func TestAtomicReplaceCommitsOnlyAfterBothDirectorySyncs(t *testing.T) {
 	if err := os.WriteFile(marker, []byte(oldDigest+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	service.syncDirectory = func(string) error { return errors.New("sync failed") }
+	callCount := 0
+	service.syncDirectory = func(string) error {
+		callCount++
+		if callCount == 2 {
+			return errors.New("sync failed")
+		}
+		return nil
+	}
 	if err := service.atomicReplace(source, digestBytes(newBytes), nil); err == nil {
 		t.Fatal("sync failure succeeded")
 	}

@@ -325,15 +325,29 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 			_ = os.Remove(backupName)
 		}
 	}()
+	restoreBinary := func() error {
+		if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err := os.Rename(backupName, target); err != nil {
+			return err
+		}
+		backupMoved = false
+		restored = true
+		return nil
+	}
+	failBeforeCommit := func(operationErr error) error {
+		if rollbackErr := restoreBinary(); rollbackErr != nil {
+			return errors.Join(operationErr, fmt.Errorf("rollback upgrade: %w", rollbackErr))
+		}
+		return operationErr
+	}
 	if err := os.Rename(tmpName, target); err != nil {
-		_ = os.Rename(backupName, target)
-		return fmt.Errorf("replace binary: %w", err)
+		return failBeforeCommit(fmt.Errorf("replace binary: %w", err))
 	}
 	markerTmp, err := os.CreateTemp(filepath.Dir(marker), ".install.sha256-*")
 	if err != nil {
-		_ = os.Remove(target)
-		_ = os.Rename(backupName, target)
-		return err
+		return failBeforeCommit(err)
 	}
 	markerTmpName := markerTmp.Name()
 	markerOK := false
@@ -344,29 +358,19 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 		}
 	}()
 	if err := markerTmp.Chmod(0600); err != nil {
-		_ = os.Remove(target)
-		_ = os.Rename(backupName, target)
-		return err
+		return failBeforeCommit(err)
 	}
 	if _, err := markerTmp.WriteString(digest + "\n"); err != nil {
-		_ = os.Remove(target)
-		_ = os.Rename(backupName, target)
-		return err
+		return failBeforeCommit(err)
 	}
 	if err := markerTmp.Sync(); err != nil {
-		_ = os.Remove(target)
-		_ = os.Rename(backupName, target)
-		return err
+		return failBeforeCommit(err)
 	}
 	if err := markerTmp.Close(); err != nil {
-		_ = os.Remove(target)
-		_ = os.Rename(backupName, target)
-		return err
+		return failBeforeCommit(err)
 	}
 	if err := os.Rename(markerTmpName, marker); err != nil {
-		_ = os.Remove(target)
-		_ = os.Rename(backupName, target)
-		return fmt.Errorf("update ownership marker: %w", err)
+		return failBeforeCommit(fmt.Errorf("update ownership marker: %w", err))
 	}
 	markerOK = true
 	report(progress, "installing", 0, 0)
@@ -378,14 +382,13 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 		if err := restoreMarker(marker, oldMarker); err != nil {
 			return err
 		}
-		if err := os.Remove(target); err != nil {
+		if err := restoreBinary(); err != nil {
 			return err
 		}
-		if err := os.Rename(backupName, target); err != nil {
+		if err := syncDirectory(s.Layout.Bin); err != nil {
 			return err
 		}
-		backupMoved = false
-		return nil
+		return syncDirectory(filepath.Dir(marker))
 	}
 	if err := syncDirectory(s.Layout.Bin); err != nil {
 		if rollbackErr := rollback(); rollbackErr != nil {
