@@ -53,14 +53,16 @@ func IsNewer(current, latest string) bool {
 type Progress func(phase string, done, total int64)
 
 type Service struct {
-	Layout     filesystem.Layout
-	Client     *download.Client
-	Current    string
-	GOOS       string
-	GOARCH     string
-	APIURL     string
-	Now        func() time.Time
-	Executable func() (string, error)
+	Layout         filesystem.Layout
+	Client         *download.Client
+	Current        string
+	GOOS           string
+	GOARCH         string
+	APIURL         string
+	ReleaseBaseURL string
+	Now            func() time.Time
+	Executable     func() (string, error)
+	syncDirectory  func(string) error
 }
 
 type release struct {
@@ -140,16 +142,17 @@ func (s *Service) fetchLatest(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(data, &releases); err != nil {
 		return "", fmt.Errorf("decode release API: %w", err)
 	}
+	arch := s.GOARCH
+	if arch == "" {
+		arch = runtime.GOARCH
+	}
+	return selectLatest(releases, arch)
+}
+
+func selectLatest(releases []release, arch string) (string, error) {
 	best := ""
 	for _, item := range releases {
-		if item.Draft || item.Pre || !stableVersion.MatchString(item.TagName) {
-			continue
-		}
-		arch := s.GOARCH
-		if arch == "" {
-			arch = runtime.GOARCH
-		}
-		if !releaseHasAsset(item, "tarlink-linux-"+arch) || !releaseHasAsset(item, "checksums.txt") {
+		if item.Draft || item.Pre || !stableVersion.MatchString(item.TagName) || !releaseHasAsset(item, "tarlink-linux-"+arch) || !releaseHasAsset(item, "checksums.txt") {
 			continue
 		}
 		value := normalizeVersion(item.TagName)
@@ -189,7 +192,11 @@ func (s *Service) replace(ctx context.Context, latest string, progress Progress)
 	if err := s.verifyInstallation(); err != nil {
 		return err
 	}
-	base := "https://github.com/drobilica/tarlink/releases/download/v" + latest
+	base := s.ReleaseBaseURL
+	if base == "" {
+		base = "https://github.com/drobilica/tarlink/releases/download/v"
+	}
+	base += latest
 	assetName := "tarlink-linux-" + s.GOARCH
 	cache := filepath.Join(s.Layout.Cache, "upgrade")
 	checksums := filepath.Join(cache, latest+"-checksums.txt")
@@ -254,6 +261,10 @@ func (s *Service) verifyInstallation() error {
 func (s *Service) atomicReplace(source, digest string, progress Progress) error {
 	target := filepath.Join(s.Layout.Bin, "tarlink")
 	marker := filepath.Join(s.Layout.StateHome, "tarlink", "install.sha256")
+	oldMarker, err := os.ReadFile(marker)
+	if err != nil {
+		return fmt.Errorf("read ownership marker: %w", err)
+	}
 	tmp, err := os.CreateTemp(s.Layout.Bin, ".tarlink-upgrade-*")
 	if err != nil {
 		return fmt.Errorf("create replacement: %w", err)
@@ -292,6 +303,12 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 		return err
 	}
 	backupName := backup.Name()
+	backupMoved := false
+	defer func() {
+		if !backupMoved {
+			_ = os.Remove(backupName)
+		}
+	}()
 	if err := backup.Close(); err != nil {
 		return err
 	}
@@ -301,6 +318,7 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 	if err := os.Rename(target, backupName); err != nil {
 		return fmt.Errorf("stage current binary: %w", err)
 	}
+	backupMoved = true
 	restored := false
 	defer func() {
 		if !restored {
@@ -352,17 +370,66 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 	}
 	markerOK = true
 	report(progress, "installing", 0, 0)
-	if err := syncDir(s.Layout.Bin); err != nil {
+	syncDirectory := s.syncDirectory
+	if syncDirectory == nil {
+		syncDirectory = syncDir
+	}
+	rollback := func() error {
+		if err := restoreMarker(marker, oldMarker); err != nil {
+			return err
+		}
+		if err := os.Remove(target); err != nil {
+			return err
+		}
+		if err := os.Rename(backupName, target); err != nil {
+			return err
+		}
+		backupMoved = false
+		return nil
+	}
+	if err := syncDirectory(s.Layout.Bin); err != nil {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback upgrade: %w", rollbackErr))
+		}
 		return err
 	}
-	if err := syncDir(filepath.Dir(marker)); err != nil {
+	if err := syncDirectory(filepath.Dir(marker)); err != nil {
+		if rollbackErr := rollback(); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback upgrade: %w", rollbackErr))
+		}
 		return err
 	}
 	_ = os.Remove(backupName)
+	backupMoved = false
 	restored = true
 	keep = true
 	report(progress, "complete", 0, 0)
 	return nil
+}
+
+func restoreMarker(path string, data []byte) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".install.sha256-rollback-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 func checksumFor(path, name string) (string, error) {

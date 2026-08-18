@@ -95,7 +95,14 @@ func TestModelLoadsAndShowsApplications(t *testing.T) {
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", RegistryVersion: "5.2.0"}}}
 	m := model{ctx: context.Background(), service: service}
 	message := m.Init()()
-	updated, _ := m.Update(message)
+	var updated tea.Model = m
+	if batch, ok := message.(tea.BatchMsg); ok {
+		for _, command := range batch {
+			updated, _ = updated.Update(command())
+		}
+	} else {
+		updated, _ = updated.Update(message)
+	}
 	view := updated.(model).View()
 	if !strings.Contains(view.Content, "Blender") || !strings.Contains(view.Content, "AVAILABLE / SEARCH") {
 		t.Fatalf("unexpected view: %q", view.Content)

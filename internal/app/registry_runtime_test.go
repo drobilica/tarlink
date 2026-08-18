@@ -400,3 +400,33 @@ func TestListPrefersExactRuntimeVariant(t *testing.T) {
 		t.Fatalf("arm64 List() applications=%#v error=%v", applications, err)
 	}
 }
+
+func TestListUsesSharedRegistryFreshnessPolicy(t *testing.T) {
+	version := "1.0"
+	core, requests := registryRuntimeCore(t, func(request *http.Request) (*http.Response, error) {
+		return registryResponse(registryRuntimeArchive(t, version))(request)
+	})
+	if _, err := core.Search(context.Background(), "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.Readlink(filepath.Join(core.syncer.CacheRoot, "current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation := filepath.Join(core.syncer.CacheRoot, current)
+	old := time.Now().Add(-registry.DefaultMaxAge - time.Hour)
+	if err := os.Chtimes(generation, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{Schema: state.Schema, App: "fixture", Current: "0.9", Executable: "fixture", Integration: state.Integration{ExecutableLink: filepath.Join(core.layout.Bin, "fixture"), ExecutableTarget: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}}); err != nil {
+		t.Fatal(err)
+	}
+	version = "2.0"
+	applications, err := core.List(context.Background())
+	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "2.0" {
+		t.Fatalf("List() applications=%#v error=%v", applications, err)
+	}
+	if *requests != 2 {
+		t.Fatalf("registry requests=%d, want 2", *requests)
+	}
+}

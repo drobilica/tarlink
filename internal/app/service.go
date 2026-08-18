@@ -149,12 +149,12 @@ func (core *Core) Rollback(ctx context.Context, appID string, sink ProgressSink)
 	return Result{AppID: appID, Version: outcome.State.Current, Previous: outcome.State.Previous, Warnings: outcome.Warnings}, nil
 }
 
-func (core *Core) List(context.Context) ([]Application, error) {
+func (core *Core) List(ctx context.Context) ([]Application, error) {
 	states, err := core.installedStates()
 	if err != nil {
 		return nil, err
 	}
-	catalog, catalogErr := registry.Open(filepath.Join(core.layout.Cache, "registry"))
+	catalog, catalogErr := core.catalog(ctx, nil)
 	goos, goarch := core.platform()
 	result := make([]Application, 0, len(states))
 	for _, installed := range states {

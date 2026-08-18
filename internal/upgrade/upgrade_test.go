@@ -1,10 +1,21 @@
 package upgrade
 
 import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/drobilica/tarlink/internal/download"
+	"github.com/drobilica/tarlink/internal/filesystem"
 )
 
 func TestStableVersionComparison(t *testing.T) {
@@ -72,5 +83,228 @@ func TestReleaseAssetMustBeUniqueAndNonEmpty(t *testing.T) {
 	item.Assets = append(item.Assets, item.Assets[0])
 	if releaseHasAsset(item, "tarlink-linux-amd64") {
 		t.Fatal("duplicate asset was accepted")
+	}
+}
+
+func TestSelectLatestFiltersUnsafeReleasesAndAssets(t *testing.T) {
+	makeAsset := func(name string) asset { return asset{Name: name, URL: "https://example.test/" + name} }
+	valid := func(tag string) release {
+		return release{TagName: tag, Assets: []asset{makeAsset("tarlink-linux-amd64"), makeAsset("checksums.txt")}}
+	}
+	releases := []release{valid("v1.0.0"), valid("v2.0.0-rc.1"), valid("v2.0.0")}
+	releases[1].Pre = true
+	releases = append(releases, release{TagName: "v9.0.0", Assets: []asset{makeAsset("checksums.txt")}}, release{TagName: "not-a-version", Assets: valid("v1.0.0").Assets})
+	if got, err := selectLatest(releases, "amd64"); err != nil || got != "2.0.0" {
+		t.Fatalf("latest=%q err=%v", got, err)
+	}
+	if _, err := selectLatest(releases, "arm64"); !errors.Is(err, ErrNoRelease) {
+		t.Fatalf("missing arm64 asset err=%v", err)
+	}
+}
+
+func TestAtomicReplaceCommitsOnlyAfterBothDirectorySyncs(t *testing.T) {
+	dir := t.TempDir()
+	bin, state := filepath.Join(dir, "bin"), filepath.Join(dir, "state", "tarlink")
+	if err := os.MkdirAll(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(bin, "tarlink")
+	old := []byte("old binary")
+	if err := os.WriteFile(target, old, 0755); err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := digestBytes(old)
+	marker := filepath.Join(state, "install.sha256")
+	if err := os.WriteFile(marker, []byte(oldDigest+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(dir, "new")
+	newBytes := []byte("new binary")
+	if err := os.WriteFile(source, newBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	l := filesystem.Layout{Bin: bin, StateHome: filepath.Join(dir, "state")}
+	service := &Service{Layout: l, syncDirectory: func(string) error { return nil }}
+	if err := service.atomicReplace(source, digestBytes(newBytes), nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(target)
+	if string(got) != string(newBytes) {
+		t.Fatalf("target=%q", got)
+	}
+	got, _ = os.ReadFile(marker)
+	if string(got) != digestBytes(newBytes)+"\n" {
+		t.Fatalf("marker=%q", got)
+	}
+
+	if err := os.WriteFile(target, old, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte(oldDigest+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	service.syncDirectory = func(string) error { return errors.New("sync failed") }
+	if err := service.atomicReplace(source, digestBytes(newBytes), nil); err == nil {
+		t.Fatal("sync failure succeeded")
+	}
+	got, _ = os.ReadFile(target)
+	if string(got) != string(old) {
+		t.Fatalf("rollback target=%q", got)
+	}
+	got, _ = os.ReadFile(marker)
+	if string(got) != oldDigest+"\n" {
+		t.Fatalf("rollback marker=%q", got)
+	}
+	entries, _ := os.ReadDir(bin)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".tarlink-") {
+			t.Fatalf("temporary file remains: %s", entry.Name())
+		}
+	}
+}
+
+func digestBytes(data []byte) string {
+	value := sha256.Sum256(data)
+	return hex.EncodeToString(value[:])
+}
+
+func ownedService(t *testing.T) (*Service, string, string, []byte) {
+	t.Helper()
+	home, err := os.MkdirTemp(".", ".upgrade-owned-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	home, err = filepath.Abs(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	bin := filepath.Join(home, ".local", "bin")
+	markerDir := filepath.Join(home, ".local", "state", "tarlink")
+	if err := os.MkdirAll(markerDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(bin, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(bin, "tarlink")
+	content := []byte("owned")
+	if err := os.WriteFile(target, content, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(markerDir, "install.sha256"), []byte(digestBytes(content)+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	layout := filesystem.Layout{Home: home, Bin: bin, StateHome: filepath.Join(home, ".local", "state"), Cache: filepath.Join(home, ".cache", "tarlink")}
+	service := &Service{Layout: layout, Current: "1.0.0", Executable: func() (string, error) { return target, nil }}
+	return service, target, filepath.Join(markerDir, "install.sha256"), content
+}
+
+func TestVerifyInstallationOwnershipBoundaries(t *testing.T) {
+	service, _, _, _ := ownedService(t)
+	if err := service.verifyInstallation(); err != nil {
+		t.Fatalf("valid ownership rejected: %v", err)
+	}
+	service, _, marker, _ := ownedService(t)
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.verifyInstallation(); !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("missing marker err=%v", err)
+	}
+	service, _, marker, _ = ownedService(t)
+	if err := os.WriteFile(marker, []byte("bad\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.verifyInstallation(); !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("malformed marker err=%v", err)
+	}
+	service, _, marker, _ = ownedService(t)
+	if err := os.WriteFile(marker, []byte(digestBytes([]byte("other"))+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.verifyInstallation(); !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("digest mismatch err=%v", err)
+	}
+	service, target, _, _ := ownedService(t)
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(filepath.Dir(target), "elsewhere"), target); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.verifyInstallation(); !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("binary symlink err=%v", err)
+	}
+	service, _, marker, _ = ownedService(t)
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(filepath.Dir(marker), "elsewhere"), marker); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.verifyInstallation(); !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("marker symlink err=%v", err)
+	}
+	service, _, _, _ = ownedService(t)
+	service.Executable = func() (string, error) { return filepath.Join(service.Layout.Home, "elsewhere"), nil }
+	if err := service.verifyInstallation(); !errors.Is(err, ErrNotOwned) {
+		t.Fatalf("noncanonical executable err=%v", err)
+	}
+}
+
+func TestUpgradeRefusesDevelopmentAndUnsupportedPlatforms(t *testing.T) {
+	service, _, _, _ := ownedService(t)
+	service.Current = "development"
+	if _, err := service.Upgrade(context.Background(), nil); !errors.Is(err, ErrDevelopment) {
+		t.Fatalf("development err=%v", err)
+	}
+	service.Current = "1.0.0"
+	service.GOOS = "darwin"
+	if err := service.replace(context.Background(), "2.0.0", nil); !errors.Is(err, ErrUnsupportedAsset) {
+		t.Fatalf("unsupported OS err=%v", err)
+	}
+	service.GOOS, service.GOARCH = "linux", "mips64"
+	if err := service.replace(context.Background(), "2.0.0", nil); !errors.Is(err, ErrUnsupportedAsset) {
+		t.Fatalf("unsupported arch err=%v", err)
+	}
+}
+
+func TestUpgradeDownloadsVerifiesAndReplacesCanonicalInstallation(t *testing.T) {
+	service, target, marker, _ := ownedService(t)
+	newBytes := []byte("new release")
+	digest := digestBytes(newBytes)
+	api := []byte(`[{"tag_name":"v2.0.0","draft":false,"prerelease":false,"assets":[{"name":"tarlink-linux-amd64","browser_download_url":"https://example.test/binary"},{"name":"checksums.txt","browser_download_url":"https://example.test/checksums"}]}]`)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases":
+			_, _ = w.Write(api)
+		case "/download/v2.0.0/checksums.txt":
+			_, _ = w.Write([]byte(digest + "  tarlink-linux-amd64\n"))
+		case "/download/v2.0.0/tarlink-linux-amd64":
+			_, _ = w.Write(newBytes)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	service.Client = &download.Client{HTTP: server.Client()}
+	service.APIURL = server.URL + "/releases"
+	service.ReleaseBaseURL = server.URL + "/download/v"
+	service.GOOS, service.GOARCH = "linux", "amd64"
+	value, err := service.Upgrade(context.Background(), nil)
+	if err != nil || value.Latest != "2.0.0" {
+		t.Fatalf("upgrade value=%#v err=%v", value, err)
+	}
+	got, _ := os.ReadFile(target)
+	if !bytes.Equal(got, newBytes) {
+		t.Fatalf("binary=%q", got)
+	}
+	got, _ = os.ReadFile(marker)
+	if string(got) != digest+"\n" {
+		t.Fatalf("marker=%q", got)
 	}
 }
