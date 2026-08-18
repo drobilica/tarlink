@@ -126,8 +126,8 @@ func TestAtomicReplaceCommitsOnlyAfterBothDirectorySyncs(t *testing.T) {
 	if err := os.WriteFile(source, newBytes, 0600); err != nil {
 		t.Fatal(err)
 	}
-	l := filesystem.Layout{Bin: bin, StateHome: filepath.Join(dir, "state")}
-	service := &Service{Layout: l, syncDirectory: func(string) error { return nil }}
+	l := filesystem.Layout{Home: dir, Bin: bin, StateHome: filepath.Join(dir, "state"), Cache: filepath.Join(dir, "cache")}
+	service := &Service{Layout: l, Executable: func() (string, error) { return target, nil }, syncDirectory: func(string) error { return nil }}
 	if err := service.atomicReplace(source, digestBytes(newBytes), nil); err != nil {
 		t.Fatal(err)
 	}
@@ -313,5 +313,22 @@ func TestUpgradeDownloadsVerifiesAndReplacesCanonicalInstallation(t *testing.T) 
 	got, _ = os.ReadFile(marker)
 	if string(got) != digest+"\n" {
 		t.Fatalf("marker=%q", got)
+	}
+	if err := os.WriteFile(target, []byte("old again"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte(digestBytes([]byte("old again"))+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	source := filepath.Join(service.Layout.Cache, "source")
+	if err := os.WriteFile(source, newBytes, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.atomicReplace(source, digestBytes([]byte("wrong")), nil); !errors.Is(err, download.ErrChecksumMismatch) {
+		t.Fatalf("source TOCTOU checksum err=%v", err)
+	}
+	got, _ = os.ReadFile(target)
+	if string(got) != "old again" {
+		t.Fatalf("checksum failure replaced binary=%q", got)
 	}
 }

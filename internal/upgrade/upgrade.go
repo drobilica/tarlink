@@ -281,13 +281,17 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 	if err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(tmp, input)
+	hasher := sha256.New()
+	_, copyErr := io.Copy(io.MultiWriter(tmp, hasher), input)
 	closeErr := input.Close()
 	if copyErr != nil {
 		return copyErr
 	}
 	if closeErr != nil {
 		return closeErr
+	}
+	if hex.EncodeToString(hasher.Sum(nil)) != digest {
+		return download.ErrChecksumMismatch
 	}
 	if err := tmp.Chmod(0755); err != nil {
 		return err
@@ -313,6 +317,9 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 		return err
 	}
 	if err := os.Remove(backupName); err != nil {
+		return err
+	}
+	if err := s.verifyInstallation(); err != nil {
 		return err
 	}
 	if err := os.Rename(target, backupName); err != nil {
