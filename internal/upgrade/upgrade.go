@@ -386,16 +386,20 @@ func (s *Service) atomicReplace(source, digest string, progress Progress) error 
 		syncDirectory = syncDir
 	}
 	rollback := func() error {
+		var rollbackErrors []error
 		if err := restoreMarker(marker, oldMarker); err != nil {
-			return err
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore ownership marker: %w", err))
 		}
 		if err := restoreBinary(); err != nil {
-			return err
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("restore binary: %w", err))
 		}
 		if err := syncDirectory(s.Layout.Bin); err != nil {
-			return err
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("sync binary directory: %w", err))
 		}
-		return syncDirectory(filepath.Dir(marker))
+		if err := syncDirectory(filepath.Dir(marker)); err != nil {
+			rollbackErrors = append(rollbackErrors, fmt.Errorf("sync marker directory: %w", err))
+		}
+		return errors.Join(rollbackErrors...)
 	}
 	if err := syncDirectory(s.Layout.Bin); err != nil {
 		if rollbackErr := rollback(); rollbackErr != nil {
