@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"io"
@@ -428,8 +429,8 @@ func TestGodotUpstreamArchiveCompatibility(t *testing.T) {
 		digest      string
 		executable  string
 	}{
-		{name: "amd64", environment: "TARLINK_UPSTREAM_GODOT_ARCHIVE", digest: "c7ff14fd28472c8d4f193043de30278dcf7e5241a1dcf7566b02e27addaa33ba", executable: "Godot_v4.7.1-stable_linux.x86_64"},
-		{name: "arm64", environment: "TARLINK_UPSTREAM_GODOT_ARM64_ARCHIVE", digest: "8f527179cd4ae58b402fa265fe817dc505e5b6b14574f309efe57113be562ac1", executable: "Godot_v4.7.1-stable_linux.arm64"},
+		{name: "amd64", environment: "TARLINK_UPSTREAM_GODOT_ARCHIVE", digest: "9aa00f7a605200940bce3027a567b782f49bd8e940dd06ae9e987bd65aee1b1467edd56ed84fcdcbdd44354bf613bdbb4e5d2913e925850368e150c59ed54c65", executable: "Godot_v4.7.2-stable_linux.x86_64"},
+		{name: "arm64", environment: "TARLINK_UPSTREAM_GODOT_ARM64_ARCHIVE", digest: "dd59918da086bd49bde2f5450b5e567ff8650cbde9abbd7b8f4ca1197ff8c609baa38834666d032deafb47099078d7822279e2a0e06e5665745468f26533e7e2", executable: "Godot_v4.7.2-stable_linux.arm64"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			source := os.Getenv(test.environment)
@@ -440,7 +441,7 @@ func TestGodotUpstreamArchiveCompatibility(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			hasher := sha256.New()
+			hasher := sha512.New()
 			if _, err := io.Copy(hasher, file); err != nil {
 				file.Close()
 				t.Fatal(err)
@@ -449,7 +450,7 @@ func TestGodotUpstreamArchiveCompatibility(t *testing.T) {
 				t.Fatal(err)
 			}
 			if actual := hex.EncodeToString(hasher.Sum(nil)); actual != test.digest {
-				t.Fatalf("SHA-256 = %s, want %s", actual, test.digest)
+				t.Fatalf("SHA-512 = %s, want %s", actual, test.digest)
 			}
 
 			destination := t.TempDir()

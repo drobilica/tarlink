@@ -53,12 +53,12 @@ func TestParseAcceptsArm64Manifest(t *testing.T) {
 	}
 }
 
-func TestParseRejectsWellFormedSHA512Verification(t *testing.T) {
+func TestParseAcceptsWellFormedSHA512Verification(t *testing.T) {
 	sha512Manifest := strings.Replace(validManifest,
 		"algorithm: sha256\n    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"algorithm: sha512\n    digest: "+strings.Repeat("0", 128), 1)
-	if _, err := Parse(strings.NewReader(sha512Manifest)); err == nil {
-		t.Fatal("Parse() unexpectedly accepted SHA-512 verification")
+	if _, err := Parse(strings.NewReader(sha512Manifest)); err != nil {
+		t.Fatalf("Parse() SHA-512 error = %v", err)
 	}
 }
 

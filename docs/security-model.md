@@ -8,7 +8,7 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 - Registry and release traffic uses HTTPS. Release redirects must remain valid HTTPS URLs and are capped at five; a digest authenticates the final bytes independently of redirect hosting.
 - Connect, TLS handshake, response-header, and overall timeouts bound waits.
 - Registry responses are limited to 64 MiB. Application downloads are limited to 8 GiB.
-- Each release declares an exact lowercase SHA-256 digest and an authoritative upstream HTTPS checksum source. Verification completes before extraction or activation. Non-SHA-256 algorithms, missing verification, and malformed digests are rejected.
+- Each application release declares an exact lowercase SHA-256 or SHA-512 digest and an authoritative upstream HTTPS checksum source. Verification completes before extraction or activation. Other algorithms, missing verification, and malformed digests are rejected.
 - Registry generations contain only a revalidated `apps/` tree. The active pointer must be relative and remain below `generations/`.
 - A missing registry is fetched automatically. Failed stale refreshes cannot replace or invalidate the last successfully validated cache.
 - XDG data, state, and cache homes must be absolute paths below the user's home and cannot contain control characters. Managed directory chains are checked without accepting symlink components before mutation.
@@ -41,7 +41,7 @@ Effective UID 0 is rejected. State uses a temporary file, flush, atomic rename, 
 
 State is accepted for removal only when its application ID, versions, executable, executable integration, optional desktop integration, icon destination/source metadata, and ownership digests match the canonical current-user layout. Existing integrations are validated before deletion. Missing integrations make interrupted cleanup retryable; replacements or modifications are conflicts. Application roots and TarLink product roots are removed through containment and symlink checks that never select their broader parent directories. Icon sources are regular files below the verified application root; icon destinations are fixed hicolor `scalable/apps` (SVG) or `48x48/apps` (raster) paths.
 
-The shell installer records a private, atomic SHA-256 marker for the canonical TarLink binary. Replacement and bootstrap removal require a regular, non-symlink marker whose exact lowercase digest matches the binary; XDG state paths remain absolute, clean, below `HOME`, and free of symlink components.
+The shell installer records a private, atomic SHA-256 marker for the canonical TarLink binary. Replacement and bootstrap removal require a regular, non-symlink marker whose exact lowercase digest matches the binary; XDG state paths remain absolute, clean, below `HOME`, and free of symlink components. This self-upgrade marker and the official TarLink release contract remain SHA-256-only.
 
 Corrupt state, unexpected symlinks, untracked entries, integration conflicts, and partial cleanup errors stop full purge. The shell does not remove the TarLink binary after such a failure.
 

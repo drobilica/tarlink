@@ -3,7 +3,6 @@ package download
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/hex"
 	"errors"
@@ -18,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/drobilica/tarlink/internal/checksum"
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/version"
 )
@@ -313,19 +313,7 @@ func validateDigest(algorithm, value string) error {
 }
 
 func newHasher(algorithm, value string) (hash.Hash, error) {
-	if algorithm != "sha256" {
-		return nil, fmt.Errorf("unsupported artifact verification algorithm %q", algorithm)
-	}
-	hasher := sha256.New()
-	const size = sha256.Size
-	if len(value) != size*2 || value != strings.ToLower(value) {
-		return nil, fmt.Errorf("artifact verification digest must be exactly %d lowercase hexadecimal characters", size*2)
-	}
-	decoded, err := hex.DecodeString(value)
-	if err != nil || len(decoded) != size {
-		return nil, fmt.Errorf("artifact verification digest must be exactly %d lowercase hexadecimal characters", size*2)
-	}
-	return hasher, nil
+	return checksum.NewHasher(algorithm, value)
 }
 
 func copyWithProgress(destination io.Writer, source io.Reader, total int64, progress Progress) (int64, error) {

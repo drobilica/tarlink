@@ -15,21 +15,20 @@ run_checks() {
 	test -z "$(gofmt -l .)"
 	go vet ./...
 	go test ./...
+	./tests/release_notes_test.sh
+	./tests/release_workflow_test.sh
 	./tests/install_test.sh
 	./tests/uninstall_test.sh
 	go test -race ./...
-	go test ./internal/architecture
 	CGO_ENABLED=0 go build ./...
 }
 
 run_host_checks() {
-	host_status=0
-	test -z "$(gofmt -l .)" || host_status=1
-	go vet ./... || host_status=1
-	go test ./... || host_status=1
-	go test -race ./... || host_status=1
-	CGO_ENABLED=0 go build ./... || host_status=1
-	return "$host_status"
+	test -z "$(gofmt -l .)"
+	go vet ./internal/checksum ./internal/manifest ./docs
+	go test ./internal/checksum ./internal/manifest ./docs
+	./tests/release_notes_test.sh
+	./tests/release_workflow_test.sh
 }
 
 case "$(uname -s)" in
@@ -43,9 +42,7 @@ case "$(uname -s)" in
 				printf '%s\n' 'Go is required for host-compatible validation.' >&2
 				exit 1
 			}
-			if ! run_host_checks; then
-				printf '%s\n' 'some host checks are not portable to macOS; continuing with Linux validation.' >&2
-			fi
+			run_host_checks
 		}
 
 		if ! command -v podman >/dev/null 2>&1; then
@@ -71,7 +68,7 @@ case "$(uname -s)" in
 			-e XDG_CACHE_HOME=/tmp/tarlink-home/cache \
 			-e TARLINK_VALIDATE_IN_CONTAINER=1 \
 			"golang:${go_version}-bookworm" \
-			bash -c 'apt-get update >/dev/null && apt-get install --no-install-recommends -y desktop-file-utils >/dev/null && mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" && /src/scripts/validate.sh'
+			bash -c 'apt-get update >/dev/null && apt-get install --no-install-recommends -y desktop-file-utils jq >/dev/null && mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" && /src/scripts/validate.sh'
 		;;
 	*)
 		printf 'unsupported host OS: %s\n' "$(uname -s)" >&2

@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -166,13 +167,40 @@ func TestFetchArtifactRejectsUnsupportedVerification(t *testing.T) {
 	}
 }
 
-func TestFetchArtifactRejectsWellFormedSHA512Verification(t *testing.T) {
-	_, err := NewClient().FetchArtifact(context.Background(), ArtifactRequest{
-		URL: "https://example.com/archive.zip", Algorithm: "sha512", Digest: strings.Repeat("0", 128),
+func TestFetchArtifactVerifiesAndCachesSHA512(t *testing.T) {
+	payload := []byte("sha512 application archive")
+	digest := sha512.Sum512(payload)
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+	destination := filepath.Join(t.TempDir(), "artifact")
+	client := &Client{HTTP: server.Client()}
+	request := ArtifactRequest{URL: server.URL, Algorithm: "sha512", Digest: hex.EncodeToString(digest[:]), Destination: destination}
+	result, err := client.FetchArtifact(context.Background(), request)
+	if err != nil || result.Cached || result.Digest != request.Digest {
+		t.Fatalf("downloaded SHA-512 result = %#v, error = %v", result, err)
+	}
+	cached, err := client.FetchArtifact(context.Background(), request)
+	if err != nil || !cached.Cached || requests != 1 {
+		t.Fatalf("cached SHA-512 result = %#v, error = %v, requests = %d", cached, err, requests)
+	}
+}
+
+func TestFetchArtifactRejectsIncorrectSHA512(t *testing.T) {
+	payload := []byte("sha512 application archive")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(payload)
+	}))
+	defer server.Close()
+	_, err := (&Client{HTTP: server.Client()}).FetchArtifact(context.Background(), ArtifactRequest{
+		URL: server.URL, Algorithm: "sha512", Digest: strings.Repeat("0", 128),
 		Destination: filepath.Join(t.TempDir(), "artifact"),
 	})
-	if err == nil {
-		t.Fatal("FetchArtifact() unexpectedly accepted SHA-512 verification")
+	if !errors.Is(err, ErrChecksumMismatch) {
+		t.Fatalf("FetchArtifact() error = %v, want checksum mismatch", err)
 	}
 }
 

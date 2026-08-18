@@ -64,7 +64,7 @@ If the canonical `~/.local/bin/tarlink` binary is already missing and no TarLink
 
 - The official registry URL is compiled into TarLink; alternate registries are not accepted.
 - Manifests are strict data and cannot run commands, hooks, scripts, or arbitrary arguments.
-- Release artifacts and redirects must use HTTPS. Downloads are bounded, timed out, and verified before extraction with an exact lowercase SHA-256 digest recorded by the registry. Non-SHA-256 algorithms, malformed digests, and missing verification are rejected.
+- Application release artifacts and redirects must use HTTPS. Downloads are bounded, timed out, and verified before extraction with an exact lowercase SHA-256 or SHA-512 digest recorded by the registry. Other algorithms, malformed digests, and missing verification are rejected. TarLink's own release assets and install marker remain SHA-256-only.
 - Only `tar.gz`, `tar.xz`, and ZIP are accepted. Extraction rejects traversal, hardlinks, devices, special files, and unsafe symlinks, while retaining all documented size and depth limits.
 - Installation uses staging, versioned directories, atomic activation, strict state, per-application locks, one previous rollback version, and explicit ownership validation.
 - TarLink never invokes external programs and has no CGO, plugins, telemetry, daemon, automatic updater, custom install destinations, or system dependencies. Explicit `tarlink upgrade` and TUI `U` use only the canonical TarLink-owned binary and verified official GitHub release assets.

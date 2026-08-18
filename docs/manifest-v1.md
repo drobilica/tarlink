@@ -26,7 +26,7 @@ release:
   url: <HTTPS release artifact URL>
   archive: tar.gz | tar.xz | zip
   verification:
-    algorithm: sha256
+    algorithm: sha256 | sha512
     digest: <exact lowercase hexadecimal digest>
     source: <authoritative upstream HTTPS checksum URL>
 application:
@@ -37,7 +37,7 @@ desktop:
   icon: <optional canonical relative path to an icon below the extracted root>
 ```
 
-SHA-256 digests contain exactly 64 lowercase hexadecimal characters. Other algorithms, missing verification, malformed digests, and non-HTTPS or credential-bearing verification sources are rejected.
+SHA-256 digests contain exactly 64 lowercase hexadecimal characters; SHA-512 digests contain exactly 128. Only `sha256` and `sha512` are accepted. Other algorithms, missing verification, malformed digests, and non-HTTPS or credential-bearing verification sources are rejected.
 
 `verification.source` records the upstream checksum publication from which registry reviewers obtained the digest. TarLink verifies the artifact against the reviewed digest; it does not substitute a preferred algorithm or derive a different digest.
 

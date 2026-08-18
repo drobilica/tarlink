@@ -5,7 +5,6 @@ package manifest
 
 import (
 	"bytes"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/drobilica/tarlink/internal/checksum"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -275,18 +275,7 @@ func ValidID(id string) bool {
 }
 
 func ValidateDigest(algorithm, value string) error {
-	if algorithm != "sha256" {
-		return fmt.Errorf("unsupported release verification algorithm %q", algorithm)
-	}
-	const size = 32
-	if len(value) != size*2 || strings.ToLower(value) != value {
-		return fmt.Errorf("release verification digest must be exactly %d lowercase hexadecimal characters", size*2)
-	}
-	decoded, err := hex.DecodeString(value)
-	if err != nil || len(decoded) != size {
-		return fmt.Errorf("release verification digest must be exactly %d lowercase hexadecimal characters", size*2)
-	}
-	return nil
+	return checksum.Validate(algorithm, value)
 }
 
 // ValidateRelativePath accepts only canonical slash-separated paths below an
