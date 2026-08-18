@@ -400,7 +400,7 @@ func TestProgressEventsRenderLifecycleAndUnknownLength(t *testing.T) {
 	if command == nil {
 		t.Fatal("install did not start")
 	}
-	updated, _ = updated.(model).Update(command())
+	updated, command = updated.(model).Update(command())
 	progressModel := updated.(model)
 	if !strings.Contains(progressModel.View().Content, "Downloading") || !strings.Contains(progressModel.View().Content, "67%") {
 		t.Fatalf("download progress not rendered: %q", progressModel.View().Content)
