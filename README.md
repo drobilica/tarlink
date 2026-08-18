@@ -73,14 +73,10 @@ TarLink verifies that downloaded bytes match the reviewed registry digest. The o
 
 ## Development
 
-End users should use `install.sh`. Contributors with Go installed may use `go install github.com/drobilica/tarlink/cmd/tarlink@latest` for development.
+End users should use `install.sh`. Contributors with Go installed may use `go install github.com/drobilica/tarlink/cmd/tarlink@latest` for development. Run [the canonical validation script](CONTRIBUTING.md) before opening a change; macOS contributors should see [CONTRIBUTING.md](CONTRIBUTING.md) for the Podman Linux-validation path.
 
 ```sh
-gofmt -w .
-go vet ./...
-go test ./...
-go test -race ./...
-CGO_ENABLED=0 go build ./...
+./scripts/validate.sh
 ```
 
 TarLink is licensed under Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -117,14 +117,7 @@ jobs:
           XDG_CACHE_HOME: ${{ runner.temp }}/tarlink-source-home/cache
         run: |
           mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
-          test -z "$(gofmt -l .)"
-          go vet ./...
-          go test ./...
-          go test -race ./...
-          go test ./internal/architecture
-          CGO_ENABLED=0 go build ./...
-          ./tests/install_test.sh
-          ./tests/uninstall_test.sh
+          ./scripts/validate.sh
 
   assemble:
     name: Assemble exact assets

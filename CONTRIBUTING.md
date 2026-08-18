@@ -9,15 +9,13 @@ Development requires Go 1.26 or newer within the 1.26 release line. Core, CLI, T
 1. Read [AGENTS.md](AGENTS.md), [docs/architecture.md](docs/architecture.md), and [docs/security-model.md](docs/security-model.md).
 2. Keep changes scoped. Do not add hooks, arbitrary command execution, custom destinations, telemetry, plugins, a daemon, CGO, or a system dependency. Self-upgrade changes must preserve canonical install ownership, strict stable release filtering, checksum verification, and atomic rollback behavior.
 3. Add regression tests for parser, filesystem, network, archive, registry, and state changes.
-4. Run:
+4. Run the canonical validation command:
 
 ```sh
-gofmt -w .
-go vet ./...
-go test ./...
-go test -race ./...
-CGO_ENABLED=0 go build ./...
+./scripts/validate.sh
 ```
+
+TarLink targets Linux, and development from macOS is supported. On macOS, the validation script uses Podman for Linux-specific checks when available; Ubuntu GitHub Actions remains the final integration validation environment.
 
 5. Describe security impact and failure/rollback behavior in the pull request. Pre-1.0 changes should delete obsolete designs rather than add compatibility layers.
 
