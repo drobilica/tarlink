@@ -56,6 +56,16 @@ type RegistryRequest struct {
 	ReportProgress Progress
 }
 
+// FileRequest downloads an HTTPS file without a digest. Callers must apply
+// their own verification to the returned file before using its contents.
+type FileRequest struct {
+	URL            string
+	Destination    string
+	MaxBytes       int64
+	AllowedURL     URLPolicy
+	ReportProgress Progress
+}
+
 type Result struct {
 	Path      string
 	Algorithm string
@@ -112,6 +122,13 @@ func (c *Client) FetchRegistry(ctx context.Context, request RegistryRequest) (Re
 	if request.AllowedURL == nil {
 		return Result{}, errors.New("registry URL policy is not configured")
 	}
+	if request.MaxBytes <= 0 {
+		request.MaxBytes = DefaultMaxRegistryBytes
+	}
+	return c.fetch(ctx, request.URL, request.Destination, request.MaxBytes, "", "", request.AllowedURL, request.ReportProgress)
+}
+
+func (c *Client) FetchFile(ctx context.Context, request FileRequest) (Result, error) {
 	if request.MaxBytes <= 0 {
 		request.MaxBytes = DefaultMaxRegistryBytes
 	}

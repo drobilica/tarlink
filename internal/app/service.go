@@ -21,6 +21,8 @@ import (
 	"github.com/drobilica/tarlink/internal/manifest"
 	"github.com/drobilica/tarlink/internal/registry"
 	"github.com/drobilica/tarlink/internal/state"
+	"github.com/drobilica/tarlink/internal/upgrade"
+	"github.com/drobilica/tarlink/internal/version"
 )
 
 type Core struct {
@@ -31,6 +33,7 @@ type Core struct {
 	registryMaxAge time.Duration
 	goos           string
 	goarch         string
+	upgrader       *upgrade.Service
 }
 
 func NewCore(layout filesystem.Layout, client *download.Client) (*Core, error) {
@@ -44,7 +47,38 @@ func NewCore(layout filesystem.Layout, client *download.Client) (*Core, error) {
 		layout: layout, installer: installer, syncer: syncer,
 		now: time.Now, registryMaxAge: registry.DefaultMaxAge,
 		goos: runtime.GOOS, goarch: runtime.GOARCH,
+		upgrader: &upgrade.Service{Layout: layout, Client: client, Current: version.Current},
 	}, nil
+}
+
+func (core *Core) CheckTarLinkVersion(ctx context.Context) (TarLinkVersion, error) {
+	value, err := core.upgrader.Check(ctx)
+	return TarLinkVersion{Current: value.Current, Latest: value.Latest, UpgradeAvailable: upgrade.IsNewer(value.Current, value.Latest)}, err
+}
+
+func (core *Core) UpgradeTarLink(ctx context.Context, sink ProgressSink) (TarLinkVersion, error) {
+	var value upgrade.Version
+	err := core.installer.WithLifecycle(ctx, func() error {
+		var upgradeErr error
+		value, upgradeErr = core.upgrader.Upgrade(ctx, func(stage string, done, total int64) {
+			mapped := ProgressUpgrading
+			if stage == "verifying" {
+				mapped = ProgressVerifying
+			}
+			if stage == "installing" {
+				mapped = ProgressInstalling
+			}
+			if stage == "complete" {
+				mapped = ProgressComplete
+			}
+			core.emit(sink, mapped, "", done, total)
+		})
+		return upgradeErr
+	})
+	if err != nil {
+		err = classify("upgrade TarLink", err)
+	}
+	return TarLinkVersion{Current: value.Current, Latest: value.Latest, UpgradeAvailable: upgrade.IsNewer(value.Current, value.Latest)}, err
 }
 
 func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
@@ -389,6 +423,10 @@ func classify(operation string, err error) error {
 		code = CodeConflict
 	case errors.Is(err, registry.ErrUnavailable):
 		code = CodeRegistry
+	case errors.Is(err, upgrade.ErrNotOwned), errors.Is(err, upgrade.ErrDevelopment):
+		code = CodeConflict
+	case errors.Is(err, upgrade.ErrUnsupportedAsset):
+		code = CodeUnsupportedPlatform
 	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM):
 		code = CodePermission
 	case strings.Contains(operation, "registry"):

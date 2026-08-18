@@ -18,6 +18,7 @@ const (
 	ProgressActivating  ProgressStage = "activating"
 	ProgressCleaning    ProgressStage = "cleaning"
 	ProgressComplete    ProgressStage = "complete"
+	ProgressUpgrading   ProgressStage = "upgrading"
 )
 
 type Progress struct {
@@ -60,6 +61,12 @@ type Version struct {
 	Status  string `json:"status"`
 }
 
+type TarLinkVersion struct {
+	Current          string `json:"current"`
+	Latest           string `json:"latest,omitempty"`
+	UpgradeAvailable bool   `json:"upgrade_available"`
+}
+
 // Service is the UI-independent application API used by the CLI and TUI.
 type Service interface {
 	Install(context.Context, string, ProgressSink) (Result, error)
@@ -74,6 +81,8 @@ type Service interface {
 	Versions(context.Context, string) ([]Version, error)
 	SyncRegistry(context.Context, ProgressSink) error
 	ValidateRegistry(context.Context, string) error
+	CheckTarLinkVersion(context.Context) (TarLinkVersion, error)
+	UpgradeTarLink(context.Context, ProgressSink) (TarLinkVersion, error)
 }
 
 type ErrorCode string

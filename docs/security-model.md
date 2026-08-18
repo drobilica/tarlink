@@ -45,8 +45,19 @@ The shell installer records a private, atomic SHA-256 marker for the canonical T
 
 Corrupt state, unexpected symlinks, untracked entries, integration conflicts, and partial cleanup errors stop full purge. The shell does not remove the TarLink binary after such a failure.
 
+## TarLink self-upgrade
+
+Self-upgrade accepts only strict stable `vMAJOR.MINOR.PATCH` releases from the
+official TarLink GitHub release channel. It requires the canonical regular
+`~/.local/bin/tarlink`, a matching private install marker, Linux amd64/arm64,
+HTTPS downloads, a strict checksum entry, and a verified SHA-256 digest. The
+new executable is staged in the destination directory and atomically replaces
+the old one; marker publication is transactional and failures restore the old
+binary. Development, symlinked, unmarked, mismatched, or otherwise unowned
+installations are refused.
+
 ## Explicit exclusions
 
-TarLink has no telemetry, plugins, arbitrary command arguments, hooks, custom destinations, self-update, daemon, background updater, system-wide installation, or external command execution. It uses no CGO or operating-system package manager.
+TarLink has no telemetry, plugins, arbitrary command arguments, hooks, custom destinations, automatic updater, daemon, background updater, system-wide installation, or external command execution. It uses no CGO or operating-system package manager. Self-upgrade is explicit only; it never executes or restarts the replacement binary.
 
 TarLink proves that downloaded bytes match the reviewed registry digest. It does not independently prove that the registry or upstream publisher is uncompromised and does not sandbox the installed application at runtime.

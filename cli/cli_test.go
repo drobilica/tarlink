@@ -15,6 +15,8 @@ type fakeService struct {
 	uninstalled    []string
 	uninstalledAll bool
 	validatedRoot  string
+	tarlinkVersion app.TarLinkVersion
+	upgradeValue   app.TarLinkVersion
 }
 
 func (f *fakeService) Install(context.Context, string, app.ProgressSink) (app.Result, error) {
@@ -52,6 +54,15 @@ func (f *fakeService) ValidateRegistry(_ context.Context, root string) error {
 	f.validatedRoot = root
 	return nil
 }
+func (f *fakeService) CheckTarLinkVersion(context.Context) (app.TarLinkVersion, error) {
+	return f.tarlinkVersion, nil
+}
+func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.TarLinkVersion, error) {
+	if f.upgradeValue.Current != "" {
+		return f.upgradeValue, nil
+	}
+	return app.TarLinkVersion{}, errors.New("unused")
+}
 
 func TestNoArgumentsLaunchesTUI(t *testing.T) {
 	var out bytes.Buffer
@@ -85,6 +96,26 @@ func TestJSONOutputContainsJSONOnly(t *testing.T) {
 	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list", "--json"})
 	if code != 0 || out.String() != "[{\"id\":\"blender\",\"name\":\"Blender\",\"summary\":\"\",\"homepage\":\"\",\"categories\":null,\"registry_version\":\"5.2.0\",\"update_available\":false}]\n" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestVersionNoticeUsesStderr(t *testing.T) {
+	var out, errOut bytes.Buffer
+	service := &fakeService{applications: []app.Application{{ID: "blender"}}, tarlinkVersion: app.TarLinkVersion{Current: "0.4.2", Latest: "0.5.0", UpgradeAvailable: true}}
+	if code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list", "--json"}); code != 0 || !bytes.Contains(out.Bytes(), []byte("[")) || errOut.Len() != 0 {
+		t.Fatalf("JSON output was contaminated: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	errOut.Reset()
+	if code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list"}); code != 0 || !bytes.Contains(errOut.Bytes(), []byte("tarlink upgrade")) {
+		t.Fatalf("notice was not sent to stderr: code=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestUpgradeCommandDelegatesAndReportsCurrent(t *testing.T) {
+	var out bytes.Buffer
+	service := &fakeService{upgradeValue: app.TarLinkVersion{Current: "0.5.0", Latest: "0.5.0"}}
+	if code := (Runner{Service: service, Stdout: &out, Stderr: &bytes.Buffer{}}).Run(context.Background(), []string{"upgrade"}); code != 0 || out.String() != "TarLink 0.5.0 is already up to date.\n" {
+		t.Fatalf("upgrade output: code=%d output=%q", code, out.String())
 	}
 }
 

@@ -30,7 +30,7 @@ tarlink rollback blender
 tarlink uninstall blender
 ```
 
-Additional commands include `list`, `info`, `versions`, `update --all`, and `version`. Running `tarlink` launches the TUI. In the TUI, `x`/`delete` opens an uninstall confirmation; Enter confirms and Esc cancels. Structured JSON is available for `search`, `list`, `info`, and `versions` with `--json`.
+Additional commands include `list`, `info`, `versions`, `update --all`, `upgrade`, and `version`. `update` manages applications; `upgrade` explicitly upgrades TarLink itself. Running `tarlink` launches the TUI. In the TUI, `x`/`delete` opens an uninstall confirmation and `U` opens the TarLink upgrade flow; Enter confirms and Esc cancels. Structured JSON is available for `search`, `list`, `info`, and `versions` with `--json`.
 
 TarLink downloads the registry automatically when it is absent. A validated cache younger than 24 hours is used without networking. When the cache is stale, TarLink attempts a transactional refresh and keeps the last successfully validated generation if the network is unavailable. Force a refresh with:
 
@@ -67,7 +67,7 @@ If the canonical `~/.local/bin/tarlink` binary is already missing and no TarLink
 - Release artifacts and redirects must use HTTPS. Downloads are bounded, timed out, and verified before extraction with an exact lowercase SHA-256 digest recorded by the registry. Non-SHA-256 algorithms, malformed digests, and missing verification are rejected.
 - Only `tar.gz`, `tar.xz`, and ZIP are accepted. Extraction rejects traversal, hardlinks, devices, special files, and unsafe symlinks, while retaining all documented size and depth limits.
 - Installation uses staging, versioned directories, atomic activation, strict state, per-application locks, one previous rollback version, and explicit ownership validation.
-- TarLink never invokes external programs and has no CGO, plugins, telemetry, daemon, self-update, custom install destinations, or system dependencies.
+- TarLink never invokes external programs and has no CGO, plugins, telemetry, daemon, automatic updater, custom install destinations, or system dependencies. Explicit `tarlink upgrade` and TUI `U` use only the canonical TarLink-owned binary and verified official GitHub release assets.
 
 TarLink verifies that downloaded bytes match the reviewed registry digest. The official mutable registry is the trust anchor; its checksum-source field records reviewer provenance but is not fetched at runtime. TarLink does not sandbox or guarantee the safety of an upstream application after activation. See [the architecture](docs/architecture.md), [security model](docs/security-model.md), [security policy](SECURITY.md), and [threat model](docs/threat-model.md).
 

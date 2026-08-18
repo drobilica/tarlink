@@ -18,6 +18,7 @@ type fakeService struct {
 	uninstalled     string
 	uninstallErr    error
 	installProgress []app.Progress
+	tarlinkVersion  app.TarLinkVersion
 }
 
 func (f *fakeService) Install(_ context.Context, _ string, sink app.ProgressSink) (app.Result, error) {
@@ -83,6 +84,12 @@ func (f *fakeService) SyncRegistry(context.Context, app.ProgressSink) error {
 func (f *fakeService) ValidateRegistry(context.Context, string) error {
 	return errors.New("unused")
 }
+func (f *fakeService) CheckTarLinkVersion(context.Context) (app.TarLinkVersion, error) {
+	return f.tarlinkVersion, nil
+}
+func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.TarLinkVersion, error) {
+	return app.TarLinkVersion{}, errors.New("unused")
+}
 
 func TestModelLoadsAndShowsApplications(t *testing.T) {
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", RegistryVersion: "5.2.0"}}}
@@ -92,6 +99,24 @@ func TestModelLoadsAndShowsApplications(t *testing.T) {
 	view := updated.(model).View()
 	if !strings.Contains(view.Content, "Blender") || !strings.Contains(view.Content, "AVAILABLE / SEARCH") {
 		t.Fatalf("unexpected view: %q", view.Content)
+	}
+}
+
+func TestTarLinkUpgradeNotificationAndBinding(t *testing.T) {
+	service := &fakeService{tarlinkVersion: app.TarLinkVersion{Current: "0.4.2", Latest: "0.5.0", UpgradeAvailable: true}}
+	m := model{ctx: context.Background(), service: service, screen: screenAvailable}
+	updated, _ := m.Update(m.checkVersionCmd()())
+	modelAfterCheck := updated.(model)
+	if !modelAfterCheck.upgradeAvailable || !strings.Contains(modelAfterCheck.View().Content, "press U") {
+		t.Fatal("upgrade notice was not rendered")
+	}
+	updated, command := modelAfterCheck.Update(tea.KeyPressMsg{Text: "U"})
+	if command != nil || updated.(model).screen != screenUpgrade {
+		t.Fatal("U did not open upgrade confirmation")
+	}
+	cancelled, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if command != nil || cancelled.(model).screen != screenAvailable {
+		t.Fatal("upgrade cancellation did not return to the prior screen")
 	}
 }
 

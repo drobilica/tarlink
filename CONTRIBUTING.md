@@ -7,7 +7,7 @@ Development requires Go 1.26 or newer within the 1.26 release line. Core, CLI, T
 ## Before opening a change
 
 1. Read [AGENTS.md](AGENTS.md), [docs/architecture.md](docs/architecture.md), and [docs/security-model.md](docs/security-model.md).
-2. Keep changes scoped. Do not add hooks, arbitrary command execution, custom destinations, telemetry, plugins, a daemon, CGO, or a system dependency.
+2. Keep changes scoped. Do not add hooks, arbitrary command execution, custom destinations, telemetry, plugins, a daemon, CGO, or a system dependency. Self-upgrade changes must preserve canonical install ownership, strict stable release filtering, checksum verification, and atomic rollback behavior.
 3. Add regression tests for parser, filesystem, network, archive, registry, and state changes.
 4. Run:
 

@@ -29,6 +29,7 @@ Usage:
   tarlink rollback <app>
   tarlink uninstall <app>
   tarlink uninstall --all
+  tarlink upgrade
   tarlink version
 `
 
@@ -57,6 +58,11 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	}
 	if r.Service == nil && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" {
 		return r.fail(errors.New("TarLink core is unavailable"))
+	}
+	if arguments[0] != "upgrade" && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" && !contains(arguments[1:], "--json") {
+		if value, checkErr := r.Service.CheckTarLinkVersion(ctx); checkErr == nil && value.UpgradeAvailable {
+			_, _ = fmt.Fprintf(r.Stderr, "TarLink %s is available (current %s).\nRun `tarlink upgrade` to update.\n", value.Latest, value.Current)
+		}
 	}
 
 	var err error
@@ -111,6 +117,19 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		result, err = r.Service.Update(ctx, value, r.progress())
 		if err == nil {
 			err = r.printResult("Updated", result)
+		}
+	case "upgrade":
+		if len(arguments) != 1 {
+			return r.invalid("usage: tarlink upgrade")
+		}
+		var value app.TarLinkVersion
+		value, err = r.Service.UpgradeTarLink(ctx, r.progress())
+		if err == nil {
+			if !value.UpgradeAvailable {
+				_, err = fmt.Fprintf(r.Stdout, "TarLink %s is already up to date.\n", value.Current)
+			} else {
+				_, err = fmt.Fprintf(r.Stdout, "TarLink %s → %s\nTarLink upgraded to %s\n", value.Current, value.Latest, value.Latest)
+			}
 		}
 	case "list":
 		jsonOutput, parseErr := onlyJSON(arguments[1:])
@@ -362,4 +381,13 @@ func title(value string) string {
 		return value
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

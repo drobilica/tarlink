@@ -15,9 +15,9 @@ TarLink is a rootless, single-user Linux application manager. Preserve its narro
 
 - Production code remains pure Go and compatible with `CGO_ENABLED=0`.
 - Do not import `os/exec`, `unsafe`, `plugin`, or `C`, and do not execute external commands.
-- Only the compiled official registry is trusted. Release sources remain HTTPS and verified according to the current manifest contract.
+- Only the compiled official registry and official TarLink GitHub releases are trusted. Release sources remain HTTPS and verified according to the current manifest/release contract.
 - Preserve archive/path/resource limits, safe extraction, same-directory regular-file symlink-chain policy, atomic activation/state, locking, ownership checks, and current-plus-one-previous retention.
-- Do not add hardlinks, hooks, scripts, arbitrary commands/arguments, custom install destinations, plugins, telemetry, daemons, self-update, system-wide installation, package-manager integration, or system dependencies.
+- Do not add hardlinks, hooks, scripts, arbitrary commands/arguments, custom install destinations, plugins, telemetry, daemons, automatic installation, system-wide installation, package-manager integration, or system dependencies. Explicit self-upgrade is permitted only through the canonical TarLink-owned binary and verified official release assets.
 - A task does not implicitly authorize widening a trust or security boundary. Such changes require explicit user authorization and a deliberate design change.
 - Treat `docs/architecture.md`, `docs/security-model.md`, and `docs/threat-model.md` as canonical design references.
 

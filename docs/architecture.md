@@ -2,6 +2,14 @@
 
 TarLink is a rootless, single-user application manager for Linux amd64 and arm64. Application manifests describe one exact platform each and are stored as `apps/<id>/linux-amd64.yaml` or `apps/<id>/linux-arm64.yaml`. The client resolves its exact `runtime.GOOS`/`runtime.GOARCH` pair and refuses a missing or mismatched variant; there is no compatibility filename and no cross-platform fallback.
 
+## Interface boundaries
+
+`internal/app` is the UI-independent core. It owns registry freshness,
+application lifecycle, and TarLink self-upgrade operations. `cli` owns argument
+parsing, streams, JSON, and exit codes. `tui` owns Bubble Tea state and views.
+Both frontends call the same core service and progress model; neither performs
+release discovery, checksum verification, or filesystem replacement itself.
+
 ## Trust boundaries
 
 ```text
@@ -24,6 +32,12 @@ bounded download ── digest verification ── staging directory
 The official registry is the only catalog authority. TarLink directly enumerates the strict platform files below `apps/<id>/`; there is no generated index, compatibility filename fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves only its normalized `apps/` data into a private generation, validates that generation again, flushes it, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations.
 
 Normal registry-dependent commands bootstrap a missing cache automatically. Valid caches remain local-only for 24 hours. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache. `registry sync` always attempts a refresh, while local operations such as rollback and uninstall do not require networking.
+
+TarLink release discovery is separate from the application registry. A 24-hour
+XDG cache makes version checks advisory and non-blocking for normal operations.
+Explicit self-upgrade selects the latest strict stable release, the exact
+Linux architecture asset, and `checksums.txt`, then verifies and atomically
+replaces the canonical owned binary.
 
 ## Installation flow
 

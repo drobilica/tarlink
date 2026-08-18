@@ -18,6 +18,7 @@
 - Unrelated user files and integrations.
 - The active and previous managed application versions.
 - The integrity of downloaded application bytes.
+- The integrity and continuity of the canonical TarLink executable.
 - The identity and provenance of registry manifests.
 - Local state and cache integrity.
 
@@ -42,9 +43,10 @@
 | Decompression bomb | Entry, byte, file, archive-input, depth, and XZ dictionary bounds |
 | Partial activation | Staging, same-filesystem rename, atomic relative link, atomic state |
 | Concurrent mutation | Shared lifecycle `flock`, narrower registry/per-application locks, and non-overwriting integration creation |
+| Unsafe self-upgrade | Official stable release filtering, exact platform asset, strict checksum, owned canonical path/marker, same-directory staging, atomic replacement, and rollback on publication failure |
 | Arbitrary deletion | Canonical layout-bound state, pre-deletion integration validation, contained exact-root removal |
 | Broad purge | Only fixed TarLink product roots and recorded narrow integrations are candidates; shared parents survive |
 
 ## Outside the boundary
 
-TarLink does not sandbox installed applications. After activation, an application runs with the user's permissions. A malicious process already running as the same user can mutate that user's TarLink directories and is outside the local-attacker boundary; the ownership checks are designed for accidental state corruption, unexpected objects, and cooperating TarLink concurrency. The mutable official registry is trusted and not signed: compromise of that registry alone can replace both an artifact URL and its digest. Runtime fetching of `verification.source` and signed registry metadata would require separate designs.
+TarLink does not sandbox installed applications. After activation, an application runs with the user's permissions. A malicious process already running as the same user can mutate that user's TarLink directories and is outside the local-attacker boundary; the ownership checks are designed for accidental state corruption, unexpected objects, and cooperating TarLink concurrency. The mutable official registry is trusted and not signed: compromise of that registry alone can replace both an artifact URL and its digest. Self-upgrade similarly trusts the official GitHub release channel but never installs without checksum verification and ownership validation. Runtime fetching of `verification.source` and signed registry metadata would require separate designs.

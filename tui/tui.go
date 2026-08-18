@@ -26,6 +26,7 @@ const (
 	screenVersions
 	screenRollback
 	screenUninstall
+	screenUpgrade
 )
 
 type loadedMsg struct {
@@ -42,6 +43,10 @@ type searchMsg struct {
 type versionsMsg struct {
 	values []app.Version
 	err    error
+}
+type versionMsg struct {
+	value app.TarLinkVersion
+	err   error
 }
 
 type operationMsg struct {
@@ -87,6 +92,8 @@ type model struct {
 	progressBytes       int64
 	progressSpeed       float64
 	color               bool
+	tarlinkVersion      app.TarLinkVersion
+	upgradeAvailable    bool
 	cancel              context.CancelFunc
 }
 
@@ -106,7 +113,7 @@ func Run(ctx context.Context, service app.Service, input io.Reader, output io.Wr
 	return err
 }
 
-func (m model) Init() tea.Cmd { return m.loadCmd() }
+func (m model) Init() tea.Cmd { return tea.Batch(m.loadCmd(), m.checkVersionCmd()) }
 
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
@@ -123,6 +130,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshDetail()
 		}
 		m.clampSelection()
+		return m, nil
+	case versionMsg:
+		if message.err == nil {
+			m.tarlinkVersion = message.value
+			m.upgradeAvailable = message.value.UpgradeAvailable
+		}
 		return m, nil
 	case searchMsg:
 		m.busy = ""
@@ -183,6 +196,9 @@ func (m model) View() tea.View {
 	var body strings.Builder
 	line := func(value string) { body.WriteString(fit(value, m.width)); body.WriteByte('\n') }
 	line(m.style("TarLink", accent))
+	if m.upgradeAvailable {
+		line(m.style("↑ TarLink "+m.tarlinkVersion.Latest+" available - press U to upgrade", warning))
+	}
 	body.WriteByte('\n')
 	if m.busy != "" {
 		line(m.style(m.busy+"...", accent))
@@ -267,11 +283,20 @@ func (m model) View() tea.View {
 			body.WriteByte('\n')
 			line("Esc Cancel")
 		}
+	case screenUpgrade:
+		line(m.style("TARLINK UPGRADE", warning))
+		body.WriteByte('\n')
+		line(m.tarlinkVersion.Current + " → " + m.tarlinkVersion.Latest)
+		body.WriteByte('\n')
+		line("Enter Upgrade   Esc Cancel")
 	}
 
 	body.WriteByte('\n')
 	footer := "↑/↓ Select  Enter Open  Esc Back  / Search  i Installed  u Updates  x Uninstall  q Quit"
-	if m.screen == screenRollback || m.screen == screenUninstall {
+	if m.upgradeAvailable {
+		footer = "U Upgrade TarLink  ↑/↓ Select  Enter Open  u Updates  q Quit"
+	}
+	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
 		footer = "Enter Confirm  Esc Cancel  q Quit"
 	}
 	footerContent := footerLines(footer, m.width)
@@ -337,6 +362,12 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch key {
+	case "U":
+		if m.upgradeAvailable {
+			m.returnTo = m.screen
+			m.confirmSet = false
+			m.screen = screenUpgrade
+		}
 	case "up":
 		if m.selected > 0 {
 			m.selected--
@@ -357,7 +388,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.screen = screenUpdates
 		m.selected = 0
 	case "esc":
-		if m.screen == screenRollback || m.screen == screenUninstall {
+		if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
 			m.screen = m.confirmationTarget()
 			m.confirmSet = false
 			if m.screen != screenDetails {
@@ -379,6 +410,11 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.selected = 0
 		}
 	case "enter":
+		if m.screen == screenUpgrade {
+			m.busy = "Upgrading TarLink"
+			m.resetProgress()
+			return m, m.upgradeCmd()
+		}
 		if m.screen == screenRollback {
 			if id := m.selectedID(); id != "" {
 				m.busy = "Rolling back"
@@ -469,6 +505,24 @@ func (m model) loadCmd() tea.Cmd {
 		installed, err := m.service.List(m.ctx)
 		return loadedMsg{available: available, installed: installed, err: err}
 	}
+}
+
+func (m model) checkVersionCmd() tea.Cmd {
+	return func() tea.Msg {
+		value, err := m.service.CheckTarLinkVersion(m.ctx)
+		return versionMsg{value: value, err: err}
+	}
+}
+
+func (m model) upgradeCmd() tea.Cmd {
+	return m.operationCmd(func(sink app.ProgressSink) (operationMsg, error) {
+		value, err := m.service.UpgradeTarLink(m.ctx, sink)
+		message := ""
+		if err == nil {
+			message = "TarLink upgraded to " + value.Latest + ". The new version will be used the next time TarLink starts."
+		}
+		return operationMsg{message: message, next: screenAvailable, move: true}, err
+	})
 }
 
 func (m model) searchCmd() tea.Cmd {
