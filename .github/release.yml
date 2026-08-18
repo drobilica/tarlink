@@ -1,0 +1,20 @@
+changelog:
+  exclude:
+    labels:
+      - skip-release-notes
+  categories:
+    - title: Removed / Breaking Changes
+      labels:
+        - breaking
+        - breaking-change
+    - title: Added
+      labels:
+        - enhancement
+        - feature
+    - title: Fixed
+      labels:
+        - bug
+        - bugfix
+    - title: Changed
+      labels:
+        - '*'

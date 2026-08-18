@@ -267,6 +267,14 @@ jobs:
         shell: bash
         run: chmod 0755 dist/tarlink-linux-amd64 dist/tarlink-linux-arm64
 
+      - name: Generate structured release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: bash ./.github/scripts/generate-release-notes.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$EXPECTED_SHA" "$RUNNER_TEMP/tarlink-release-notes.md"
+
       - name: Create draft and upload exact assets
         shell: bash
         env:
@@ -298,7 +306,7 @@ jobs:
             gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes
           fi
           verify_triggering_tag
-          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "TarLink $RELEASE_TAG" --notes "TarLink $RELEASE_TAG"
+          gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "TarLink $RELEASE_TAG" --notes-file "$RUNNER_TEMP/tarlink-release-notes.md"
           gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" dist/tarlink-linux-amd64 dist/tarlink-linux-arm64 dist/checksums.txt
           test "$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" = true
           expected=$(printf '%s\n' checksums.txt tarlink-linux-amd64 tarlink-linux-arm64 | LC_ALL=C sort)
