@@ -30,6 +30,7 @@ desktop:
   enabled: true
   categories:
     - Graphics
+  icon: icons/blender.png
 `
 
 func TestParseValidManifest(t *testing.T) {
@@ -39,6 +40,9 @@ func TestParseValidManifest(t *testing.T) {
 	}
 	if m.ID != "blender" || m.Release.Version != "5.2.0" {
 		t.Fatalf("unexpected manifest: %#v", m)
+	}
+	if m.Desktop.Icon != "icons/blender.png" {
+		t.Fatalf("desktop icon = %q", m.Desktop.Icon)
 	}
 }
 
@@ -94,6 +98,10 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 		"invalid ID":          func(s string) string { return strings.Replace(s, "id: blender", "id: ../Blender", 1) },
 		"absolute executable": func(s string) string { return strings.Replace(s, "executable: blender", "executable: /blender", 1) },
 		"path traversal":      func(s string) string { return strings.Replace(s, "executable: blender", "executable: ../blender", 1) },
+		"icon path traversal": func(s string) string { return strings.Replace(s, "icon: icons/blender.png", "icon: ../blender.png", 1) },
+		"icon when disabled": func(s string) string {
+			return strings.Replace(strings.Replace(s, "enabled: true", "enabled: false", 1), "categories:\n    - Graphics\n  icon:", "categories: []\n  icon:", 1)
+		},
 		"Windows path": func(s string) string {
 			return strings.Replace(s, "executable: blender", `executable: 'C:\\blender.exe'`, 1)
 		},

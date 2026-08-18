@@ -120,8 +120,12 @@ func (core *Core) validateUninstallRoots(states []state.State) error {
 		spec := integration.Spec{
 			ID: installed.App, Executable: installed.Executable,
 			ApplicationRoot:   filepath.Join(core.layout.Apps, installed.App),
-			LocalBinDirectory: core.layout.Bin, DesktopDirectory: core.layout.Desktop,
+			LocalBinDirectory: core.layout.Bin, DesktopDirectory: core.layout.Desktop, IconDirectory: core.layout.Icons,
 			DesktopEnabled: installed.DesktopEnabled, DesktopSHA256: installed.Integration.DesktopSHA256,
+		}
+		if installed.Integration.IconFile != "" {
+			spec.Icon = "icon" + filepath.Ext(installed.Integration.IconFile)
+			spec.IconSHA256 = installed.Integration.IconSHA256
 		}
 		if err := integration.ValidateOwnedForRemoval(spec); err != nil {
 			return fmt.Errorf("%s integration: %w", installed.App, err)

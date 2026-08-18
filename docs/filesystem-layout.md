@@ -19,10 +19,12 @@ $XDG_CACHE_HOME/tarlink/
 $HOME/.local/bin/tarlink
 $HOME/.local/bin/<id>
 $XDG_DATA_HOME/applications/tarlink-<id>.desktop
+$XDG_DATA_HOME/icons/hicolor/scalable/apps/tarlink-<id>.svg
+$XDG_DATA_HOME/icons/hicolor/48x48/apps/tarlink-<id>.<raster-ext>
 ```
 
 Unset XDG variables fall back to `~/.local/share`, `~/.local/state`, and `~/.cache`. Configured XDG homes must be absolute, control-character-free paths within `$HOME`; TarLink does not manage data outside the user's home tree. Application and registry `current` pointers are relative symlinks constrained below their owning roots. New versions and registry generations are completed before activation, and only the current and one previous generation are retained.
 
-The installer records the exact SHA-256 of the canonical TarLink binary in `install.sha256`, using an atomic write. Reinstallation and the bootstrap uninstaller require that private, regular, non-symlink marker to match the binary. Per-application state records the exact executable link and target plus the exact desktop entry and its generated-content digest when desktop integration is enabled. State is rejected unless those paths equal the canonical layout for the recorded application. TarLink refuses to overwrite or remove an occupied integration that it cannot prove it owns.
+The installer records the exact SHA-256 of the canonical TarLink binary in `install.sha256`, using an atomic write. Reinstallation and the bootstrap uninstaller require that private, regular, non-symlink marker to match the binary. Per-application state records the exact executable link and target plus the exact desktop entry and icon paths with content digests when desktop integration is enabled. State is rejected unless those paths equal the canonical layout for the recorded application. TarLink refuses to overwrite or remove an occupied integration that it cannot prove it owns.
 
 Full purge removes the exact application, state, lock, and cache roots only after managed applications have been processed. The data and state product parents are removed only when empty, so an unexpected sibling stops broad cleanup rather than being deleted. Purge never removes shared XDG parent directories, `~/.local/bin`, or `$XDG_DATA_HOME/applications`; only exact TarLink-owned entries inside those shared directories are removed.

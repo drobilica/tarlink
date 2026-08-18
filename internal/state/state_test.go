@@ -98,6 +98,42 @@ func TestValidateForLayoutRequiresCanonicalOwnedPaths(t *testing.T) {
 	}
 }
 
+func TestValidateForLayoutRequiresCanonicalIconOwnership(t *testing.T) {
+	home := t.TempDir()
+	layout, err := filesystem.LayoutFor(home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := testState()
+	value.Integration.ExecutableLink = filepath.Join(layout.Bin, "demo")
+	value.Integration.ExecutableTarget = filepath.Join(layout.Apps, "demo", "current", "bin", "demo")
+	value.DesktopEnabled = true
+	value.Integration.DesktopEntry = filepath.Join(layout.Desktop, "tarlink-demo.desktop")
+	value.Integration.DesktopSHA256 = strings.Repeat("b", 64)
+	value.Integration.IconFile = filepath.Join(layout.Icons, "48x48", "apps", "tarlink-demo.png")
+	value.Integration.IconSHA256 = strings.Repeat("a", 64)
+	if err := value.ValidateForLayout(layout); err != nil {
+		t.Fatalf("canonical icon rejected: %v", err)
+	}
+	value.Integration.IconFile = filepath.Join(home, "elsewhere", "icon.png")
+	if !errors.Is(value.ValidateForLayout(layout), ErrCorrupt) {
+		t.Fatal("noncanonical icon accepted")
+	}
+}
+
+func TestValidateRejectsMalformedPreviousIconPath(t *testing.T) {
+	value := testState()
+	value.DesktopEnabled = true
+	value.Integration.DesktopEntry = "/tmp/applications/tarlink-demo.desktop"
+	value.Integration.DesktopSHA256 = strings.Repeat("b", 64)
+	value.Integration.PreviousIconFile = "../icon.svg"
+	value.Integration.PreviousIconSHA256 = strings.Repeat("a", 64)
+	value.Integration.PreviousIconSource = "icon.svg"
+	if !errors.Is(value.Validate(), ErrCorrupt) {
+		t.Fatal("malformed previous icon path accepted")
+	}
+}
+
 func FuzzDecode(f *testing.F) {
 	f.Add([]byte(`{"schema":1,"app":"demo","current":"1","executable":"x","desktop_enabled":false,"integration":{"executable_link":"/tmp/x","executable_target":"/tmp/y","desktop_entry":"","desktop_sha256":""}}`))
 	f.Add([]byte("not json"))

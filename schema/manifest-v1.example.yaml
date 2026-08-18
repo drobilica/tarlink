@@ -1,6 +1,7 @@
 # Canonical manifest v1 example. Values are intentionally the reviewed
 # Blender 5.2.0 Linux amd64 release; this file is documentation, not a
-# second registry source.
+# second registry source. The referenced release archive contains blender.svg
+# at the archive root after TarLink strips its single top-level directory.
 schema: 1
 id: blender
 name: Blender
@@ -22,4 +23,5 @@ application:
   executable: blender
 desktop:
   enabled: true
+  icon: blender.svg
   categories: [Graphics]

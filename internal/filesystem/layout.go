@@ -27,6 +27,7 @@ type Layout struct {
 	Locks   string
 	Bin     string
 	Desktop string
+	Icons   string
 }
 
 // NewLayout resolves the layout for the current user.
@@ -78,6 +79,7 @@ func LayoutFor(home string, getenv func(string) string) (Layout, error) {
 	l.Locks = filepath.Join(state, productDir, "locks")
 	l.Bin = filepath.Join(home, ".local", "bin")
 	l.Desktop = filepath.Join(data, "applications")
+	l.Icons = filepath.Join(data, "icons", "hicolor")
 	return l, nil
 }
 

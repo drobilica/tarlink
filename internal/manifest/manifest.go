@@ -64,6 +64,7 @@ type Application struct {
 type Desktop struct {
 	Enabled    bool     `yaml:"enabled" json:"enabled"`
 	Categories []string `yaml:"categories" json:"categories"`
+	Icon       string   `yaml:"icon" json:"icon"`
 }
 
 func Parse(r io.Reader) (*Manifest, error) {
@@ -158,7 +159,7 @@ func validateManifestShape(document *yaml.Node) error {
 	if _, err := requiredMapping(root["application"], "application", []string{"executable"}, nil); err != nil {
 		return err
 	}
-	_, err = requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories"})
+	_, err = requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories", "icon"})
 	return err
 }
 
@@ -251,6 +252,14 @@ func (m Manifest) Validate() error {
 	}
 	if m.Desktop.Enabled && len(m.Desktop.Categories) == 0 {
 		return errors.New("desktop categories are required when desktop integration is enabled")
+	}
+	if m.Desktop.Icon != "" {
+		if !m.Desktop.Enabled {
+			return errors.New("desktop icon requires desktop integration")
+		}
+		if err := ValidateRelativePath(m.Desktop.Icon); err != nil {
+			return fmt.Errorf("invalid desktop icon: %w", err)
+		}
 	}
 	if err := validateEnumList("desktop category", m.Desktop.Categories, map[string]bool{
 		"Development": true, "Emulator": true, "Game": true,

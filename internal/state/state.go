@@ -20,10 +20,16 @@ import (
 const Schema = 1
 
 type Integration struct {
-	ExecutableLink   string `json:"executable_link"`
-	ExecutableTarget string `json:"executable_target"`
-	DesktopEntry     string `json:"desktop_entry"`
-	DesktopSHA256    string `json:"desktop_sha256"`
+	ExecutableLink     string `json:"executable_link"`
+	ExecutableTarget   string `json:"executable_target"`
+	DesktopEntry       string `json:"desktop_entry"`
+	DesktopSHA256      string `json:"desktop_sha256"`
+	IconFile           string `json:"icon_file,omitempty"`
+	IconSHA256         string `json:"icon_sha256,omitempty"`
+	IconSource         string `json:"icon_source,omitempty"`
+	PreviousIconFile   string `json:"previous_icon_file,omitempty"`
+	PreviousIconSHA256 string `json:"previous_icon_sha256,omitempty"`
+	PreviousIconSource string `json:"previous_icon_source,omitempty"`
 }
 
 type State struct {
@@ -60,9 +66,11 @@ func (s State) Validate() error {
 		return fmt.Errorf("%w: executable: %v", ErrCorrupt, err)
 	}
 	for name, path := range map[string]string{
-		"executable link":   s.Integration.ExecutableLink,
-		"executable target": s.Integration.ExecutableTarget,
-		"desktop entry":     s.Integration.DesktopEntry,
+		"executable link":    s.Integration.ExecutableLink,
+		"executable target":  s.Integration.ExecutableTarget,
+		"desktop entry":      s.Integration.DesktopEntry,
+		"icon file":          s.Integration.IconFile,
+		"previous icon file": s.Integration.PreviousIconFile,
 	} {
 		if path == "" {
 			continue
@@ -90,6 +98,41 @@ func (s State) Validate() error {
 	if !s.DesktopEnabled && (s.Integration.DesktopEntry != "" || s.Integration.DesktopSHA256 != "") {
 		return fmt.Errorf("%w: desktop ownership fields must be empty when desktop integration is disabled", ErrCorrupt)
 	}
+	if s.Integration.IconFile != "" && (len(s.Integration.IconSHA256) != 64 || strings.ToLower(s.Integration.IconSHA256) != s.Integration.IconSHA256) {
+		return fmt.Errorf("%w: icon ownership digest is invalid", ErrCorrupt)
+	}
+	if s.Integration.IconFile != "" {
+		for _, value := range s.Integration.IconSHA256 {
+			if !(value >= '0' && value <= '9' || value >= 'a' && value <= 'f') {
+				return fmt.Errorf("%w: icon ownership digest is invalid", ErrCorrupt)
+			}
+		}
+	}
+	if s.Integration.IconFile == "" && s.Integration.IconSHA256 != "" {
+		return fmt.Errorf("%w: icon ownership fields are inconsistent", ErrCorrupt)
+	}
+	if s.Integration.IconFile == "" && s.Integration.IconSource != "" {
+		return fmt.Errorf("%w: icon source is inconsistent", ErrCorrupt)
+	}
+	if s.Integration.IconSource != "" {
+		if err := validateExecutable(s.Integration.IconSource); err != nil {
+			return fmt.Errorf("%w: icon source: %v", ErrCorrupt, err)
+		}
+	}
+	if !s.DesktopEnabled && s.Integration.IconFile != "" {
+		return fmt.Errorf("%w: icon ownership fields require desktop integration", ErrCorrupt)
+	}
+	if s.Integration.PreviousIconFile == "" && (s.Integration.PreviousIconSHA256 != "" || s.Integration.PreviousIconSource != "") {
+		return fmt.Errorf("%w: previous icon ownership fields are inconsistent", ErrCorrupt)
+	}
+	if s.Integration.PreviousIconFile != "" {
+		if !s.DesktopEnabled || len(s.Integration.PreviousIconSHA256) != 64 || strings.ToLower(s.Integration.PreviousIconSHA256) != s.Integration.PreviousIconSHA256 {
+			return fmt.Errorf("%w: previous icon ownership is invalid", ErrCorrupt)
+		}
+		if err := validateExecutable(s.Integration.PreviousIconSource); err != nil {
+			return fmt.Errorf("%w: previous icon source: %v", ErrCorrupt, err)
+		}
+	}
 	return nil
 }
 
@@ -107,10 +150,31 @@ func (s State) ValidateForLayout(l filesystem.Layout) error {
 	if s.DesktopEnabled {
 		expectedDesktop = filepath.Join(l.Desktop, "tarlink-"+s.App+".desktop")
 	}
+	expectedIcon := ""
+	if s.Integration.IconFile != "" {
+		expectedIcon = filepath.Join(l.Icons, iconSizeDirectory(s.Integration.IconFile), "apps", "tarlink-"+s.App+filepath.Ext(s.Integration.IconFile))
+	}
+	if s.Integration.IconFile != expectedIcon {
+		return fmt.Errorf("%w: icon path does not match the canonical layout", ErrCorrupt)
+	}
+	expectedPreviousIcon := ""
+	if s.Integration.PreviousIconFile != "" {
+		expectedPreviousIcon = filepath.Join(l.Icons, iconSizeDirectory(s.Integration.PreviousIconFile), "apps", "tarlink-"+s.App+filepath.Ext(s.Integration.PreviousIconFile))
+	}
+	if s.Integration.PreviousIconFile != expectedPreviousIcon {
+		return fmt.Errorf("%w: previous icon path does not match the canonical layout", ErrCorrupt)
+	}
 	if s.Integration.DesktopEntry != expectedDesktop {
 		return fmt.Errorf("%w: desktop path does not match the canonical layout", ErrCorrupt)
 	}
 	return nil
+}
+
+func iconSizeDirectory(value string) string {
+	if strings.EqualFold(filepath.Ext(value), ".svg") {
+		return "scalable"
+	}
+	return "48x48"
 }
 
 func validateExecutable(value string) error {

@@ -34,14 +34,14 @@ Normal registry-dependent commands bootstrap a missing cache automatically. Vali
 5. Verify the exact archive bytes with the manifest's lowercase SHA-256 digest before extraction.
 6. Extract into a private staging directory using the archive path, link, type, count, size, depth, and XZ dictionary limits.
 7. Validate the declared executable and rename the completed tree into the versioned application directory on the same filesystem.
-8. Create only the known executable link and optional desktop entry, then atomically switch the relative `current` link.
+8. Create only the known executable link and optional desktop entry/icon in the XDG hicolor hierarchy, then atomically switch the relative `current` link. Icon changes are ownership-checked and rolled back with activation failures.
 9. Atomically write explicit ownership state and retain at most the current and one previous version.
 
 No step invokes an archive-provided program, shell, hook, installer, or arbitrary argument.
 
 ## Removal flow
 
-Single-application uninstall loads strict state, requires canonical paths for the configured layout, validates every existing integration, removes only those integrations, then removes the exact application root and state file. Full purge first enumerates those same state records and uses normal application uninstall. It removes fixed TarLink-owned child roots after application cleanup succeeds and removes product parents only when empty; shared directories such as `~/.local/bin` and `$XDG_DATA_HOME/applications` are never broadly deleted.
+Single-application uninstall loads strict state, requires canonical paths for the configured layout, validates every existing executable link, desktop entry, and icon, removes only those integrations, then removes the exact application root and state file. Full purge first enumerates those same state records and uses normal application uninstall. It removes fixed TarLink-owned child roots after application cleanup succeeds and removes product parents only when empty; shared directories such as `~/.local/bin`, `$XDG_DATA_HOME/applications`, and the hicolor icon hierarchy are never broadly deleted.
 
 The bootstrap `uninstall.sh` contains no application-cleanup implementation. It validates the install marker against the canonical binary, invokes `~/.local/bin/tarlink uninstall --all`, rechecks the retained digest after Go reports success, and then removes the marker and binary.
 

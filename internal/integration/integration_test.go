@@ -1,8 +1,11 @@
 package integration
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -165,5 +168,183 @@ func TestRemoveOwnedRejectsSymlinkedIntegrationParent(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(outside, spec.ID)); err != nil {
 		t.Fatalf("outside integration changed: %v", err)
+	}
+}
+
+func TestIconLifecycleUsesHicolorAndValidatesSource(t *testing.T) {
+	root := t.TempDir()
+	spec := testSpec(root)
+	spec.IconDirectory = filepath.Join(root, "data", "icons", "hicolor")
+	spec.Icon = "share/icon.png"
+	spec.IconSourceRoot = spec.ApplicationRoot
+	if err := os.MkdirAll(filepath.Join(spec.ApplicationRoot, "share"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	icon := []byte("png fixture")
+	if err := os.WriteFile(filepath.Join(spec.ApplicationRoot, spec.Icon), icon, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(icon)
+	spec.IconSHA256 = hex.EncodeToString(digest[:])
+	spec.DesktopSHA256 = DesktopDigest(spec, ExpectedPaths(spec).ExecutableLink)
+	paths, _, err := Ensure(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(spec.IconDirectory, "48x48", "apps", "tarlink-"+spec.ID+".png")
+	if paths.IconFile != want {
+		t.Fatalf("icon path = %q, want %q", paths.IconFile, want)
+	}
+	if got, err := os.ReadFile(want); err != nil || string(got) != string(icon) {
+		t.Fatalf("installed icon = %q, %v", got, err)
+	}
+	if err := ValidateOwned(spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveOwned(spec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIconSourceRejectsSymlinkAndDirectory(t *testing.T) {
+	for _, name := range []string{"link", "directory"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			spec := testSpec(root)
+			spec.Icon = name
+			spec.IconSourceRoot = spec.ApplicationRoot
+			spec.IconDirectory = filepath.Join(root, "icons")
+			if err := os.MkdirAll(spec.ApplicationRoot, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if name == "link" {
+				if err := os.Symlink(t.TempDir(), filepath.Join(spec.ApplicationRoot, name)); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.Mkdir(filepath.Join(spec.ApplicationRoot, name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			_, _, err := Ensure(spec)
+			if err == nil {
+				t.Fatal("unsafe icon source accepted")
+			}
+			if name == "link" && !errors.Is(err, filesystem.ErrSymlink) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestDesktopFilePassesDesktopFileValidate(t *testing.T) {
+	validator, err := exec.LookPath("desktop-file-validate")
+	if err != nil {
+		t.Skip("desktop-file-validate is not installed")
+	}
+	spec := testSpec(t.TempDir())
+	path := filepath.Join(t.TempDir(), "tarlink-blender.desktop")
+	if err := os.WriteFile(path, DesktopFile(spec, ExpectedPaths(spec).ExecutableLink), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(validator, path).CombinedOutput(); err != nil {
+		t.Fatalf("desktop-file-validate: %v\n%s", err, output)
+	}
+}
+
+func TestUpdateReplacesIconAndRollbackRestoresIt(t *testing.T) {
+	root := t.TempDir()
+	previous := testSpec(root)
+	previous.IconDirectory = filepath.Join(root, "data", "icons", "hicolor")
+	previous.Icon = "icon.png"
+	previous.IconSourceRoot = previous.ApplicationRoot
+	if err := os.MkdirAll(previous.ApplicationRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldContent := []byte("old icon")
+	if err := os.WriteFile(filepath.Join(previous.ApplicationRoot, previous.Icon), oldContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := sha256.Sum256(oldContent)
+	previous.IconSHA256 = hex.EncodeToString(oldDigest[:])
+	previous.DesktopSHA256 = DesktopDigest(previous, ExpectedPaths(previous).ExecutableLink)
+	oldPaths, _, err := Ensure(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := previous
+	next.Icon = "icon.svg"
+	next.IconSourceRoot = previous.ApplicationRoot
+	newContent := []byte("new icon")
+	if err := os.WriteFile(filepath.Join(next.ApplicationRoot, next.Icon), newContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newDigest := sha256.Sum256(newContent)
+	next.IconSHA256 = hex.EncodeToString(newDigest[:])
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).ExecutableLink)
+	newPaths, rollback, err := Update(next, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(oldPaths.IconFile); !os.IsNotExist(err) {
+		t.Fatalf("old icon remains: %v", err)
+	}
+	if got, err := os.ReadFile(newPaths.IconFile); err != nil || string(got) != string(newContent) {
+		t.Fatalf("new icon = %q, %v", got, err)
+	}
+	if err := rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(oldPaths.IconFile); err != nil || string(got) != string(oldContent) {
+		t.Fatalf("restored icon = %q, %v", got, err)
+	}
+}
+
+func TestUpdateCanAddAndRemoveAnIcon(t *testing.T) {
+	root := t.TempDir()
+	previous := testSpec(root)
+	previous.IconDirectory = filepath.Join(root, "data", "icons", "hicolor")
+	previous.DesktopSHA256 = DesktopDigest(previous, ExpectedPaths(previous).ExecutableLink)
+	if _, _, err := Ensure(previous); err != nil {
+		t.Fatal(err)
+	}
+	next := previous
+	next.Icon = "icon.svg"
+	next.IconSourceRoot = previous.ApplicationRoot
+	content := []byte("icon")
+	if err := os.MkdirAll(previous.ApplicationRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(previous.ApplicationRoot, next.Icon), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	next.IconSHA256 = hex.EncodeToString(digest[:])
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).ExecutableLink)
+	added, undoAdd, err := Update(next, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(added.IconFile); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, undo, err := Update(previous, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed.IconFile != "" {
+		t.Fatalf("removed icon path = %q", removed.IconFile)
+	}
+	if err := undo(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(added.IconFile); err != nil {
+		t.Fatalf("removed icon was not restored: %v", err)
+	}
+	if err := undoAdd(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(added.IconFile); !os.IsNotExist(err) {
+		t.Fatalf("added icon remains after rollback: %v", err)
 	}
 }

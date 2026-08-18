@@ -56,7 +56,7 @@ The following command is a **full purge**. It removes every application and vers
 curl -fsSL https://raw.githubusercontent.com/drobilica/tarlink/main/uninstall.sh | sh
 ```
 
-The Go binary performs and validates managed cleanup first. The shell validates the private install marker and binary again after cleanup, then removes both only after cleanup succeeds, and only attempts best-effort removal of exact empty TarLink product directories. Unrelated user files are not removed; ownership conflicts or corrupt state stop the purge with an error. Shared XDG parents such as `~/.local/bin`, `$XDG_DATA_HOME/applications`, and the XDG home directories remain in place.
+The Go binary performs and validates managed cleanup first. The shell validates the private install marker and binary again after cleanup, then removes both only after cleanup succeeds, and only attempts best-effort removal of exact empty TarLink product directories. Unrelated user files are not removed; ownership conflicts or corrupt state stop the purge with an error. Shared XDG parents such as `~/.local/bin`, `$XDG_DATA_HOME/applications`, and `$XDG_DATA_HOME/icons/hicolor` remain in place. Manifest-provided icons are copied into fixed hicolor paths and are removed only when their ownership digest still matches.
 
 If the canonical `~/.local/bin/tarlink` binary is already missing and no TarLink product roots or install marker remain, removal is an idempotent no-op. If product roots remain, rerun the installer and then rerun removal so Go can validate ownership and finish cleanup. The removal script deliberately refuses binaries found elsewhere on `PATH`, refuses a symlink at the canonical path, and refuses any binary without an exact install marker.
 

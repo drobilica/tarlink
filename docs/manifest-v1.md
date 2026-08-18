@@ -34,12 +34,13 @@ application:
 desktop:
   enabled: true | false
   categories: [Development | Emulator | Game | Graphics | Utility]
+  icon: <optional canonical relative path to an icon below the extracted root>
 ```
 
 SHA-256 digests contain exactly 64 lowercase hexadecimal characters. Other algorithms, missing verification, malformed digests, and non-HTTPS or credential-bearing verification sources are rejected.
 
 `verification.source` records the upstream checksum publication from which registry reviewers obtained the digest. TarLink verifies the artifact against the reviewed digest; it does not substitute a preferred algorithm or derive a different digest.
 
-Unknown fields, aliases, anchors, merge keys, multiple documents, invalid UTF-8, noncanonical paths, unsupported categories, and arbitrary process metadata are rejected. A manifest cannot supply commands, hooks, environment variables, destinations, scripts, or post-install actions.
+Unknown fields, aliases, anchors, merge keys, multiple documents, invalid UTF-8, noncanonical paths, unsupported categories, and arbitrary process metadata are rejected. `desktop.icon`, when present, must be a canonical relative path and desktop integration must be enabled. A manifest cannot supply commands, hooks, environment variables, destinations, scripts, or post-install actions.
 
 The canonical example is [manifest-v1.example.yaml](../schema/manifest-v1.example.yaml).

@@ -134,6 +134,9 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	if installed.Executable != item.Application.Executable {
 		return Outcome{}, fmt.Errorf("%w: executable path changed from %q to %q", ErrConflict, installed.Executable, item.Application.Executable)
 	}
+	if installed.DesktopEnabled != item.Desktop.Enabled {
+		return Outcome{}, fmt.Errorf("%w: desktop integration setting cannot change during update", ErrConflict)
+	}
 	if installed.Previous == item.Release.Version {
 		return manager.activateRetained(item.ID, installed, progress)
 	}
@@ -310,6 +313,11 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 	if err := validateExecutable(applicationRoot, item.Application.Executable); err != nil {
 		return Outcome{}, err
 	}
+	if item.Desktop.Icon != "" {
+		if _, err := integration.IconDigest(applicationRoot, item.Desktop.Icon); err != nil {
+			return Outcome{}, fmt.Errorf("validate desktop icon: %w", err)
+		}
+	}
 	if err := manager.inject("after_extract"); err != nil {
 		return Outcome{}, err
 	}
@@ -367,11 +375,18 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 	spec := integration.Spec{
 		ID: item.ID, Name: item.Name, Executable: item.Application.Executable,
 		ApplicationRoot: appRoot, LocalBinDirectory: manager.Layout.Bin,
-		DesktopDirectory: manager.Layout.Desktop, DesktopEnabled: item.Desktop.Enabled,
+		DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons,
+		Icon: item.Desktop.Icon, IconSourceRoot: finalPath, DesktopEnabled: item.Desktop.Enabled,
 		DesktopCategories: item.Desktop.Categories,
 	}
 	if spec.DesktopEnabled {
 		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).ExecutableLink)
+	}
+	if spec.Icon != "" {
+		spec.IconSHA256, err = integration.IconDigest(spec.IconSourceRoot, spec.Icon)
+		if err != nil {
+			return Outcome{}, err
+		}
 	}
 	var paths integration.Paths
 	cleanupIntegration := func() error { return nil }
@@ -388,7 +403,11 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 		if err := integration.ValidateOwned(existingSpec); err != nil {
 			return Outcome{}, err
 		}
-		paths = integration.ExpectedPaths(existingSpec)
+		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).ExecutableLink)
+		paths, cleanupIntegration, err = integration.Update(spec, existingSpec)
+		if err != nil {
+			return Outcome{}, err
+		}
 		spec.DesktopEnabled = installed.DesktopEnabled
 	}
 	keepIntegration := false
@@ -439,10 +458,14 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 			ExecutableTarget: filepath.Join(appRoot, "current", filepath.FromSlash(item.Application.Executable)),
 			DesktopEntry:     desktopPath,
 			DesktopSHA256:    spec.DesktopSHA256,
+			IconFile:         paths.IconFile, IconSHA256: spec.IconSHA256,
+			IconSource: item.Desktop.Icon,
 		},
 	}
 	if installed != nil {
-		newState.Integration.DesktopSHA256 = installed.Integration.DesktopSHA256
+		newState.Integration.PreviousIconFile = installed.Integration.IconFile
+		newState.Integration.PreviousIconSHA256 = installed.Integration.IconSHA256
+		newState.Integration.PreviousIconSource = installed.Integration.IconSource
 	}
 	if err := manager.inject("before_state"); err != nil {
 		return Outcome{}, err
@@ -496,19 +519,39 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	if err != nil {
 		return Outcome{}, err
 	}
+	nextSpec := spec
+	nextSpec.Icon = installed.Integration.PreviousIconSource
+	if nextSpec.Icon == "" && installed.Integration.PreviousIconFile != "" {
+		nextSpec.Icon = "icon" + filepath.Ext(installed.Integration.PreviousIconFile)
+	}
+	nextSpec.IconSHA256 = installed.Integration.PreviousIconSHA256
+	nextSpec.IconSourceRoot = filepath.Join(appRoot, "current")
+	iconRestore, err := integration.SwitchIcon(spec, nextSpec)
+	if err != nil {
+		_ = restore()
+		return Outcome{}, err
+	}
+	iconCommitted := false
 	committed := false
 	defer func() {
 		if !committed {
+			if !iconCommitted {
+				_ = iconRestore()
+			}
 			_ = restore()
 		}
 	}()
 	installed.Current, installed.Previous = installed.Previous, installed.Current
+	installed.Integration.IconFile, installed.Integration.PreviousIconFile = installed.Integration.PreviousIconFile, installed.Integration.IconFile
+	installed.Integration.IconSHA256, installed.Integration.PreviousIconSHA256 = installed.Integration.PreviousIconSHA256, installed.Integration.IconSHA256
+	installed.Integration.IconSource, installed.Integration.PreviousIconSource = installed.Integration.PreviousIconSource, installed.Integration.IconSource
 	if err := manager.inject("before_state"); err != nil {
 		return Outcome{}, err
 	}
 	stateCommitted, stateErr := manager.persistState(installed)
 	if stateCommitted {
 		committed = true
+		iconCommitted = true
 	}
 	if stateErr != nil {
 		return Outcome{State: installed}, stateErr
@@ -562,9 +605,14 @@ func (manager *Manager) integrationSpec(installed state.State, name string, cate
 	appRoot := filepath.Join(manager.Layout.Apps, installed.App)
 	spec := integration.Spec{
 		ID: installed.App, Name: name, Executable: installed.Executable, ApplicationRoot: appRoot,
-		LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop,
+		LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons,
 		DesktopEnabled: installed.DesktopEnabled, DesktopCategories: categories,
-		DesktopSHA256: installed.Integration.DesktopSHA256,
+		DesktopSHA256:  installed.Integration.DesktopSHA256,
+		IconSHA256:     installed.Integration.IconSHA256,
+		IconSourceRoot: filepath.Join(appRoot, "current"), Icon: installed.Integration.IconSource,
+	}
+	if spec.Icon == "" && installed.Integration.IconFile != "" {
+		spec.Icon = "icon" + filepath.Ext(installed.Integration.IconFile)
 	}
 	expected := integration.ExpectedPaths(spec)
 	expectedTarget := filepath.Join(appRoot, "current", filepath.FromSlash(installed.Executable))
@@ -572,7 +620,7 @@ func (manager *Manager) integrationSpec(installed state.State, name string, cate
 	if installed.DesktopEnabled {
 		expectedDesktop = expected.DesktopEntry
 	}
-	if installed.Integration.ExecutableLink != expected.ExecutableLink || installed.Integration.ExecutableTarget != expectedTarget || installed.Integration.DesktopEntry != expectedDesktop {
+	if installed.Integration.ExecutableLink != expected.ExecutableLink || installed.Integration.ExecutableTarget != expectedTarget || installed.Integration.DesktopEntry != expectedDesktop || installed.Integration.IconFile != expected.IconFile {
 		return integration.Spec{}, fmt.Errorf("%w: state integration paths do not match the canonical layout", ErrConflict)
 	}
 	return spec, nil
