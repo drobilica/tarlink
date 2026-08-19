@@ -309,6 +309,217 @@ func TestRejectUnsafeTarTypesAndCollisions(t *testing.T) {
 	}
 }
 
+func TestTarValidateMode(t *testing.T) {
+	// Accepted: ordinary permissions plus recognized, inert Unix file-type
+	// bits. Because the Typeflag is authoritative, a recognized file-type
+	// bit is accepted even when it mismatches the entry's Typeflag.
+	for _, tc := range []struct {
+		name string
+		h    []tar.Header
+	}{
+		{"regular 0100644", []tar.Header{{Name: "f", Mode: 0100644, Size: 1, Typeflag: tar.TypeReg}}},
+		{"regular 0100755", []tar.Header{{Name: "f", Mode: 0100755, Size: 1, Typeflag: tar.TypeReg}}},
+		{"regular-a 0100644", []tar.Header{{Name: "f", Mode: 0100644, Size: 1, Typeflag: tar.TypeRegA}}},
+		{"regular-a plain 0644", []tar.Header{{Name: "f", Mode: 0644, Size: 1, Typeflag: tar.TypeRegA}}},
+		{"dir 040755", []tar.Header{{Name: "d", Mode: 040755, Typeflag: tar.TypeDir}}},
+		{"dir plain 0755", []tar.Header{{Name: "d", Mode: 0755, Typeflag: tar.TypeDir}}},
+		{"symlink 0120777", []tar.Header{{Name: "t", Mode: 0100644, Size: 1, Typeflag: tar.TypeReg}, {Name: "l", Mode: 0120777, Typeflag: tar.TypeSymlink, Linkname: "t"}}},
+		{"symlink plain 0777", []tar.Header{{Name: "t", Mode: 0100644, Size: 1, Typeflag: tar.TypeReg}, {Name: "l", Mode: 0777, Typeflag: tar.TypeSymlink, Linkname: "t"}}},
+		{"plain 0644", []tar.Header{{Name: "f", Mode: 0644, Size: 1, Typeflag: tar.TypeReg}}},
+		{"plain 0000", []tar.Header{{Name: "f", Mode: 0000, Size: 1, Typeflag: tar.TypeReg}}},
+		{"dir type bits on regular", []tar.Header{{Name: "f", Mode: 040755, Size: 1, Typeflag: tar.TypeReg}}},
+		{"regular type bits on dir", []tar.Header{{Name: "d", Mode: 0100755, Typeflag: tar.TypeDir}}},
+		{"symlink type bits on regular", []tar.Header{{Name: "f", Mode: 0120755, Size: 1, Typeflag: tar.TypeReg}}},
+		{"fifo type bits on regular", []tar.Header{{Name: "f", Mode: 0o10644, Size: 1, Typeflag: tar.TypeReg}}},
+		{"char type bits on regular", []tar.Header{{Name: "f", Mode: 0o20644, Size: 1, Typeflag: tar.TypeReg}}},
+		{"block type bits on regular", []tar.Header{{Name: "f", Mode: 0o60644, Size: 1, Typeflag: tar.TypeReg}}},
+		{"socket type bits on regular", []tar.Header{{Name: "f", Mode: 0o140644, Size: 1, Typeflag: tar.TypeReg}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := Extract(context.Background(), bytes.NewReader(tarFixture(t, tc.h)), t.TempDir(), FormatTarGz, Limits{}); err != nil {
+				t.Fatalf("Extract error = %v", err)
+			}
+		})
+	}
+
+	// Rejected: special bits (plain or with type bits), unknown/high bits,
+	// and negative modes. Recognized file-type bits are inert, but any
+	// combination of file types or bit outside the recognized set is
+	// rejected as unknown.
+	for _, tc := range []struct {
+		name string
+		h    tar.Header
+	}{
+		{"setuid plain", tar.Header{Name: "f", Mode: 04755, Size: 1, Typeflag: tar.TypeReg}},
+		{"setgid plain", tar.Header{Name: "f", Mode: 02755, Size: 1, Typeflag: tar.TypeReg}},
+		{"sticky plain", tar.Header{Name: "f", Mode: 01755, Size: 1, Typeflag: tar.TypeReg}},
+		{"setuid with type bits", tar.Header{Name: "f", Mode: 0104755, Size: 1, Typeflag: tar.TypeReg}},
+		{"setgid with type bits", tar.Header{Name: "d", Mode: 0402755, Typeflag: tar.TypeDir}},
+		{"sticky with type bits", tar.Header{Name: "f", Mode: 0101755, Size: 1, Typeflag: tar.TypeReg}},
+		{"combination of file types (fifo|chr)", tar.Header{Name: "f", Mode: 0o30644, Size: 1, Typeflag: tar.TypeReg}},
+		{"combination of file types (reg|blk)", tar.Header{Name: "f", Mode: 0o160644, Size: 1, Typeflag: tar.TypeReg}},
+		{"combination of file types (fifo|reg)", tar.Header{Name: "f", Mode: 0o110644, Size: 1, Typeflag: tar.TypeReg}},
+		{"unknown file type bits", tar.Header{Name: "f", Mode: 0o150644, Size: 1, Typeflag: tar.TypeReg}},
+		{"all file type bits", tar.Header{Name: "f", Mode: 0o170644, Size: 1, Typeflag: tar.TypeReg}},
+		{"unknown high bit", tar.Header{Name: "f", Mode: 0o200000644, Size: 1, Typeflag: tar.TypeReg}},
+		{"negative mode", tar.Header{Name: "f", Mode: -0644, Size: 1, Typeflag: tar.TypeReg}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Extract(context.Background(), bytes.NewReader(tarFixture(t, []tar.Header{tc.h})), t.TempDir(), FormatTarGz, Limits{})
+			if !errors.Is(err, ErrEntryType) {
+				t.Fatalf("error = %v, want ErrEntryType", err)
+			}
+		})
+	}
+}
+
+func TestTarRepeatedDirectoryNoop(t *testing.T) {
+	// A TAR directory listed more than once is a no-op when the entry is
+	// already tracked as a directory and is a real, non-symlink directory on
+	// disk.
+	data := tarFixture(t, []tar.Header{
+		{Name: "app", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "app", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "app", Typeflag: tar.TypeDir, Mode: 0o755},
+	})
+	dest := t.TempDir()
+	if err := Extract(context.Background(), bytes.NewReader(data), dest, FormatTarGz, Limits{}); err != nil {
+		t.Fatalf("repeated TAR directory no-op error = %v", err)
+	}
+	st, err := os.Lstat(filepath.Join(dest, "app"))
+	if err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("app stat = %v, err = %v; want real directory", st, err)
+	}
+}
+
+func TestTarDirectoryCollisionsRemain(t *testing.T) {
+	// Repeated directory no-ops are the only tolerated duplicate. Any other
+	// collision on a directory path must still be rejected, including
+	// type changes and symlink involvement.
+	for _, tc := range []struct {
+		name string
+		h    []tar.Header
+	}{
+		{"file then dir", []tar.Header{{Name: "d", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1}, {Name: "d", Typeflag: tar.TypeDir, Mode: 0o755}}},
+		{"dir then file", []tar.Header{{Name: "d", Typeflag: tar.TypeDir, Mode: 0o755}, {Name: "d", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1}}},
+		{"dir then symlink", []tar.Header{{Name: "t", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1}, {Name: "d", Typeflag: tar.TypeDir, Mode: 0o755}, {Name: "d", Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: "t"}}},
+		{"symlink then dir", []tar.Header{{Name: "t", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1}, {Name: "d", Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: "t"}, {Name: "d", Typeflag: tar.TypeDir, Mode: 0o755}}},
+		{"child under file", []tar.Header{{Name: "d", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1}, {Name: "d/child", Typeflag: tar.TypeDir, Mode: 0o755}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Extract(context.Background(), bytes.NewReader(tarFixture(t, tc.h)), t.TempDir(), FormatTarGz, Limits{})
+			if !errors.Is(err, ErrCollision) {
+				t.Fatalf("error = %v, want ErrCollision", err)
+			}
+		})
+	}
+}
+
+func TestTarImplicitParentThenExplicitDirectory(t *testing.T) {
+	// A directory first created implicitly as a parent of a deeper entry and
+	// then listed explicitly as a directory entry is a tolerated no-op: it is
+	// already a tracked, real, non-symlink directory.
+	data := tarFixture(t, []tar.Header{
+		{Name: "app/sub/file", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+		{Name: "app/sub", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: "app", Typeflag: tar.TypeDir, Mode: 0o755},
+	})
+	dest := t.TempDir()
+	if err := Extract(context.Background(), bytes.NewReader(data), dest, FormatTarGz, Limits{}); err != nil {
+		t.Fatalf("implicit parent then explicit directory error = %v", err)
+	}
+	for _, d := range []string{"app", "app/sub"} {
+		st, err := os.Lstat(filepath.Join(dest, d))
+		if err != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+			t.Fatalf("%s stat = %v, err = %v; want real directory", d, st, err)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dest, "app/sub/file")); err != nil {
+		t.Fatalf("file stat error = %v", err)
+	}
+}
+
+func TestTarDuplicateRegularFileAndSymlinkRejected(t *testing.T) {
+	// Only repeated directories are a no-op. Duplicate regular files and
+	// duplicate symlinks must still be rejected as collisions.
+	for _, tc := range []struct {
+		name string
+		h    []tar.Header
+	}{
+		{"duplicate regular file", []tar.Header{
+			{Name: "f", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+			{Name: "f", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+		}},
+		{"duplicate symlink", []tar.Header{
+			{Name: "t", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+			{Name: "l", Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: "t"},
+			{Name: "l", Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: "t"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Extract(context.Background(), bytes.NewReader(tarFixture(t, tc.h)), t.TempDir(), FormatTarGz, Limits{})
+			if !errors.Is(err, ErrCollision) {
+				t.Fatalf("error = %v, want ErrCollision", err)
+			}
+		})
+	}
+}
+
+func TestTarRepeatedDirectoryRequiresRealNonSymlinkDir(t *testing.T) {
+	// The repeated-directory no-op must not weaken security: it only applies
+	// when the on-disk path is a real, non-symlink directory created by this
+	// extractor. A directory repeated over a path occupied by a symlink or a
+	// file must still be a collision.
+	for _, tc := range []struct {
+		name string
+		h    []tar.Header
+	}{
+		{"dir then symlink then dir", []tar.Header{
+			{Name: "t", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+			{Name: "d", Typeflag: tar.TypeDir, Mode: 0o755},
+			{Name: "d", Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: "t"},
+			{Name: "d", Typeflag: tar.TypeDir, Mode: 0o755},
+		}},
+		{"symlink then repeated dir", []tar.Header{
+			{Name: "t", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+			{Name: "d", Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: "t"},
+			{Name: "d", Typeflag: tar.TypeDir, Mode: 0o755},
+			{Name: "d", Typeflag: tar.TypeDir, Mode: 0o755},
+		}},
+		{"file then repeated dir", []tar.Header{
+			{Name: "d", Typeflag: tar.TypeReg, Mode: 0o644, Size: 1},
+			{Name: "d", Typeflag: tar.TypeDir, Mode: 0o755},
+			{Name: "d", Typeflag: tar.TypeDir, Mode: 0o755},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Extract(context.Background(), bytes.NewReader(tarFixture(t, tc.h)), t.TempDir(), FormatTarGz, Limits{})
+			if !errors.Is(err, ErrCollision) {
+				t.Fatalf("error = %v, want ErrCollision", err)
+			}
+		})
+	}
+}
+
+func TestZipRepeatedDirectoryCollision(t *testing.T) {
+	// ZIP keeps strict duplicate-path rejection: a directory listed more
+	// than once is a collision, not a no-op.
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	for i := 0; i < 2; i++ {
+		if _, err := zw.Create("d/"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err := Extract(context.Background(), bytes.NewReader(out.Bytes()), t.TempDir(), FormatZip, Limits{})
+	if !errors.Is(err, ErrCollision) {
+		t.Fatalf("error = %v, want ErrCollision", err)
+	}
+}
+
 func TestTarAcceptsContainedSharedLibrarySymlinkChain(t *testing.T) {
 	data := tarFixture(t, []tar.Header{
 		{Name: "app/lib/libexample.so", Typeflag: tar.TypeSymlink, Linkname: "libexample.so.1", Mode: 0o777},

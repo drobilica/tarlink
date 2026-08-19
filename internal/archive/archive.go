@@ -391,6 +391,58 @@ func (x *extractor) extractTarXZ(r io.Reader) error {
 	return x.extractTar(xzReader)
 }
 
+// Recognized standard Unix file-type metadata values from POSIX mode bits.
+// These are the S_IFMT values whose presence in a tar entry's Mode is inert:
+// the entry's Typeflag is authoritative for the entry type, so a recognized
+// file-type bit is accepted whether or not it matches the Typeflag, including
+// device-like values (FIFO, CHR, BLK, SOCK) on an otherwise regular entry.
+// This is an explicit, auditable set: anything in the file-type region other
+// than one of these values (or none) is rejected.
+const (
+	modeTypeMask int64 = 0o170000 // S_IFMT
+	modeTypeFIFO int64 = 0o010000 // S_IFIFO
+	modeTypeCHR  int64 = 0o020000 // S_IFCHR
+	modeTypeDIR  int64 = 0o040000 // S_IFDIR
+	modeTypeBLK  int64 = 0o060000 // S_IFBLK
+	modeTypeREG  int64 = 0o100000 // S_IFREG
+	modeTypeLNK  int64 = 0o120000 // S_IFLNK
+	modeTypeSOCK int64 = 0o140000 // S_IFSOCK
+	modePermMask int64 = 0o7777
+	modeSpecial  int64 = 0o7000 // setuid | setgid | sticky
+)
+
+// validateMode validates a tar entry's Unix Mode.
+//
+// The entry's Typeflag is authoritative for the entry type; the recognized
+// Unix file-type bits are inert metadata and may mismatch the Typeflag.
+// Ordinary permission bits (07777) are always accepted. Everything else is
+// rejected: negative modes, special permission bits (setuid, setgid,
+// sticky), combinations or unknown bits in the file-type region, and high
+// bits outside the recognized range. Unsupported entry types are rejected by
+// the caller rather than here.
+func validateMode(mode int64) error {
+	if mode < 0 {
+		return fmt.Errorf("%w: negative mode", ErrEntryType)
+	}
+	// Special permission bits are never accepted.
+	if mode&modeSpecial != 0 {
+		return fmt.Errorf("%w: special permission bits", ErrEntryType)
+	}
+	// Require the file-type bits, if present, to be exactly one recognized
+	// value (or none). Combinations of types and unknown bits are rejected.
+	switch mode & modeTypeMask {
+	case 0, modeTypeFIFO, modeTypeCHR, modeTypeDIR, modeTypeBLK, modeTypeREG, modeTypeLNK, modeTypeSOCK:
+	default:
+		return fmt.Errorf("%w: unknown mode bits", ErrEntryType)
+	}
+	// Reject any high bit outside the permission and recognized file-type
+	// range.
+	if mode&^int64(modeTypeMask|modePermMask) != 0 {
+		return fmt.Errorf("%w: unknown mode bits", ErrEntryType)
+	}
+	return nil
+}
+
 func (x *extractor) extractTar(r io.Reader) error {
 	x.reportProgress(ProgressExtracting, 0, -1)
 	tr := tar.NewReader(&contextReader{ctx: x.ctx, r: r})
@@ -411,8 +463,8 @@ func (x *extractor) extractTar(r io.Reader) error {
 		if err := x.countEntry(); err != nil {
 			return err
 		}
-		if h.Mode < 0 || h.Mode&^07777 != 0 || h.Mode&07000 != 0 {
-			return fmt.Errorf("%w: special permission bits", ErrEntryType)
+		if err := validateMode(h.Mode); err != nil {
+			return err
 		}
 		if h.Typeflag == tar.TypeXGlobalHeader {
 			// archive/tar has already consumed and bounded this POSIX PAX
@@ -435,7 +487,7 @@ func (x *extractor) extractTar(r io.Reader) error {
 			if h.Size != 0 {
 				return fmt.Errorf("%w: directory has data", ErrEntryType)
 			}
-			if err := x.makeDir(name); err != nil {
+			if err := x.makeDir(name, true); err != nil {
 				return err
 			}
 		case tar.TypeReg, tar.TypeRegA:
@@ -559,7 +611,7 @@ func (x *extractor) extractZip(r io.Reader) error {
 			if f.UncompressedSize64 != 0 {
 				return fmt.Errorf("%w: directory has data", ErrEntryType)
 			}
-			if err := x.makeDir(name); err != nil {
+			if err := x.makeDir(name, false); err != nil {
 				return err
 			}
 			continue
@@ -630,8 +682,18 @@ func validatePath(name string, limits Limits) (string, error) {
 	return clean, nil
 }
 
-func (x *extractor) makeDir(name string) error {
-	if _, exists := x.paths[name]; exists {
+func (x *extractor) makeDir(name string, repeatedNoop bool) error {
+	if k, exists := x.paths[name]; exists {
+		// A repeated directory is tolerated only when the entry is already
+		// tracked as a directory and is a real, non-symlink directory on disk.
+		// TAR archives frequently list a directory more than once; ZIP keeps
+		// the strict duplicate-path rejection.
+		if repeatedNoop && k == kindDir {
+			p := x.path(name)
+			if st, err := os.Lstat(p); err == nil && st.Mode()&os.ModeSymlink == 0 && st.IsDir() {
+				return nil
+			}
+		}
 		return ErrCollision
 	}
 	if err := x.ensureParents(name); err != nil {
