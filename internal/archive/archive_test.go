@@ -174,19 +174,25 @@ func TestExtractValidFixtures(t *testing.T) {
 
 func TestExtractProgressFormatsAndCompletion(t *testing.T) {
 	formats := []struct {
-		name string
-		data []byte
+		name   string
+		data   []byte
 		format Format
-		total int64
+		total  int64
 	}{
 		{"tar.gz", tarFixture(t, []tar.Header{{Name: "one", Mode: 0644, Size: 3, Typeflag: tar.TypeReg}}), FormatTarGz, -1},
 		{"zip", zipFixture(t, "one", "two"), FormatZip, 6},
 	}
 	for _, tc := range formats {
 		t.Run(tc.name, func(t *testing.T) {
-			var events []struct{ stage string; current, total int64 }
+			var events []struct {
+				stage          string
+				current, total int64
+			}
 			err := ExtractWithProgress(context.Background(), bytes.NewReader(tc.data), t.TempDir(), tc.format, Limits{}, func(stage string, current, total int64) {
-				events = append(events, struct{ stage string; current, total int64 }{stage, current, total})
+				events = append(events, struct {
+					stage          string
+					current, total int64
+				}{stage, current, total})
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -224,9 +230,15 @@ func TestExtractProgressTarXZ(t *testing.T) {
 	if err := xw.Close(); err != nil {
 		t.Fatal(err)
 	}
-	var last struct{ stage string; current, total int64 }
+	var last struct {
+		stage          string
+		current, total int64
+	}
 	if err := ExtractWithProgress(context.Background(), bytes.NewReader(compressed.Bytes()), t.TempDir(), FormatTarXZ, Limits{}, func(stage string, current, total int64) {
-		last = struct{ stage string; current, total int64 }{stage, current, total}
+		last = struct {
+			stage          string
+			current, total int64
+		}{stage, current, total}
 	}); err != nil {
 		t.Fatal(err)
 	}
