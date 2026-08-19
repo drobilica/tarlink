@@ -4,7 +4,21 @@ set -euo pipefail
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+
+mode=full
+case "${1:-}" in
+	'') ;;
+	--quick) mode=quick; shift; (($# == 0)) || { printf '%s\n' 'usage: ./scripts/validate.sh [--quick]' >&2; exit 2; } ;;
+	*) printf '%s\n' 'usage: ./scripts/validate.sh [--quick]' >&2; exit 2 ;;
+esac
 cd "$repo_root"
+
+run_quick() {
+	test -z "$(gofmt -l .)"
+	go vet ./...
+	go test ./...
+	CGO_ENABLED=0 go build ./...
+}
 
 run_checks() {
 	if command -v desktop-file-validate >/dev/null 2>&1; then
@@ -33,7 +47,11 @@ run_host_checks() {
 
 case "$(uname -s)" in
 	Linux)
-		run_checks
+		if [ "$mode" = quick ]; then
+			run_quick
+		else
+			run_checks
+		fi
 		;;
 	Darwin)
 		printf '%s\n' 'macOS detected: running host-compatible Go validation.'
@@ -66,9 +84,10 @@ case "$(uname -s)" in
 			-e XDG_DATA_HOME=/tmp/tarlink-home/data \
 			-e XDG_STATE_HOME=/tmp/tarlink-home/state \
 			-e XDG_CACHE_HOME=/tmp/tarlink-home/cache \
+			-e TARLINK_VALIDATE_MODE="$mode" \
 			-e TARLINK_VALIDATE_IN_CONTAINER=1 \
 			"golang:${go_version}-bookworm" \
-			bash -c 'apt-get update >/dev/null && apt-get install --no-install-recommends -y desktop-file-utils jq >/dev/null && mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" && /src/scripts/validate.sh'
+			bash -c 'apt-get update >/dev/null && apt-get install --no-install-recommends -y desktop-file-utils jq >/dev/null && mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" && if [ "$TARLINK_VALIDATE_MODE" = quick ]; then /src/scripts/validate.sh --quick; else /src/scripts/validate.sh; fi'
 		;;
 	*)
 		printf 'unsupported host OS: %s\n' "$(uname -s)" >&2

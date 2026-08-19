@@ -249,6 +249,9 @@ func (m model) View() tea.View {
 			line("Registry: " + m.detail.RegistryVersion)
 			line("Installed: " + installedLabel(*m.detail))
 			line("Categories: " + strings.Join(m.detail.Categories, ", "))
+			if hasGameData(*m.detail) {
+				line("Requires: Original game data")
+			}
 			line("Homepage: " + m.detail.Homepage)
 			if m.detail.InstalledVersion != "" {
 				body.WriteByte('\n')
@@ -739,13 +742,27 @@ func writeApplications(destination *strings.Builder, values []app.Application, s
 }
 
 func installedLabel(value app.Application) string {
+	label := ""
 	if value.InstalledVersion == "" {
-		return "Install"
+		label = "Install"
+	} else if value.UpdateAvailable {
+		label = value.InstalledVersion + " → Update"
+	} else {
+		label = value.InstalledVersion + " current"
 	}
-	if value.UpdateAvailable {
-		return value.InstalledVersion + " → Update"
+	if hasGameData(value) {
+		label += " [GAME DATA]"
 	}
-	return value.InstalledVersion + " current"
+	return label
+}
+
+func hasGameData(value app.Application) bool {
+	for _, requirement := range value.Requirements {
+		if requirement == "original-game-data" {
+			return true
+		}
+	}
+	return false
 }
 
 func resultMessage(action string, result app.Result) string {

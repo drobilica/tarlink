@@ -56,6 +56,18 @@ Use the canonical local validation entry point:
 ./scripts/validate.sh
 ```
 
+During implementation, prefer `./scripts/validate.sh --quick`. Before
+reporting completion, run `./scripts/validate.sh`.
+
+Registry validation tooling must reuse TarLink's production Go download,
+checksum, archive, install, integration, state, and uninstall packages; never
+duplicate those implementations. Full registry structural validation is cheap
+and always required, while artifact materialization targets only new or
+materially changed artifacts. Registry checks must never execute third-party
+application binaries. Ubuntu 24.04 GitHub Actions is authoritative Linux CI;
+full-registry artifact audits are explicit and are not a default per-change
+requirement.
+
 It includes the required checks below and the repository-specific installer, uninstaller, and architecture checks:
 
 ```sh

@@ -231,6 +231,7 @@ func platformFilename(name string) (manifest.Platform, bool) {
 func sameApplicationMetadata(left, right *manifest.Manifest) bool {
 	return left.ID == right.ID && left.Name == right.Name && left.Summary == right.Summary &&
 		left.Homepage == right.Homepage && reflect.DeepEqual(left.Categories, right.Categories) &&
+		reflect.DeepEqual(left.Requirements, right.Requirements) &&
 		reflect.DeepEqual(left.Desktop, right.Desktop)
 }
 

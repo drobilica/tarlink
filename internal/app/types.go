@@ -36,6 +36,7 @@ type Application struct {
 	Summary          string   `json:"summary"`
 	Homepage         string   `json:"homepage"`
 	Categories       []string `json:"categories"`
+	Requirements     []string `json:"requirements,omitempty"`
 	RegistryVersion  string   `json:"registry_version"`
 	InstalledVersion string   `json:"installed_version,omitempty"`
 	PreviousVersion  string   `json:"previous_version,omitempty"`

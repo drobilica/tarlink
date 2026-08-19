@@ -233,6 +233,9 @@ func (r Runner) printApplications(values []app.Application, jsonOutput bool) err
 				status += ", update available"
 			}
 		}
+		if hasGameData(value) {
+			status += " [GAME DATA]"
+		}
 		if _, err := fmt.Fprintf(r.Stdout, "%-20s %-12s %s\n", value.ID, value.RegistryVersion, status); err != nil {
 			return err
 		}
@@ -252,9 +255,22 @@ func (r Runner) printInfo(value app.Application, jsonOutput bool) error {
 	if installed == "" {
 		installed = "not installed"
 	}
-	_, err := fmt.Fprintf(r.Stdout, "%s\n\nID:          %s\nVersion:     %s\nInstalled:   %s\nUpdate:      %s\nCategories:  %s\nHomepage:    %s\n",
-		value.Name, value.ID, value.RegistryVersion, installed, update, strings.Join(value.Categories, ", "), value.Homepage)
+	requirements := ""
+	if hasGameData(value) {
+		requirements = "Requires:     Original game data\n"
+	}
+	_, err := fmt.Fprintf(r.Stdout, "%s\n\nID:          %s\nVersion:     %s\nInstalled:   %s\nUpdate:      %s\nCategories:  %s\n%sHomepage:    %s\n",
+		value.Name, value.ID, value.RegistryVersion, installed, update, strings.Join(value.Categories, ", "), requirements, value.Homepage)
 	return err
+}
+
+func hasGameData(value app.Application) bool {
+	for _, requirement := range value.Requirements {
+		if requirement == "original-game-data" {
+			return true
+		}
+	}
+	return false
 }
 
 func (r Runner) printVersions(id string, values []app.Version, jsonOutput bool) error {

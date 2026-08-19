@@ -62,6 +62,28 @@ func TestParseAcceptsWellFormedSHA512Verification(t *testing.T) {
 	}
 }
 
+func TestRequirements(t *testing.T) {
+	valid := strings.Replace(validManifest, "platform:\n", "requirements:\n  - original-game-data\nplatform:\n", 1)
+	item, err := Parse(strings.NewReader(valid))
+	if err != nil || len(item.Requirements) != 1 || item.Requirements[0] != "original-game-data" {
+		t.Fatalf("requirements parse = %#v, error = %v", item, err)
+	}
+	for name, value := range map[string]string{
+		"unknown":   "  - network\n",
+		"duplicate": "  - original-game-data\n  - original-game-data\n",
+		"empty":     "requirements: []\n",
+		"scalar":    "requirements: original-game-data\n",
+		"number":    "requirements:\n  - 1\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			mutated := strings.Replace(validManifest, "platform:\n", "requirements:\n"+value+"platform:\n", 1)
+			if _, err := Parse(strings.NewReader(mutated)); err == nil {
+				t.Fatal("invalid requirements unexpectedly accepted")
+			}
+		})
+	}
+}
+
 func TestParseApplicationCategories(t *testing.T) {
 	for _, category := range []string{"game-development", "emulation", "graphics", "development", "utilities", "games"} {
 		t.Run(category, func(t *testing.T) {

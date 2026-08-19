@@ -27,16 +27,17 @@ const (
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 type Manifest struct {
-	Schema      int         `yaml:"schema" json:"schema"`
-	ID          string      `yaml:"id" json:"id"`
-	Name        string      `yaml:"name" json:"name"`
-	Summary     string      `yaml:"summary" json:"summary"`
-	Homepage    string      `yaml:"homepage" json:"homepage"`
-	Categories  []string    `yaml:"categories" json:"categories"`
-	Platform    Platform    `yaml:"platform" json:"platform"`
-	Release     Release     `yaml:"release" json:"release"`
-	Application Application `yaml:"application" json:"application"`
-	Desktop     Desktop     `yaml:"desktop" json:"desktop"`
+	Schema       int         `yaml:"schema" json:"schema"`
+	ID           string      `yaml:"id" json:"id"`
+	Name         string      `yaml:"name" json:"name"`
+	Summary      string      `yaml:"summary" json:"summary"`
+	Homepage     string      `yaml:"homepage" json:"homepage"`
+	Categories   []string    `yaml:"categories" json:"categories"`
+	Requirements []string    `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	Platform     Platform    `yaml:"platform" json:"platform"`
+	Release      Release     `yaml:"release" json:"release"`
+	Application  Application `yaml:"application" json:"application"`
+	Desktop      Desktop     `yaml:"desktop" json:"desktop"`
 }
 
 type Platform struct {
@@ -142,7 +143,7 @@ func validateManifestShape(document *yaml.Node) error {
 	}
 	root, err := requiredMapping(document.Content[0], "manifest", []string{
 		"schema", "id", "name", "summary", "homepage", "categories", "platform", "release", "application", "desktop",
-	}, nil)
+	}, []string{"requirements"})
 	if err != nil {
 		return err
 	}
@@ -160,7 +161,20 @@ func validateManifestShape(document *yaml.Node) error {
 		return err
 	}
 	_, err = requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories", "icon"})
-	return err
+	if err != nil {
+		return err
+	}
+	if requirements, ok := root["requirements"]; ok {
+		if requirements.Kind != yaml.SequenceNode || len(requirements.Content) == 0 {
+			return errors.New("requirements must be a non-empty sequence")
+		}
+		for _, requirement := range requirements.Content {
+			if requirement.Kind != yaml.ScalarNode || requirement.Tag != "!!str" {
+				return errors.New("requirements must contain strings")
+			}
+		}
+	}
+	return nil
 }
 
 func requiredMapping(node *yaml.Node, label string, required, optional []string) (map[string]*yaml.Node, error) {
@@ -216,6 +230,9 @@ func (m Manifest) Validate() error {
 		"game-development": true, "emulation": true, "graphics": true,
 		"development": true, "utilities": true, "games": true,
 	}); err != nil {
+		return err
+	}
+	if err := validateEnumList("requirement", m.Requirements, map[string]bool{"original-game-data": true}); err != nil {
 		return err
 	}
 	if m.Platform.OS != "linux" {

@@ -109,6 +109,17 @@ func TestModelLoadsAndShowsApplications(t *testing.T) {
 	}
 }
 
+func TestGameDataRequirementIsShown(t *testing.T) {
+	value := app.Application{ID: "banjo", Name: "Banjo", Requirements: []string{"original-game-data"}}
+	m := model{screen: screenDetails, detail: &value, width: 80}
+	if !strings.Contains(m.View().Content, "Requires: Original game data") {
+		t.Fatalf("details view = %q", m.View().Content)
+	}
+	if !strings.Contains(installedLabel(value), "[GAME DATA]") {
+		t.Fatal("list label omitted game-data marker")
+	}
+}
+
 func TestTarLinkUpgradeNotificationAndBinding(t *testing.T) {
 	service := &fakeService{tarlinkVersion: app.TarLinkVersion{Current: "0.4.2", Latest: "0.5.0", UpgradeAvailable: true}}
 	m := model{ctx: context.Background(), service: service, screen: screenAvailable}

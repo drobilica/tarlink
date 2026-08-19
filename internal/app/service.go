@@ -367,7 +367,7 @@ func (core *Core) installedStates() ([]state.State, error) {
 func applicationFrom(item *manifest.Manifest, installed *state.State) Application {
 	value := Application{
 		ID: item.ID, Name: item.Name, Summary: item.Summary, Homepage: item.Homepage,
-		Categories: append([]string(nil), item.Categories...), RegistryVersion: item.Release.Version,
+		Categories: append([]string(nil), item.Categories...), Requirements: append([]string(nil), item.Requirements...), RegistryVersion: item.Release.Version,
 	}
 	if installed != nil {
 		value.InstalledVersion = installed.Current

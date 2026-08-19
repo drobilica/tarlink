@@ -99,6 +99,23 @@ func TestJSONOutputContainsJSONOnly(t *testing.T) {
 	}
 }
 
+func TestGameDataRequirementIsPresented(t *testing.T) {
+	var out bytes.Buffer
+	service := &fakeService{applications: []app.Application{{ID: "banjo-recompiled", Name: "Banjo", Requirements: []string{"original-game-data"}}}}
+	runner := Runner{Service: service, Stdout: &out, Stderr: io.Discard}
+	if code := runner.Run(context.Background(), []string{"list"}); code != 0 || !bytes.Contains(out.Bytes(), []byte("[GAME DATA]")) {
+		t.Fatalf("list output = %q", out.String())
+	}
+	out.Reset()
+	if code := runner.Run(context.Background(), []string{"info", "banjo-recompiled"}); code != 0 || !bytes.Contains(out.Bytes(), []byte("Requires:     Original game data")) {
+		t.Fatalf("info output = %q", out.String())
+	}
+	out.Reset()
+	if code := runner.Run(context.Background(), []string{"info", "banjo-recompiled", "--json"}); code != 0 || !bytes.Contains(out.Bytes(), []byte(`"requirements":["original-game-data"]`)) {
+		t.Fatalf("json output = %q", out.String())
+	}
+}
+
 func TestVersionNoticeUsesStderr(t *testing.T) {
 	var out, errOut bytes.Buffer
 	service := &fakeService{applications: []app.Application{{ID: "blender"}}, tarlinkVersion: app.TarLinkVersion{Current: "0.4.2", Latest: "0.5.0", UpgradeAvailable: true}}

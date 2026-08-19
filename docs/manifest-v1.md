@@ -18,6 +18,7 @@ name: <display name>
 summary: <short description>
 homepage: <HTTPS URL>
 categories: [game-development | emulation | graphics | development | utilities | games]
+requirements: [original-game-data]
 platform:
   os: linux
   arch: amd64 | arm64
@@ -42,5 +43,10 @@ SHA-256 digests contain exactly 64 lowercase hexadecimal characters; SHA-512 dig
 `verification.source` records the upstream checksum publication from which registry reviewers obtained the digest. TarLink verifies the artifact against the reviewed digest; it does not substitute a preferred algorithm or derive a different digest.
 
 Unknown fields, aliases, anchors, merge keys, multiple documents, invalid UTF-8, noncanonical paths, unsupported categories, and arbitrary process metadata are rejected. `desktop.icon`, when present, must be a canonical relative path and desktop integration must be enabled. A manifest cannot supply commands, hooks, environment variables, destinations, scripts, or post-install actions.
+
+`requirements` is optional and currently accepts only `original-game-data`.
+It indicates that legally obtained original game content must be supplied
+separately by the user. TarLink does not locate, download, verify, extract,
+modify, or require that content during installation.
 
 The canonical example is [manifest-v1.example.yaml](../schema/manifest-v1.example.yaml).
