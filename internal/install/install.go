@@ -303,7 +303,13 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 		return Outcome{}, err
 	}
 	manager.report(progress, "extracting", 0, 0)
-	if err := archive.ExtractPath(ctx, artifactPath, extracted, archive.Format(item.Release.Archive), manager.Limits); err != nil {
+	if err := archive.ExtractPathWithProgress(ctx, artifactPath, extracted, archive.Format(item.Release.Archive), manager.Limits, func(stage string, current, total int64) {
+		progressStage := "extracting"
+		if stage == archive.ProgressPreparing {
+			progressStage = "extracting-preparing"
+		}
+		manager.report(progress, progressStage, current, total)
+	}); err != nil {
 		return Outcome{}, err
 	}
 	applicationRoot, err := normalizedApplicationRoot(extracted)

@@ -56,6 +56,11 @@ func (core *Core) CheckTarLinkVersion(ctx context.Context) (TarLinkVersion, erro
 	return TarLinkVersion{Current: value.Current, Latest: value.Latest, UpgradeAvailable: upgrade.IsNewer(value.Current, value.Latest)}, err
 }
 
+func (core *Core) CheckTarLinkVersionFresh(ctx context.Context) (TarLinkVersion, error) {
+	value, err := core.upgrader.CheckFresh(ctx)
+	return TarLinkVersion{Current: value.Current, Latest: value.Latest, UpgradeAvailable: upgrade.IsNewer(value.Current, value.Latest)}, err
+}
+
 func (core *Core) UpgradeTarLink(ctx context.Context, sink ProgressSink) (TarLinkVersion, error) {
 	var value upgrade.Version
 	err := core.installer.WithLifecycle(ctx, func() error {

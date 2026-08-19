@@ -160,6 +160,26 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 }
 
+func TestInstallReportsArchiveExtractionProgress(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	var stages []string
+	if _, err := manager.Install(context.Background(), server.manifest("v1"), func(stage string, _, _ int64) {
+		stages = append(stages, stage)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preparing, extracting := false, false
+	for _, stage := range stages {
+		preparing = preparing || stage == "extracting-preparing"
+		extracting = extracting || stage == "extracting"
+	}
+	if !extracting || preparing {
+		t.Fatalf("archive progress stages = %v", stages)
+	}
+}
+
 func TestInstallVerificationFailurePrecedesExtraction(t *testing.T) {
 	layout := testLayout(t)
 	server := newArtifactServer(t, fixtureArchive(t, "v1"))

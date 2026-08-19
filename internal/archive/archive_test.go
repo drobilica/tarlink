@@ -172,6 +172,92 @@ func TestExtractValidFixtures(t *testing.T) {
 	})
 }
 
+func TestExtractProgressFormatsAndCompletion(t *testing.T) {
+	formats := []struct {
+		name string
+		data []byte
+		format Format
+		total int64
+	}{
+		{"tar.gz", tarFixture(t, []tar.Header{{Name: "one", Mode: 0644, Size: 3, Typeflag: tar.TypeReg}}), FormatTarGz, -1},
+		{"zip", zipFixture(t, "one", "two"), FormatZip, 6},
+	}
+	for _, tc := range formats {
+		t.Run(tc.name, func(t *testing.T) {
+			var events []struct{ stage string; current, total int64 }
+			err := ExtractWithProgress(context.Background(), bytes.NewReader(tc.data), t.TempDir(), tc.format, Limits{}, func(stage string, current, total int64) {
+				events = append(events, struct{ stage string; current, total int64 }{stage, current, total})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(events) == 0 || events[len(events)-1].stage != ProgressExtracting || events[len(events)-1].current != events[len(events)-1].total && tc.total >= 0 {
+				t.Fatalf("completion events = %+v", events)
+			}
+			if tc.total >= 0 && events[len(events)-1].total != tc.total {
+				t.Fatalf("completion total = %d, want %d", events[len(events)-1].total, tc.total)
+			}
+		})
+	}
+}
+
+func TestExtractProgressTarXZ(t *testing.T) {
+	var raw bytes.Buffer
+	tw := tar.NewWriter(&raw)
+	if err := tw.WriteHeader(&tar.Header{Name: "x", Mode: 0644, Size: 1, Typeflag: tar.TypeReg}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var compressed bytes.Buffer
+	xw, err := xz.NewWriter(&compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := xw.Write(raw.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var last struct{ stage string; current, total int64 }
+	if err := ExtractWithProgress(context.Background(), bytes.NewReader(compressed.Bytes()), t.TempDir(), FormatTarXZ, Limits{}, func(stage string, current, total int64) {
+		last = struct{ stage string; current, total int64 }{stage, current, total}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if last.stage != ProgressExtracting || last.current != 1 || last.total != -1 {
+		t.Fatalf("last progress = %+v", last)
+	}
+}
+
+func TestExtractProgressCancellationAndFailure(t *testing.T) {
+	data := tarFixture(t, []tar.Header{{Name: "one", Mode: 0644, Size: 3, Typeflag: tar.TypeReg}})
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	err := ExtractWithProgress(ctx, bytes.NewReader(data), t.TempDir(), FormatTarGz, Limits{}, func(string, int64, int64) {
+		calls++
+		cancel()
+	})
+	if !errors.Is(err, context.Canceled) || calls == 0 {
+		t.Fatalf("cancellation error = %v, calls = %d", err, calls)
+	}
+	completed := false
+	bad := append([]byte(nil), data[:len(data)-1]...)
+	err = ExtractWithProgress(context.Background(), bytes.NewReader(bad), t.TempDir(), FormatTarGz, Limits{}, func(stage string, current, total int64) {
+		if stage == ProgressExtracting && total >= 0 && current == total {
+			completed = true
+		}
+	})
+	if err == nil || completed {
+		t.Fatalf("failure = %v, completed = %v", err, completed)
+	}
+}
+
 func TestRejectUnsafeTarPaths(t *testing.T) {
 	for _, name := range []string{"../escape", "a/../../escape", "/absolute", `C:\\absolute`, "C:/absolute", "a\\b", "a//b", "a/./b", "a/../b"} {
 		t.Run(name, func(t *testing.T) {

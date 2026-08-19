@@ -51,10 +51,11 @@ type versionMsg struct {
 }
 
 type operationMsg struct {
-	message string
-	err     error
-	next    screen
-	move    bool
+	message      string
+	err          error
+	next         screen
+	move         bool
+	clearUpgrade bool
 }
 
 type progressMsg struct {
@@ -96,6 +97,7 @@ type model struct {
 	height              int
 	progress            app.Progress
 	progressSpeed       float64
+	progressSpeedAt     time.Time
 	estimator           speedEstimator
 	color               bool
 	tarlinkVersion      app.TarLinkVersion
@@ -113,7 +115,7 @@ func Run(ctx context.Context, service app.Service, input io.Reader, output io.Wr
 	defer cancel()
 	program := tea.NewProgram(
 		model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), cancel: cancel},
-		tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output), tea.WithFPS(5),
+		tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output),
 	)
 	_, err := program.Run()
 	return err
@@ -170,6 +172,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = ""
 			return m, nil
 		}
+		if message.clearUpgrade {
+			m.upgradeAvailable = false
+		}
 		if message.move {
 			m.screen = message.next
 			m.confirmSet = false
@@ -179,14 +184,26 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadCmd()
 	case progressMsg:
-		if m.progress.Stage != message.event.Stage {
+		now := time.Now()
+		counterReset := message.event.BytesDone < m.progress.BytesDone || (message.event.BytesDone == 0 && m.progress.BytesDone > 0)
+		if m.progress.Stage != message.event.Stage || counterReset {
 			m.estimator.Reset()
+			m.progressSpeed = 0
+			m.progressSpeedAt = time.Time{}
 		}
 		m.progress = message.event
-		m.progressSpeed = m.estimator.Add(time.Now(), message.event.BytesDone)
+		rate := m.estimator.Add(now, message.event.BytesDone)
+		if rate > 0 && (m.progressSpeedAt.IsZero() || now.Sub(m.progressSpeedAt) >= 500*time.Millisecond) {
+			m.progressSpeed = rate
+			m.progressSpeedAt = now
+		}
 		return m, waitProgress(message.hub)
 	case tea.KeyPressMsg:
 		return m.updateKey(message)
+	case tea.MouseClickMsg:
+		return m.updateMouse(message)
+	case tea.MouseWheelMsg:
+		return m.updateMouse(message)
 	}
 	return m, nil
 }
@@ -201,7 +218,7 @@ func (m model) View() tea.View {
 	}
 	line(m.style("TarLink", accent))
 	if m.upgradeAvailable {
-		line(m.style("↑ TarLink "+m.tarlinkVersion.Latest+" available - press U to upgrade", warning))
+		line(m.style("UPDATE AVAILABLE "+m.tarlinkVersion.Current+" -> "+m.tarlinkVersion.Latest+" [U] (press U to upgrade)", warning))
 	}
 	body.WriteByte('\n')
 	if m.busy != "" {
@@ -328,7 +345,53 @@ func (m model) View() tea.View {
 	}
 	view := tea.NewView(strings.Join(lines, "\n") + "\n")
 	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
 	return view
+}
+
+func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.searching || m.busy != "" {
+		return m, nil
+	}
+	mouse := message.Mouse()
+	if (mouse.Button == tea.MouseWheelUp || mouse.Button == tea.MouseWheelDown) && m.isListScreen() {
+		delta := 3
+		if mouse.Button == tea.MouseWheelUp {
+			delta = -delta
+		}
+		m.moveSelection(delta)
+		return m, nil
+	}
+	if mouse.Button != tea.MouseLeft || !m.isListScreen() {
+		return m, nil
+	}
+	start, rows := m.listBounds()
+	if mouse.Y < start || mouse.Y >= start+rows {
+		return m, nil
+	}
+	index := m.listOffset + mouse.Y - start
+	if index >= 0 && index < len(m.visibleApplications()) {
+		m.selected = index
+		m.clampViewport()
+	}
+	return m, nil
+}
+
+func (m model) isListScreen() bool {
+	return m.screen == screenAvailable || m.screen == screenInstalled || m.screen == screenUpdates
+}
+
+func (m model) listBounds() (start, rows int) {
+	start, _ = m.listBoundsWithoutRows()
+	rows = min(m.listRows(), len(m.visibleApplications())-m.listOffset)
+	if rows < 0 {
+		rows = 0
+	}
+	if m.height > 0 {
+		footerRows := len(footerLines(m.footer(), m.width))
+		rows = min(rows, max(0, m.height-footerRows-start-1))
+	}
+	return start, rows
 }
 
 func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -382,15 +445,9 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenUpgrade
 		}
 	case "up":
-		if m.selected > 0 {
-			m.selected--
-		}
-		m.clampViewport()
+		m.moveSelection(-1)
 	case "down":
-		if m.selected+1 < len(m.visibleApplications()) {
-			m.selected++
-		}
-		m.clampViewport()
+		m.moveSelection(1)
 	case "/":
 		m.screen = screenAvailable
 		m.searching = true
@@ -494,6 +551,22 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *model) moveSelection(delta int) {
+	length := len(m.visibleApplications())
+	if length == 0 {
+		m.selected = 0
+		return
+	}
+	m.selected += delta
+	if m.selected < 0 {
+		m.selected = 0
+	}
+	if m.selected >= length {
+		m.selected = length - 1
+	}
+	m.clampViewport()
+}
+
 func (m model) activateSelected() (tea.Model, tea.Cmd) {
 	if m.detail == nil {
 		return m, nil
@@ -527,7 +600,7 @@ func (m model) loadCmd() tea.Cmd {
 
 func (m model) checkVersionCmd() tea.Cmd {
 	return func() tea.Msg {
-		value, err := m.service.CheckTarLinkVersion(m.ctx)
+		value, err := m.service.CheckTarLinkVersionFresh(m.ctx)
 		return versionMsg{value: value, err: err}
 	}
 }
@@ -539,7 +612,7 @@ func (m model) upgradeCmd() tea.Cmd {
 		if err == nil {
 			message = "TarLink upgraded to " + value.Latest + ". The new version will be used the next time TarLink starts."
 		}
-		return operationMsg{message: message, next: screenAvailable, move: true}, err
+		return operationMsg{message: message, next: screenAvailable, move: true, clearUpgrade: err == nil}, err
 	})
 }
 
@@ -651,6 +724,16 @@ func (h *operationHub) next(ctx context.Context) tea.Msg {
 						default:
 						}
 					}
+					h.mu.Lock()
+					if h.latest != nil {
+						event := *h.latest
+						h.latest = nil
+						h.lastEmit = time.Now()
+						h.mu.Unlock()
+						h.result <- result
+						return progressMsg{hub: h, event: event}
+					}
+					h.mu.Unlock()
 					return result
 				case <-timer.C:
 				case <-ctx.Done():
@@ -791,35 +874,43 @@ func (m *model) clampViewport() {
 }
 
 func (m model) listRows() int {
-	used := 4 // TarLink heading, spacer, section heading, and list spacer.
-	if m.upgradeAvailable {
-		used++
-	}
-	if m.busy != "" {
-		used++
-		if m.progress.Stage != "" {
-			used++
-		}
-		used++
-	}
-	if m.err != nil {
-		used += 3
-	}
-	if m.status != "" {
-		used += 2
-	}
-	if m.screen == screenAvailable && (m.searching || m.query != "") {
-		used++
-	}
+	start, _ := m.listBoundsWithoutRows()
 	footerRows := len(footerLines(m.footer(), m.width))
-	rows := m.height - used - footerRows
+	rows := m.height - start - 1 - footerRows // trailing spacer before the footer
 	if rows < 1 {
 		return 1
 	}
 	return rows
 }
 
+func (m model) listBoundsWithoutRows() (start, rows int) {
+	start = 4
+	if m.upgradeAvailable {
+		start++
+	}
+	if m.busy != "" {
+		start++
+		if m.progress.Stage != "" {
+			start++
+		}
+		start++
+	}
+	if m.err != nil {
+		start += 3
+	}
+	if m.status != "" {
+		start += 2
+	}
+	if m.screen == screenAvailable && (m.searching || m.query != "") {
+		start++
+	}
+	return start, 0
+}
+
 func (m model) footer() string {
+	if m.busy != "" {
+		return "q Quit"
+	}
 	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
 		return "Enter Confirm  Esc Cancel  q Quit"
 	}
@@ -983,7 +1074,7 @@ func (m model) progressLine() string {
 	}
 	if m.progressSpeed > 0 {
 		line += "  " + formatRate(m.progressSpeed)
-		if m.progress.BytesTotal > m.progress.BytesDone && m.progress.BytesTotal > 0 {
+		if m.estimator.Ready() && m.progress.BytesTotal > m.progress.BytesDone && m.progress.BytesTotal > 0 {
 			line += " · ETA ~" + formatDuration(float64(m.progress.BytesTotal-m.progress.BytesDone)/m.progressSpeed)
 		}
 	}
@@ -993,6 +1084,7 @@ func (m model) progressLine() string {
 func (m *model) resetProgress() {
 	m.progress = app.Progress{}
 	m.progressSpeed = 0
+	m.progressSpeedAt = time.Time{}
 	m.estimator.Reset()
 }
 

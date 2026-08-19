@@ -83,6 +83,7 @@ type Service interface {
 	SyncRegistry(context.Context, ProgressSink) error
 	ValidateRegistry(context.Context, string) error
 	CheckTarLinkVersion(context.Context) (TarLinkVersion, error)
+	CheckTarLinkVersionFresh(context.Context) (TarLinkVersion, error)
 	UpgradeTarLink(context.Context, ProgressSink) (TarLinkVersion, error)
 }
 

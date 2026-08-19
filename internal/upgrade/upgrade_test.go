@@ -75,6 +75,52 @@ func TestUpdateCacheFreshnessAndCorruption(t *testing.T) {
 	}
 }
 
+func TestCheckFreshBypassesCacheAndFallsBackOffline(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Unix(1000, 0)
+	service := &Service{Layout: filesystem.Layout{Cache: dir}, Current: "1.0.0", GOARCH: "amd64", Now: func() time.Time { return now }}
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 2 {
+			http.Error(w, "offline", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`[{"tag_name":"v2.0.0","assets":[{"name":"tarlink-linux-amd64","browser_download_url":"https://example.test/binary"},{"name":"checksums.txt","browser_download_url":"https://example.test/checksums"}]}]`))
+	}))
+	defer server.Close()
+	service.Client = &download.Client{HTTP: server.Client()}
+	service.APIURL = server.URL + "/releases"
+	if err := writeCache(filepath.Join(dir, "update-check.json"), "1.1.0", now); err != nil {
+		t.Fatal(err)
+	}
+
+	value, err := service.CheckFresh(context.Background())
+	if err != nil || value.Latest != "2.0.0" || requests != 1 {
+		t.Fatalf("fresh check value=%#v err=%v requests=%d", value, err, requests)
+	}
+	now = now.Add(25 * time.Hour)
+	value, err = service.CheckFresh(context.Background())
+	if err != nil || value.Latest != "2.0.0" || requests != 2 {
+		t.Fatalf("offline fallback value=%#v err=%v requests=%d", value, err, requests)
+	}
+}
+
+func TestCheckFreshHonorsCancellationBeforeCacheFallback(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Unix(1000, 0)
+	service := &Service{Layout: filesystem.Layout{Cache: dir}, Current: "1.0.0", APIURL: "https://127.0.0.1/releases", Now: func() time.Time { return now }}
+	if err := writeCache(filepath.Join(dir, "update-check.json"), "2.0.0", now); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := service.CheckFresh(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want cancellation", err)
+	}
+}
+
 func TestReleaseAssetMustBeUniqueAndNonEmpty(t *testing.T) {
 	item := release{Assets: []asset{{Name: "tarlink-linux-amd64", URL: "https://github.com/a"}}}
 	if !releaseHasAsset(item, "tarlink-linux-amd64") {
@@ -305,6 +351,9 @@ func TestUpgradeDownloadsVerifiesAndReplacesCanonicalInstallation(t *testing.T) 
 	value, err := service.Upgrade(context.Background(), nil)
 	if err != nil || value.Latest != "2.0.0" {
 		t.Fatalf("upgrade value=%#v err=%v", value, err)
+	}
+	if cached, ok := readCache(filepath.Join(service.Layout.Cache, "update-check.json"), time.Now()); !ok || cached.Latest != "2.0.0" {
+		t.Fatalf("upgrade did not refresh cache: %#v ok=%t", cached, ok)
 	}
 	got, _ := os.ReadFile(target)
 	if !bytes.Equal(got, newBytes) {

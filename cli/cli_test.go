@@ -57,6 +57,9 @@ func (f *fakeService) ValidateRegistry(_ context.Context, root string) error {
 func (f *fakeService) CheckTarLinkVersion(context.Context) (app.TarLinkVersion, error) {
 	return f.tarlinkVersion, nil
 }
+func (f *fakeService) CheckTarLinkVersionFresh(context.Context) (app.TarLinkVersion, error) {
+	return f.tarlinkVersion, nil
+}
 func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.TarLinkVersion, error) {
 	if f.upgradeValue.Current != "" {
 		return f.upgradeValue, nil

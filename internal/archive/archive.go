@@ -44,6 +44,15 @@ type Limits struct {
 	MaxDepth        int
 }
 
+// Progress reports archive preparation or extraction. A total of -1 means
+// that the total is not known without another archive pass.
+type Progress func(stage string, current, total int64)
+
+const (
+	ProgressPreparing  = "preparing"
+	ProgressExtracting = "extracting"
+)
+
 const (
 	defaultMaxEntries      = 100000
 	defaultMaxTotalBytes   = int64(24 << 30)
@@ -101,23 +110,33 @@ var (
 // destination is caller-owned and must be an existing empty directory. Paths
 // created by this call are removed when extraction fails.
 func Extract(ctx context.Context, r io.Reader, destination string, declared Format, limits Limits) error {
+	return ExtractWithProgress(ctx, r, destination, declared, limits, nil)
+}
+
+// ExtractWithProgress extracts an archive and reports synchronous progress.
+func ExtractWithProgress(ctx context.Context, r io.Reader, destination string, declared Format, limits Limits, progress Progress) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if r == nil {
 		return fmt.Errorf("archive: nil source: %w", ErrInvalidFormat)
 	}
-	return extract(ctx, &contextReader{ctx: ctx, r: r}, destination, declared, limits)
+	return extract(ctx, &contextReader{ctx: ctx, r: r}, destination, declared, limits, progress)
 }
 
 // ExtractPath extracts an archive from sourcePath into destination.
 func ExtractPath(ctx context.Context, sourcePath, destination string, declared Format, limits Limits) error {
+	return ExtractPathWithProgress(ctx, sourcePath, destination, declared, limits, nil)
+}
+
+// ExtractPathWithProgress extracts an archive from sourcePath with progress.
+func ExtractPathWithProgress(ctx context.Context, sourcePath, destination string, declared Format, limits Limits, progress Progress) error {
 	f, err := os.Open(sourcePath)
 	if err != nil {
 		return fmt.Errorf("archive: open source: %w", err)
 	}
 	defer f.Close()
-	return Extract(ctx, f, destination, declared, limits)
+	return ExtractWithProgress(ctx, f, destination, declared, limits, progress)
 }
 
 type contextReader struct {
@@ -139,14 +158,18 @@ func (r *contextReader) Read(p []byte) (int, error) {
 }
 
 type extractor struct {
-	ctx      context.Context
-	root     string
-	limits   Limits
-	total    int64
-	entries  int
-	paths    map[string]entryKind
-	symlinks map[string]string
-	created  []string
+	ctx              context.Context
+	root             string
+	limits           Limits
+	total            int64
+	entries          int
+	paths            map[string]entryKind
+	symlinks         map[string]string
+	created          []string
+	progress         Progress
+	progressTotal    int64
+	progressCurrent  int64
+	progressReported int64
 }
 
 type entryKind uint8
@@ -157,7 +180,7 @@ const (
 	kindSymlink
 )
 
-func extract(ctx context.Context, source io.Reader, destination string, declared Format, limits Limits) error {
+func extract(ctx context.Context, source io.Reader, destination string, declared Format, limits Limits, progress Progress) error {
 	limits = limits.withDefaults()
 	source = &boundedArchiveReader{source: source, remaining: limits.MaxArchiveBytes}
 	if declared != FormatTarGz && declared != FormatTarXZ && declared != FormatZip {
@@ -170,6 +193,7 @@ func extract(ctx context.Context, source io.Reader, destination string, declared
 	x := &extractor{
 		ctx: ctx, root: root, limits: limits,
 		paths: make(map[string]entryKind), symlinks: make(map[string]string),
+		progress: progress, progressTotal: -1,
 	}
 	if err := x.prepareRoot(); err != nil {
 		return fmt.Errorf("archive: destination: %w", err)
@@ -209,7 +233,24 @@ func extract(ctx context.Context, source io.Reader, destination string, declared
 		return fmt.Errorf("archive: validate links: %w", err)
 	}
 	ok = true
+	x.reportProgress(ProgressExtracting, x.progressCurrent, x.progressTotal)
 	return nil
+}
+
+func (x *extractor) reportProgress(stage string, current, total int64) {
+	if x.progress != nil {
+		x.progress(stage, current, total)
+	}
+}
+
+func (x *extractor) reportExtractionProgress() {
+	if x.progress == nil {
+		return
+	}
+	if x.progressCurrent == 0 || x.progressCurrent == x.progressTotal || x.progressCurrent-x.progressReported >= 1<<20 {
+		x.progressReported = x.progressCurrent
+		x.reportProgress(ProgressExtracting, x.progressCurrent, x.progressTotal)
+	}
 }
 
 type boundedArchiveReader struct {
@@ -351,6 +392,7 @@ func (x *extractor) extractTarXZ(r io.Reader) error {
 }
 
 func (x *extractor) extractTar(r io.Reader) error {
+	x.reportProgress(ProgressExtracting, 0, -1)
 	tr := tar.NewReader(&contextReader{ctx: x.ctx, r: r})
 	for {
 		if err := x.ctx.Err(); err != nil {
@@ -431,9 +473,18 @@ func (x *extractor) extractZip(r io.Reader) error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 	defer tmp.Close()
-	if _, err := copyContext(x.ctx, tmp, r, x.limits.MaxArchiveBytes); err != nil {
+	x.reportProgress(ProgressPreparing, 0, -1)
+	preparedReported := int64(0)
+	spooled, err := copyContextProgress(x.ctx, tmp, r, x.limits.MaxArchiveBytes, func(current int64) {
+		if current-preparedReported >= 1<<20 {
+			preparedReported = current
+			x.reportProgress(ProgressPreparing, current, -1)
+		}
+	})
+	if err != nil {
 		return err
 	}
+	x.reportProgress(ProgressPreparing, spooled, spooled)
 	st, err := tmp.Stat()
 	if err != nil {
 		return err
@@ -448,6 +499,21 @@ func (x *extractor) extractZip(r io.Reader) error {
 	if len(zr.File) > x.limits.MaxEntries {
 		return ErrLimit
 	}
+	var total int64
+	for _, f := range zr.File {
+		mode := f.Mode()
+		if strings.HasSuffix(f.Name, "/") || mode.IsDir() || mode&os.ModeSymlink != 0 {
+			continue
+		}
+		if f.UncompressedSize64 > uint64(^uint64(0)>>1) || total > int64(^uint64(0)>>1)-int64(f.UncompressedSize64) {
+			total = -1
+			break
+		}
+		total += int64(f.UncompressedSize64)
+	}
+	x.progressTotal = total
+	x.progressCurrent = 0
+	x.reportProgress(ProgressExtracting, 0, total)
 	for _, f := range zr.File {
 		if err := x.ctx.Err(); err != nil {
 			return err
@@ -619,7 +685,10 @@ func (x *extractor) makeFile(name string, src io.Reader, expected int64, executa
 	if remaining := x.limits.MaxTotalBytes - x.total; remaining < copyLimit {
 		copyLimit = remaining
 	}
-	fileBytes, copyErr := copyContext(x.ctx, f, src, copyLimit)
+	fileBytes, copyErr := copyContextProgress(x.ctx, f, src, copyLimit, func(n int64) {
+		x.progressCurrent += n
+		x.reportExtractionProgress()
+	})
 	closeErr := f.Close()
 	if copyErr != nil {
 		return copyErr
@@ -729,6 +798,10 @@ func (x *extractor) path(name string) string {
 }
 
 func copyContext(ctx context.Context, dst io.Writer, src io.Reader, max int64) (int64, error) {
+	return copyContextProgress(ctx, dst, src, max, nil)
+}
+
+func copyContextProgress(ctx context.Context, dst io.Writer, src io.Reader, max int64, progress func(int64)) (int64, error) {
 	buf := make([]byte, 32*1024)
 	var total int64
 	for {
@@ -748,6 +821,12 @@ func copyContext(ctx context.Context, dst io.Writer, src io.Reader, max int64) (
 				return total, io.ErrShortWrite
 			}
 			total += int64(n)
+			if progress != nil {
+				progress(int64(n))
+				if err := ctx.Err(); err != nil {
+					return total, err
+				}
+			}
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {

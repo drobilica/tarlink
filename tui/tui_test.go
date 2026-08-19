@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +89,9 @@ func (f *fakeService) ValidateRegistry(context.Context, string) error {
 func (f *fakeService) CheckTarLinkVersion(context.Context) (app.TarLinkVersion, error) {
 	return f.tarlinkVersion, nil
 }
+func (f *fakeService) CheckTarLinkVersionFresh(context.Context) (app.TarLinkVersion, error) {
+	return f.tarlinkVersion, nil
+}
 func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.TarLinkVersion, error) {
 	return app.TarLinkVersion{}, errors.New("unused")
 }
@@ -136,6 +140,72 @@ func TestTarLinkUpgradeNotificationAndBinding(t *testing.T) {
 	cancelled, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if command != nil || cancelled.(model).screen != screenAvailable {
 		t.Fatal("upgrade cancellation did not return to the prior screen")
+	}
+}
+
+func TestMouseModeAndRenderedListHitTesting(t *testing.T) {
+	values := []app.Application{
+		{ID: "one", Name: "One"},
+		{ID: "two", Name: "Two"},
+		{ID: "three", Name: "Three"},
+	}
+	m := model{
+		screen:           screenAvailable,
+		available:        values,
+		width:            80,
+		height:           12,
+		query:            "search",
+		upgradeAvailable: true,
+		tarlinkVersion:   app.TarLinkVersion{Current: "0.6.1", Latest: "0.6.2"},
+	}
+	view := m.View()
+	if view.MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("mouse mode = %v, want cell motion", view.MouseMode)
+	}
+	if !strings.Contains(view.Content, "UPDATE AVAILABLE 0.6.1 -> 0.6.2 [U]") {
+		t.Fatalf("update banner missing from view: %q", view.Content)
+	}
+	start, _ := m.listBounds()
+	updated, command := m.Update(tea.MouseClickMsg{X: 1, Y: start + 1, Button: tea.MouseLeft})
+	if command != nil || updated.(model).selected != 1 {
+		t.Fatalf("visible row click selected=%d command=%v", updated.(model).selected, command)
+	}
+	updated, command = updated.(model).Update(tea.MouseClickMsg{X: 1, Y: m.height - 1, Button: tea.MouseLeft})
+	if command != nil || updated.(model).selected != 1 {
+		t.Fatalf("footer click changed selection: selected=%d command=%v", updated.(model).selected, command)
+	}
+}
+
+func TestMouseWheelMovesThreeRowsWithBoundaries(t *testing.T) {
+	values := make([]app.Application, 10)
+	for i := range values {
+		values[i] = app.Application{ID: string(rune('a' + i)), Name: "Application"}
+	}
+	m := model{screen: screenAvailable, available: values, width: 80, height: 12}
+	update := func(button tea.MouseButton) {
+		updated, command := m.Update(tea.MouseWheelMsg{Button: button})
+		if command != nil {
+			t.Fatalf("wheel command = %v", command)
+		}
+		m = updated.(model)
+	}
+	update(tea.MouseWheelUp)
+	if m.selected != 0 {
+		t.Fatalf("wheel up crossed upper boundary: %d", m.selected)
+	}
+	update(tea.MouseWheelDown)
+	update(tea.MouseWheelDown)
+	update(tea.MouseWheelDown)
+	update(tea.MouseWheelDown)
+	if m.selected != len(values)-1 {
+		t.Fatalf("wheel down crossed lower boundary: %d", m.selected)
+	}
+}
+
+func TestBusyFooterDoesNotExposeNavigationControls(t *testing.T) {
+	m := model{screen: screenAvailable, busy: "Installing", width: 80, height: 12}
+	if got := m.footer(); got != "q Quit" {
+		t.Fatalf("busy footer = %q", got)
 	}
 }
 
@@ -486,6 +556,59 @@ func TestSpeedEstimatorIsSmoothedAndDeterministic(t *testing.T) {
 	if got := estimator.Add(start.Add(2*time.Second), 5<<20); got != 0 {
 		t.Fatalf("negative delta speed = %v", got)
 	}
+	if estimator.Ready() {
+		t.Fatal("reset estimator reported ETA readiness")
+	}
+}
+
+func TestSpeedEstimatorUsesBoundedWindowAndETAWarmup(t *testing.T) {
+	var estimator speedEstimator
+	start := time.Unix(0, 0)
+	if got := estimator.Add(start, 0); got != 0 || estimator.Ready() {
+		t.Fatalf("initial sample = speed %v, ready %v", got, estimator.Ready())
+	}
+	if got := estimator.Add(start.Add(2*time.Second), 2<<20); got != 1<<20 || !estimator.Ready() {
+		t.Fatalf("warmed sample = speed %v, ready %v", got, estimator.Ready())
+	}
+	if got := estimator.Add(start.Add(10*time.Second), 10<<20); got != 1<<20 {
+		t.Fatalf("bounded-window speed = %v", got)
+	}
+	if got := estimator.Add(start.Add(9*time.Second), 11<<20); got != 0 || estimator.Ready() {
+		t.Fatalf("backward sample = speed %v, ready %v", got, estimator.Ready())
+	}
+}
+
+func TestProgressFormattingRejectsInvalidValues(t *testing.T) {
+	for _, rate := range []float64{0, -1, math.NaN(), math.Inf(1)} {
+		if got := formatRate(rate); got != "" {
+			t.Errorf("formatRate(%v) = %q", rate, got)
+		}
+	}
+	for _, test := range []struct {
+		rate float64
+		want string
+	}{
+		{512, "512 B/s"},
+		{1536, "1.5 KiB/s"},
+		{12 << 10, "12 KiB/s"},
+	} {
+		if got := formatRate(test.rate); got != test.want {
+			t.Errorf("formatRate(%v) = %q, want %q", test.rate, got, test.want)
+		}
+	}
+	for _, seconds := range []float64{-1, math.NaN(), math.Inf(1)} {
+		if got := formatDuration(seconds); got != "" {
+			t.Errorf("formatDuration(%v) = %q", seconds, got)
+		}
+	}
+}
+
+func TestProgressCounterResetClearsDisplayedRate(t *testing.T) {
+	m := model{progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 2}, progressSpeed: 10}
+	updated, _ := m.Update(progressMsg{event: app.Progress{Stage: app.ProgressDownloading, BytesDone: 0}})
+	if updated.(model).progressSpeed != 0 {
+		t.Fatalf("displayed speed after reset = %v", updated.(model).progressSpeed)
+	}
 }
 
 func TestOperationHubCoalescesRoutineProgressAndKeepsResult(t *testing.T) {
@@ -505,6 +628,22 @@ func TestOperationHubCoalescesRoutineProgressAndKeepsResult(t *testing.T) {
 	hub.finish(operationMsg{message: "complete"})
 	if result := hub.next(context.Background()).(operationMsg); result.message != "complete" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestOperationHubEmitsLatestProgressBeforeCompletion(t *testing.T) {
+	hub := &operationHub{
+		wake: make(chan struct{}, 1), result: make(chan operationMsg, 1),
+		lastEmit: time.Now(), latest: &app.Progress{Stage: app.ProgressExtracting, BytesDone: 20},
+	}
+	hub.result <- operationMsg{message: "complete"}
+	message := hub.next(context.Background())
+	progress, ok := message.(progressMsg)
+	if !ok || progress.event.BytesDone != 20 {
+		t.Fatalf("first message = %#v, want latest progress", message)
+	}
+	if message = hub.next(context.Background()); message.(operationMsg).message != "complete" {
+		t.Fatalf("completion message = %#v", message)
 	}
 }
 

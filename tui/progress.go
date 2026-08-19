@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-const speedWindow = 5 * time.Second
+const (
+	speedWindow = 8 * time.Second
+	etaWarmup   = 2 * time.Second
+)
 
 type progressSample struct {
 	at    time.Time
@@ -19,8 +22,12 @@ func (e *speedEstimator) Add(at time.Time, bytes int64) float64 {
 	if bytes < 0 {
 		bytes = 0
 	}
-	if len(e.samples) > 0 && bytes < e.samples[len(e.samples)-1].bytes {
+	if len(e.samples) > 0 && (at.Before(e.samples[len(e.samples)-1].at) || bytes < e.samples[len(e.samples)-1].bytes || (bytes == 0 && e.samples[len(e.samples)-1].bytes > 0)) {
 		e.Reset()
+	}
+	if len(e.samples) > 0 && at.Equal(e.samples[len(e.samples)-1].at) {
+		e.samples[len(e.samples)-1].bytes = bytes
+		return 0
 	}
 	e.samples = append(e.samples, progressSample{at, bytes})
 	cutoff := at.Add(-speedWindow)
@@ -38,6 +45,15 @@ func (e *speedEstimator) Add(at time.Time, bytes int64) float64 {
 		return 0
 	}
 	return float64(d) / dt.Seconds()
+}
+
+func (e speedEstimator) Ready() bool {
+	if len(e.samples) < 2 {
+		return false
+	}
+	d := e.samples[len(e.samples)-1].bytes - e.samples[0].bytes
+	dt := e.samples[len(e.samples)-1].at.Sub(e.samples[0].at)
+	return d > 0 && dt >= etaWarmup
 }
 
 func formatRate(rate float64) string {

@@ -103,6 +103,40 @@ func (s *Service) Check(ctx context.Context) (Version, error) {
 	return result, nil
 }
 
+// CheckFresh bypasses the normal cache age check for interactive startup. A
+// usable cache keeps the TUI notification available when the network is down.
+func (s *Service) CheckFresh(ctx context.Context) (Version, error) {
+	current := strings.TrimPrefix(strings.TrimSpace(s.Current), "v")
+	if current == "" || current == "development" {
+		current = "development"
+	}
+	result := Version{Current: current}
+	if current == "development" || !stableVersion.MatchString("v"+current) {
+		if current != "development" {
+			result.Current = "development"
+		}
+		return result, ErrDevelopment
+	}
+
+	cachePath := filepath.Join(s.Layout.Cache, "update-check.json")
+	latest, err := s.fetchLatest(ctx)
+	if err == nil {
+		result.Latest = latest
+		_ = writeCache(cachePath, latest, s.clock())
+		return result, nil
+	}
+	if ctx != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return result, ctxErr
+		}
+	}
+	if cached, ok := readCacheAny(cachePath, s.clock()); ok {
+		result.Latest = cached.Latest
+		return result, nil
+	}
+	return result, err
+}
+
 func (s *Service) Upgrade(ctx context.Context, progress Progress) (Version, error) {
 	if !stableVersion.MatchString("v" + strings.TrimPrefix(s.Current, "v")) {
 		return Version{Current: s.Current}, ErrDevelopment
@@ -112,6 +146,7 @@ func (s *Service) Upgrade(ctx context.Context, progress Progress) (Version, erro
 	if err != nil {
 		return Version{Current: current}, err
 	}
+	_ = writeCache(filepath.Join(s.Layout.Cache, "update-check.json"), latest, s.clock())
 	if compare(current, latest) >= 0 {
 		return Version{Current: current, Latest: latest}, nil
 	}
@@ -483,12 +518,20 @@ type cacheFile struct {
 }
 
 func readCache(path string, now time.Time) (cacheFile, bool) {
+	value, ok := readCacheAny(path, now)
+	if !ok || now.Sub(value.CheckedAt) >= cacheMaxAge {
+		return cacheFile{}, false
+	}
+	return value, true
+}
+
+func readCacheAny(path string, now time.Time) (cacheFile, bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cacheFile{}, false
 	}
 	var value cacheFile
-	if json.Unmarshal(data, &value) != nil || !stableVersion.MatchString("v"+value.Latest) || now.Sub(value.CheckedAt) < 0 || now.Sub(value.CheckedAt) >= cacheMaxAge {
+	if json.Unmarshal(data, &value) != nil || !stableVersion.MatchString("v"+value.Latest) || now.Sub(value.CheckedAt) < 0 {
 		return cacheFile{}, false
 	}
 	return value, true
