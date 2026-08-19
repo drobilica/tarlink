@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/clipperhouse/displaywidth"
@@ -104,7 +105,7 @@ func TestModelLoadsAndShowsApplications(t *testing.T) {
 		updated, _ = updated.Update(message)
 	}
 	view := updated.(model).View()
-	if !strings.Contains(view.Content, "Blender") || !strings.Contains(view.Content, "AVAILABLE / SEARCH") {
+	if !strings.Contains(view.Content, "Blender") || !strings.Contains(view.Content, "APPLICATIONS") || !view.AltScreen {
 		t.Fatalf("unexpected view: %q", view.Content)
 	}
 }
@@ -115,7 +116,7 @@ func TestGameDataRequirementIsShown(t *testing.T) {
 	if !strings.Contains(m.View().Content, "Requires: Original game data") {
 		t.Fatalf("details view = %q", m.View().Content)
 	}
-	if !strings.Contains(installedLabel(value), "[GAME DATA]") {
+	if !strings.Contains(installedLabel(value), "Game data required") {
 		t.Fatal("list label omitted game-data marker")
 	}
 }
@@ -426,6 +427,84 @@ func TestResizeAndNarrowRenderingStayWithinWidth(t *testing.T) {
 		if displayWidth(line) > m.width {
 			t.Fatalf("line exceeds width: %d > %d: %q", displayWidth(line), m.width, line)
 		}
+	}
+}
+
+func TestApplicationStatusUsesUserTerminology(t *testing.T) {
+	for _, tc := range []struct {
+		value app.Application
+		want  string
+	}{
+		{app.Application{}, "Not installed"},
+		{app.Application{InstalledVersion: "1.0"}, "Installed"},
+		{app.Application{InstalledVersion: "1.0", UpdateAvailable: true}, "Update available"},
+	} {
+		if got := applicationStatus(tc.value); got != tc.want {
+			t.Errorf("status = %q, want %q", got, tc.want)
+		}
+	}
+	if strings.Contains(installedLabel(app.Application{}), "Install") || strings.Contains(installedLabel(app.Application{InstalledVersion: "1.0"}), "current") {
+		t.Fatal("action-oriented state label regressed")
+	}
+}
+
+func TestViewportKeepsSelectionVisible(t *testing.T) {
+	values := make([]app.Application, 8)
+	for i := range values {
+		values[i] = app.Application{ID: string(rune('a' + i)), Name: "Application"}
+	}
+	m := model{screen: screenAvailable, available: values, width: 80, height: 16}
+	for i := 0; i < len(values)-1; i++ {
+		m.selected = i
+		m.clampViewport()
+	}
+	if m.selected < m.listOffset || m.selected >= m.listOffset+m.listRows() {
+		t.Fatalf("selected=%d offset=%d rows=%d", m.selected, m.listOffset, m.listRows())
+	}
+	m.selected = 0
+	m.clampViewport()
+	if m.listOffset != 0 {
+		t.Fatalf("viewport did not scroll back: %d", m.listOffset)
+	}
+}
+
+func TestSpeedEstimatorIsSmoothedAndDeterministic(t *testing.T) {
+	var estimator speedEstimator
+	start := time.Unix(0, 0)
+	if got := estimator.Add(start, 0); got != 0 {
+		t.Fatalf("initial speed = %v", got)
+	}
+	if got := estimator.Add(start.Add(time.Second), 10<<20); got != 10<<20 {
+		t.Fatalf("speed = %v", got)
+	}
+	if got := formatRate(10 << 20); got != "10 MiB/s" {
+		t.Fatalf("rate = %q", got)
+	}
+	if got := formatDuration(130); got != "2m 10s" {
+		t.Fatalf("duration = %q", got)
+	}
+	if got := estimator.Add(start.Add(2*time.Second), 5<<20); got != 0 {
+		t.Fatalf("negative delta speed = %v", got)
+	}
+}
+
+func TestOperationHubCoalescesRoutineProgressAndKeepsResult(t *testing.T) {
+	hub := &operationHub{wake: make(chan struct{}, 1), result: make(chan operationMsg, 1)}
+	for i := int64(0); i < 1000; i++ {
+		hub.publish(app.Progress{Stage: app.ProgressDownloading, BytesDone: i, BytesTotal: 1000})
+	}
+	first := hub.next(context.Background()).(progressMsg)
+	if first.event.Stage != app.ProgressDownloading {
+		t.Fatalf("first event = %#v", first.event)
+	}
+	hub.lastEmit = time.Time{}
+	second := hub.next(context.Background()).(progressMsg)
+	if second.event.BytesDone != 999 {
+		t.Fatalf("latest progress = %#v", second.event)
+	}
+	hub.finish(operationMsg{message: "complete"})
+	if result := hub.next(context.Background()).(operationMsg); result.message != "complete" {
+		t.Fatalf("result = %#v", result)
 	}
 }
 

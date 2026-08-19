@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -57,13 +58,19 @@ type operationMsg struct {
 }
 
 type progressMsg struct {
-	stream chan operationEvent
-	event  app.Progress
+	hub   *operationHub
+	event app.Progress
 }
 
-type operationEvent struct {
-	progress *app.Progress
-	result   operationMsg
+type operationHub struct {
+	mu        sync.Mutex
+	pending   []app.Progress
+	latest    *app.Progress
+	lastStage app.ProgressStage
+	lastEmit  time.Time
+	wake      chan struct{}
+	result    chan operationMsg
+	ctx       context.Context
 }
 
 type model struct {
@@ -78,6 +85,7 @@ type model struct {
 	installed           []app.Application
 	versions            []app.Version
 	selected            int
+	listOffset          int
 	detail              *app.Application
 	searching           bool
 	query               string
@@ -87,10 +95,8 @@ type model struct {
 	width               int
 	height              int
 	progress            app.Progress
-	progressStarted     time.Time
-	progressAt          time.Time
-	progressBytes       int64
 	progressSpeed       float64
+	estimator           speedEstimator
 	color               bool
 	tarlinkVersion      app.TarLinkVersion
 	upgradeAvailable    bool
@@ -107,7 +113,7 @@ func Run(ctx context.Context, service app.Service, input io.Reader, output io.Wr
 	defer cancel()
 	program := tea.NewProgram(
 		model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), cancel: cancel},
-		tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output),
+		tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output), tea.WithFPS(5),
 	)
 	_, err := program.Run()
 	return err
@@ -120,6 +126,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
+		m.clampViewport()
 		return m, nil
 	case loadedMsg:
 		m.busy = ""
@@ -144,6 +151,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.available = message.values
 		}
 		m.selected = 0
+		m.listOffset = 0
 		return m, nil
 	case versionsMsg:
 		m.busy = ""
@@ -155,10 +163,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case operationMsg:
 		m.busy = ""
-		m.progress = app.Progress{}
+		m.resetProgress()
 		m.err = message.err
 		m.status = message.message
 		if message.err != nil {
+			m.status = ""
 			return m, nil
 		}
 		if message.move {
@@ -171,21 +180,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.loadCmd()
 	case progressMsg:
 		if m.progress.Stage != message.event.Stage {
-			m.progressAt = time.Time{}
-			m.progressBytes = 0
-			m.progressSpeed = 0
+			m.estimator.Reset()
 		}
 		m.progress = message.event
-		if m.progressStarted.IsZero() {
-			m.progressStarted = time.Now()
-		}
-		now := time.Now()
-		if !m.progressAt.IsZero() && now.After(m.progressAt) && message.event.BytesDone >= m.progressBytes {
-			m.progressSpeed = float64(message.event.BytesDone-m.progressBytes) / now.Sub(m.progressAt).Seconds()
-		}
-		m.progressAt = now
-		m.progressBytes = message.event.BytesDone
-		return m, waitProgress(message.stream)
+		m.progressSpeed = m.estimator.Add(time.Now(), message.event.BytesDone)
+		return m, waitProgress(message.hub)
 	case tea.KeyPressMsg:
 		return m.updateKey(message)
 	}
@@ -194,7 +193,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() tea.View {
 	var body strings.Builder
-	line := func(value string) { body.WriteString(fit(value, m.width)); body.WriteByte('\n') }
+	line := func(value string) {
+		for _, part := range strings.Split(value, "\n") {
+			body.WriteString(fit(part, m.width))
+			body.WriteByte('\n')
+		}
+	}
 	line(m.style("TarLink", accent))
 	if m.upgradeAvailable {
 		line(m.style("↑ TarLink "+m.tarlinkVersion.Latest+" available - press U to upgrade", warning))
@@ -208,7 +212,8 @@ func (m model) View() tea.View {
 		body.WriteByte('\n')
 	}
 	if m.err != nil {
-		line(m.style("Error: "+m.err.Error(), danger))
+		line(m.style("OPERATION FAILED", danger))
+		line(m.style(m.err.Error(), danger))
 		body.WriteByte('\n')
 	}
 	if m.status != "" {
@@ -218,7 +223,7 @@ func (m model) View() tea.View {
 
 	switch m.screen {
 	case screenAvailable:
-		line(m.style("AVAILABLE / SEARCH", accent))
+		line(m.style("APPLICATIONS", accent))
 		if m.searching {
 			line("Search /" + m.query + "_")
 			body.WriteByte('\n')
@@ -228,15 +233,15 @@ func (m model) View() tea.View {
 		} else {
 			body.WriteString("\n")
 		}
-		writeApplications(&body, m.available, m.selected, m.width)
+		writeApplications(&body, m.available, m.selected, m.listOffset, m.listRows(), m.width)
 	case screenInstalled:
 		line(m.style("INSTALLED", accent))
 		body.WriteByte('\n')
-		writeApplications(&body, m.installed, m.selected, m.width)
+		writeApplications(&body, m.installed, m.selected, m.listOffset, m.listRows(), m.width)
 	case screenUpdates:
 		line(m.style("UPDATES", accent))
 		body.WriteByte('\n')
-		writeApplications(&body, updates(m.installed), m.selected, m.width)
+		writeApplications(&body, updates(m.installed), m.selected, m.listOffset, m.listRows(), m.width)
 	case screenDetails:
 		line(m.style("APPLICATION DETAILS", accent))
 		body.WriteByte('\n')
@@ -246,16 +251,25 @@ func (m model) View() tea.View {
 			line(m.detail.Summary)
 			body.WriteByte('\n')
 			line("ID: " + m.detail.ID)
-			line("Registry: " + m.detail.RegistryVersion)
-			line("Installed: " + installedLabel(*m.detail))
+			line("Status: " + applicationStatus(*m.detail))
+			if m.detail.InstalledVersion != "" {
+				line("Installed version: " + m.detail.InstalledVersion)
+			}
+			line("Available version: " + m.detail.RegistryVersion)
 			line("Categories: " + strings.Join(m.detail.Categories, ", "))
 			if hasGameData(*m.detail) {
 				line("Requires: Original game data")
 			}
 			line("Homepage: " + m.detail.Homepage)
-			if m.detail.InstalledVersion != "" {
+			if m.detail.InstalledVersion == "" {
 				body.WriteByte('\n')
-				line("Actions: Enter Update  v Versions  r Rollback  x Uninstall")
+				line("Enter Install   Esc Back   q Quit")
+			} else if m.detail.UpdateAvailable {
+				body.WriteByte('\n')
+				line("Enter Update   v Versions   r Rollback   x Uninstall")
+			} else {
+				body.WriteByte('\n')
+				line("v Versions   r Rollback   x Uninstall   Esc Back   q Quit")
 			}
 		}
 	case screenVersions:
@@ -295,13 +309,7 @@ func (m model) View() tea.View {
 	}
 
 	body.WriteByte('\n')
-	footer := "↑/↓ Select  Enter Open  Esc Back  / Search  i Installed  u Updates  x Uninstall  q Quit"
-	if m.upgradeAvailable {
-		footer = "U Upgrade TarLink  ↑/↓ Select  Enter Open  u Updates  q Quit"
-	}
-	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
-		footer = "Enter Confirm  Esc Cancel  q Quit"
-	}
+	footer := m.footer()
 	footerContent := footerLines(footer, m.width)
 	if m.height > 0 && len(footerContent) > m.height {
 		footerContent = footerContent[len(footerContent)-m.height:]
@@ -318,7 +326,9 @@ func (m model) View() tea.View {
 		}
 		lines = append(lines[:keep], lines[len(lines)-len(footerContent):]...)
 	}
-	return tea.NewView(strings.Join(lines, "\n") + "\n")
+	view := tea.NewView(strings.Join(lines, "\n") + "\n")
+	view.AltScreen = true
+	return view
 }
 
 func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -375,21 +385,26 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.selected > 0 {
 			m.selected--
 		}
+		m.clampViewport()
 	case "down":
 		if m.selected+1 < len(m.visibleApplications()) {
 			m.selected++
 		}
+		m.clampViewport()
 	case "/":
 		m.screen = screenAvailable
 		m.searching = true
 		m.query = ""
 		m.selected = 0
+		m.listOffset = 0
 	case "i":
 		m.screen = screenInstalled
 		m.selected = 0
+		m.listOffset = 0
 	case "u":
 		m.screen = screenUpdates
 		m.selected = 0
+		m.listOffset = 0
 	case "esc":
 		if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
 			m.screen = m.confirmationTarget()
@@ -494,7 +509,7 @@ func (m model) activateSelected() (tea.Model, tea.Cmd) {
 		m.resetProgress()
 		return m, m.updateCmd(id)
 	default:
-		m.status = id + " is already current"
+		m.status = id + " is already up to date"
 		return m, nil
 	}
 }
@@ -564,48 +579,105 @@ func (m model) rollbackCmd(id string) tea.Cmd {
 }
 
 func (m model) operationCmd(operation func(app.ProgressSink) (operationMsg, error)) tea.Cmd {
-	stream := make(chan operationEvent, 16)
+	hub := &operationHub{wake: make(chan struct{}, 1), result: make(chan operationMsg, 1)}
 	return func() tea.Msg {
 		ctx := m.ctx
 		if ctx == nil {
 			ctx = context.Background()
 		}
+		hub.ctx = ctx
 		go func() {
 			sink := func(event app.Progress) {
-				select {
-				case stream <- operationEvent{progress: &event}:
-				case <-ctx.Done():
-				}
+				hub.publish(event)
 			}
 			result, err := operation(sink)
 			result.err = err
-			select {
-			case stream <- operationEvent{result: result}:
-			case <-ctx.Done():
-			}
-			close(stream)
+			hub.finish(result)
 		}()
-		event, ok := <-stream
-		if !ok {
-			return operationMsg{err: ctx.Err()}
-		}
-		if event.progress != nil {
-			return progressMsg{stream: stream, event: *event.progress}
-		}
-		return event.result
+		return hub.next(ctx)
 	}
 }
 
-func waitProgress(stream chan operationEvent) tea.Cmd {
+func waitProgress(hub *operationHub) tea.Cmd {
 	return func() tea.Msg {
-		event, ok := <-stream
-		if !ok {
-			return operationMsg{err: context.Canceled}
+		return hub.next(hub.ctx)
+	}
+}
+
+func (h *operationHub) publish(event app.Progress) {
+	h.mu.Lock()
+	if event.Stage != "" && event.Stage != h.lastStage {
+		h.latest = nil
+		h.lastStage = event.Stage
+		h.pending = append(h.pending, event)
+	} else {
+		copy := event
+		h.latest = &copy
+	}
+	h.mu.Unlock()
+	select {
+	case h.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (h *operationHub) finish(result operationMsg) {
+	h.result <- result
+	select {
+	case h.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (h *operationHub) next(ctx context.Context) tea.Msg {
+	for {
+		h.mu.Lock()
+		if len(h.pending) > 0 {
+			event := h.pending[0]
+			h.pending = h.pending[1:]
+			h.mu.Unlock()
+			return progressMsg{hub: h, event: event}
 		}
-		if event.progress != nil {
-			return progressMsg{stream: stream, event: *event.progress}
+		if h.latest != nil {
+			if !h.lastEmit.IsZero() && time.Since(h.lastEmit) < 200*time.Millisecond {
+				wait := 200*time.Millisecond - time.Since(h.lastEmit)
+				h.mu.Unlock()
+				timer := time.NewTimer(wait)
+				select {
+				case result := <-h.result:
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return result
+				case <-timer.C:
+				case <-ctx.Done():
+					if !timer.Stop() {
+						select {
+						case <-timer.C:
+						default:
+						}
+					}
+					return operationMsg{err: ctx.Err()}
+				}
+				continue
+			}
+			event := *h.latest
+			h.latest = nil
+			h.lastEmit = time.Now()
+			h.mu.Unlock()
+			return progressMsg{hub: h, event: event}
 		}
-		return event.result
+		h.mu.Unlock()
+		select {
+		case result := <-h.result:
+			return result
+		case <-h.wake:
+		case <-ctx.Done():
+			return operationMsg{err: ctx.Err()}
+		}
 	}
 }
 
@@ -699,6 +771,62 @@ func (m *model) clampSelection() {
 	} else if m.selected >= length {
 		m.selected = length - 1
 	}
+	m.clampViewport()
+}
+
+func (m *model) clampViewport() {
+	rows := m.listRows()
+	if rows < 1 {
+		rows = 1
+	}
+	if m.selected < m.listOffset {
+		m.listOffset = m.selected
+	}
+	if m.selected >= m.listOffset+rows {
+		m.listOffset = m.selected - rows + 1
+	}
+	if m.listOffset < 0 {
+		m.listOffset = 0
+	}
+}
+
+func (m model) listRows() int {
+	used := 4 // TarLink heading, spacer, section heading, and list spacer.
+	if m.upgradeAvailable {
+		used++
+	}
+	if m.busy != "" {
+		used++
+		if m.progress.Stage != "" {
+			used++
+		}
+		used++
+	}
+	if m.err != nil {
+		used += 3
+	}
+	if m.status != "" {
+		used += 2
+	}
+	if m.screen == screenAvailable && (m.searching || m.query != "") {
+		used++
+	}
+	footerRows := len(footerLines(m.footer(), m.width))
+	rows := m.height - used - footerRows
+	if rows < 1 {
+		return 1
+	}
+	return rows
+}
+
+func (m model) footer() string {
+	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
+		return "Enter Confirm  Esc Cancel  q Quit"
+	}
+	if m.upgradeAvailable {
+		return "U Upgrade TarLink  ↑/↓ Navigate  Enter Details  q Quit"
+	}
+	return "↑/↓ Navigate  Enter Details  / Search  i Installed  u Updates  q Quit"
 }
 
 func updates(values []app.Application) []app.Application {
@@ -712,12 +840,14 @@ func updates(values []app.Application) []app.Application {
 	return result
 }
 
-func writeApplications(destination *strings.Builder, values []app.Application, selected, width int) {
+func writeApplications(destination *strings.Builder, values []app.Application, selected, offset, rows, width int) {
 	if len(values) == 0 {
 		destination.WriteString(truncate("No applications.", viewWidth(width), "…") + "\n")
 		return
 	}
-	for index, value := range values {
+	end := min(len(values), offset+rows)
+	for index := offset; index < end; index++ {
+		value := values[index]
 		marker := "  "
 		if index == selected {
 			marker = "> "
@@ -742,18 +872,21 @@ func writeApplications(destination *strings.Builder, values []app.Application, s
 }
 
 func installedLabel(value app.Application) string {
-	label := ""
-	if value.InstalledVersion == "" {
-		label = "Install"
-	} else if value.UpdateAvailable {
-		label = value.InstalledVersion + " → Update"
-	} else {
-		label = value.InstalledVersion + " current"
-	}
+	label := applicationStatus(value)
 	if hasGameData(value) {
-		label += " [GAME DATA]"
+		label += " · Game data required"
 	}
 	return label
+}
+
+func applicationStatus(value app.Application) string {
+	if value.InstalledVersion == "" {
+		return "Not installed"
+	}
+	if value.UpdateAvailable {
+		return "Update available"
+	}
+	return "Installed"
 }
 
 func hasGameData(value app.Application) bool {
@@ -844,29 +977,40 @@ func (m model) progressLine() string {
 			done = m.progress.BytesTotal
 		}
 		percent := done/m.progress.BytesTotal*100 + done%m.progress.BytesTotal*100/m.progress.BytesTotal
-		line += fmt.Sprintf(" %s / %s  %d%%", bytesLabel(m.progress.BytesDone), bytesLabel(m.progress.BytesTotal), percent)
+		line += fmt.Sprintf(" %d%%  %s / %s", percent, bytesLabel(m.progress.BytesDone), bytesLabel(m.progress.BytesTotal))
 	} else if m.progress.BytesDone > 0 {
 		line += " " + bytesLabel(m.progress.BytesDone)
 	}
 	if m.progressSpeed > 0 {
-		line += "  " + bytesLabel(int64(m.progressSpeed)) + "/s"
+		line += "  " + formatRate(m.progressSpeed)
+		if m.progress.BytesTotal > m.progress.BytesDone && m.progress.BytesTotal > 0 {
+			line += " · ETA ~" + formatDuration(float64(m.progress.BytesTotal-m.progress.BytesDone)/m.progressSpeed)
+		}
 	}
 	return m.style(line, accent)
 }
 
 func (m *model) resetProgress() {
 	m.progress = app.Progress{}
-	m.progressStarted = time.Time{}
-	m.progressAt = time.Time{}
-	m.progressBytes = 0
 	m.progressSpeed = 0
+	m.estimator.Reset()
 }
 
 func bytesLabel(value int64) string {
-	if value < 1024*1024 {
-		return fmt.Sprintf("%d KB", max64(1, value/1024))
+	if value < 0 {
+		value = 0
 	}
-	return fmt.Sprintf("%.1f MB", float64(value)/(1024*1024))
+	units := []string{"B", "KiB", "MiB", "GiB"}
+	amount := float64(value)
+	i := 0
+	for amount >= 1024 && i < len(units)-1 {
+		amount /= 1024
+		i++
+	}
+	if i == 0 || amount >= 10 {
+		return fmt.Sprintf("%.0f %s", amount, units[i])
+	}
+	return fmt.Sprintf("%.1f %s", amount, units[i])
 }
 
 func title(value string) string {
