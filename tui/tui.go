@@ -12,6 +12,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"charm.land/bubbles/v2/help"
+	keypkg "charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/progress"
 	tea "charm.land/bubbletea/v2"
 	"github.com/clipperhouse/displaywidth"
 	"github.com/drobilica/tarlink/internal/app"
@@ -100,6 +103,9 @@ type model struct {
 	progressSpeedAt     time.Time
 	estimator           speedEstimator
 	color               bool
+	theme               tuiTheme
+	help                help.Model
+	progressBar         progress.Model
 	tarlinkVersion      app.TarLinkVersion
 	upgradeAvailable    bool
 	cancel              context.CancelFunc
@@ -114,7 +120,7 @@ func Run(ctx context.Context, service app.Service, input io.Reader, output io.Wr
 	operationContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	program := tea.NewProgram(
-		model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), cancel: cancel},
+		model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), theme: newTheme(colorEnabled(output)), help: newHelp(colorEnabled(output)), progressBar: newProgress(colorEnabled(output)), cancel: cancel},
 		tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output),
 	)
 	_, err := program.Run()
@@ -129,6 +135,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = message.Width
 		m.height = message.Height
 		m.clampViewport()
+		m.help.SetWidth(m.width)
+		m.progressBar.SetWidth(max(1, viewWidth(m.width)-24))
 		return m, nil
 	case loadedMsg:
 		m.busy = ""
@@ -326,8 +334,7 @@ func (m model) View() tea.View {
 	}
 
 	body.WriteByte('\n')
-	footer := m.footer()
-	footerContent := footerLines(footer, m.width)
+	footerContent := footerLines(m.helpView(), m.width)
 	if m.height > 0 && len(footerContent) > m.height {
 		footerContent = footerContent[len(footerContent)-m.height:]
 	}
@@ -395,15 +402,16 @@ func (m model) listBounds() (start, rows int) {
 }
 
 func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	key := message.String()
-	if key == "ctrl+c" {
+	pressed := message.String()
+	bindings := m.keyMap()
+	if keypkg.Matches(message, bindings.CtrlC) {
 		if m.cancel != nil {
 			m.cancel()
 		}
 		return m, tea.Quit
 	}
 	if m.searching {
-		switch key {
+		switch pressed {
 		case "esc":
 			m.searching = false
 			return m, nil
@@ -418,17 +426,17 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		default:
-			if utf8.RuneCountInString(key) == 1 {
-				r, _ := utf8.DecodeRuneInString(key)
+			if utf8.RuneCountInString(pressed) == 1 {
+				r, _ := utf8.DecodeRuneInString(pressed)
 				if r >= ' ' && r != utf8.RuneError && len(m.query) < 128 {
-					m.query += key
+					m.query += pressed
 				}
 			}
 			return m, nil
 		}
 	}
 
-	if key == "q" {
+	if keypkg.Matches(message, bindings.Quit) {
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -437,32 +445,32 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.busy != "" {
 		return m, nil
 	}
-	switch key {
-	case "U":
+	switch {
+	case keypkg.Matches(message, bindings.Upgrade):
 		if m.upgradeAvailable {
 			m.returnTo = m.screen
 			m.confirmSet = false
 			m.screen = screenUpgrade
 		}
-	case "up":
+	case keypkg.Matches(message, bindings.Up):
 		m.moveSelection(-1)
-	case "down":
+	case keypkg.Matches(message, bindings.Down):
 		m.moveSelection(1)
-	case "/":
+	case keypkg.Matches(message, bindings.Search):
 		m.screen = screenAvailable
 		m.searching = true
 		m.query = ""
 		m.selected = 0
 		m.listOffset = 0
-	case "i":
+	case keypkg.Matches(message, bindings.Installed):
 		m.screen = screenInstalled
 		m.selected = 0
 		m.listOffset = 0
-	case "u":
+	case keypkg.Matches(message, bindings.Updates):
 		m.screen = screenUpdates
 		m.selected = 0
 		m.listOffset = 0
-	case "esc":
+	case keypkg.Matches(message, bindings.Cancel):
 		if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
 			m.screen = m.confirmationTarget()
 			m.confirmSet = false
@@ -484,7 +492,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenAvailable
 			m.selected = 0
 		}
-	case "enter":
+	case keypkg.Matches(message, bindings.Enter):
 		if m.screen == screenUpgrade {
 			m.busy = "Upgrading TarLink"
 			m.resetProgress()
@@ -514,7 +522,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.returnTo = m.screen
 			m.screen = screenDetails
 		}
-	case "v":
+	case keypkg.Matches(message, bindings.Versions):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.setDetail(id)
 			if m.screen == screenDetails {
@@ -526,7 +534,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.busy = "Loading versions"
 			return m, m.versionsCmd(id)
 		}
-	case "r":
+	case keypkg.Matches(message, bindings.Rollback):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.setDetail(id)
 			if m.screen != screenDetails && m.screen != screenVersions {
@@ -536,7 +544,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.confirmSet = true
 			m.screen = screenRollback
 		}
-	case "x", "d", "delete":
+	case keypkg.Matches(message, bindings.Uninstall):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.setDetail(id)
 			if m.screen != screenDetails && m.screen != screenVersions {
@@ -908,16 +916,7 @@ func (m model) listBoundsWithoutRows() (start, rows int) {
 }
 
 func (m model) footer() string {
-	if m.busy != "" {
-		return "q Quit"
-	}
-	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
-		return "Enter Confirm  Esc Cancel  q Quit"
-	}
-	if m.upgradeAvailable {
-		return "U Upgrade TarLink  ↑/↓ Navigate  Enter Details  q Quit"
-	}
-	return "↑/↓ Navigate  Enter Details  / Search  i Installed  u Updates  q Quit"
+	return m.helpView()
 }
 
 func updates(values []app.Application) []app.Application {
@@ -1007,11 +1006,7 @@ const (
 )
 
 func (m model) style(value string, valueTone tone) string {
-	if !m.color {
-		return value
-	}
-	codes := [...]string{"36", "32", "33", "31", "90"}
-	return "\x1b[" + codes[valueTone] + "m" + value + "\x1b[0m"
+	return m.theme.render(value, valueTone)
 }
 
 func colorEnabled(output io.Writer) bool {
@@ -1067,8 +1062,16 @@ func (m model) progressLine() string {
 		if done > m.progress.BytesTotal {
 			done = m.progress.BytesTotal
 		}
-		percent := done/m.progress.BytesTotal*100 + done%m.progress.BytesTotal*100/m.progress.BytesTotal
-		line += fmt.Sprintf(" %d%%  %s / %s", percent, bytesLabel(m.progress.BytesDone), bytesLabel(m.progress.BytesTotal))
+		percent := float64(done) / float64(m.progress.BytesTotal)
+		bar := m.progressBar
+		if bar.Width() == 0 {
+			bar = newProgress(m.color)
+		}
+		bar.SetWidth(max(8, viewWidth(m.width)-len(stage)-30))
+		line += " " + bar.ViewAs(percent)
+		if viewWidth(m.width) >= 60 {
+			line += "  " + fmt.Sprintf("%s / %s", bytesLabel(m.progress.BytesDone), bytesLabel(m.progress.BytesTotal))
+		}
 	} else if m.progress.BytesDone > 0 {
 		line += " " + bytesLabel(m.progress.BytesDone)
 	}

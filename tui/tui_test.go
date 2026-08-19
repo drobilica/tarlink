@@ -209,6 +209,38 @@ func TestBusyFooterDoesNotExposeNavigationControls(t *testing.T) {
 	}
 }
 
+func TestHelpUsesContextRelevantBindings(t *testing.T) {
+	list := model{screen: screenAvailable, width: 120}
+	help := list.helpView()
+	for _, value := range []string{"Navigate", "Details", "Search", "Installed", "Updates", "Quit"} {
+		if !strings.Contains(help, value) {
+			t.Fatalf("list help omitted %q: %q", value, help)
+		}
+	}
+	details := model{screen: screenDetails, width: 120}
+	help = details.helpView()
+	if !strings.Contains(help, "Back") || strings.Contains(help, "Search") || strings.Contains(help, "Updates") {
+		t.Fatalf("details help exposed irrelevant actions: %q", help)
+	}
+}
+
+func TestNoColorThemeAndProgressRemainPlainText(t *testing.T) {
+	m := model{
+		color:    false,
+		theme:    newTheme(false),
+		busy:     "Installing",
+		progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 50, BytesTotal: 100},
+		width:    80,
+	}
+	view := m.View().Content
+	if strings.Contains(view, "\x1b[") {
+		t.Fatalf("NO_COLOR rendering contains ANSI styling: %q", view)
+	}
+	if !strings.Contains(view, "Downloading") || !strings.Contains(view, "50%") {
+		t.Fatalf("plain progress is not understandable: %q", view)
+	}
+}
+
 func TestRollbackDelegatesToService(t *testing.T) {
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}}}
 	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications}

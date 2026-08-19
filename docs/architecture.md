@@ -6,9 +6,11 @@ TarLink is a rootless, single-user application manager for Linux amd64 and arm64
 
 `internal/app` is the UI-independent core. It owns registry freshness,
 application lifecycle, and TarLink self-upgrade operations. `cli` owns argument
-parsing, streams, JSON, and exit codes. `tui` owns Bubble Tea state and views.
-Both frontends call the same core service and progress model; neither performs
-release discovery, checksum verification, or filesystem replacement itself.
+parsing, streams, JSON, and exit codes. `tui` owns Bubble Tea state and views,
+using Bubbles for reusable terminal components and Lip Gloss for styling and
+layout. Both frontends call the same core service and progress model; neither
+performs release discovery, checksum verification, or filesystem replacement
+itself.
 
 ## Trust boundaries
 

@@ -79,3 +79,9 @@ CGO_ENABLED=0 go build ./...
 ```
 
 Security-sensitive changes require focused success, hostile-input, and failure-path tests plus a short explanation of the affected trust boundary. Documentation must describe implemented behavior or clearly marked plans; never invent commands, registry entries, URLs, or hashes.
+
+## TUI architecture
+
+- TarLink's interactive TUI uses the Charm v2 stack: Bubble Tea v2 for the event and state runtime, Bubbles v2 for reusable terminal components where appropriate, and Lip Gloss v2 for styling and layout.
+- Prefer established components over reimplementing generic viewport, progress, help/keymap, input, or styling primitives. Keep TarLink-specific application state and lifecycle logic custom, and do not introduce another TUI framework without explicit authorization.
+- The TUI remains presentation-only and calls the same `internal/app` service as the CLI.
