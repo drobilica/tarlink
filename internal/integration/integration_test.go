@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/drobilica/tarlink/internal/filesystem"
@@ -247,6 +248,43 @@ func TestDesktopFilePassesDesktopFileValidate(t *testing.T) {
 	}
 	if output, err := exec.Command(validator, path).CombinedOutput(); err != nil {
 		t.Fatalf("desktop-file-validate: %v\n%s", err, output)
+	}
+}
+
+func TestDesktopFileUsesTheCorrectEncodingForExecAndTryExec(t *testing.T) {
+	spec := testSpec(t.TempDir())
+	executable := filepath.Join(spec.LocalBinDirectory, `app name\with"quote`)
+	content := string(DesktopFile(spec, executable))
+	var execLine, tryExecLine string
+	for _, line := range strings.Split(content, "\n") {
+		switch {
+		case strings.HasPrefix(line, "Exec="):
+			execLine = line
+		case strings.HasPrefix(line, "TryExec="):
+			tryExecLine = line
+		}
+	}
+
+	execValue := strings.NewReplacer("\\", "\\\\\\\\", "\"", "\\\"", "`", "\\`", "$", "\\$", "%", "%%").Replace(executable)
+	if want := `Exec="` + execValue + `"`; execLine != want {
+		t.Fatalf("Exec = %q, want %q", execLine, want)
+	}
+	if want := "TryExec=" + strings.ReplaceAll(executable, "\\", "\\\\"); tryExecLine != want {
+		t.Fatalf("TryExec = %q, want %q", tryExecLine, want)
+	}
+	if strings.HasPrefix(tryExecLine, `TryExec="`) {
+		t.Fatal("TryExec contains shell-style quote delimiters")
+	}
+
+	validator, err := exec.LookPath("desktop-file-validate")
+	if err == nil {
+		path := filepath.Join(t.TempDir(), "tarlink-unusual-path.desktop")
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(validator, path).CombinedOutput(); err != nil {
+			t.Fatalf("desktop-file-validate: %v\n%s", err, output)
+		}
 	}
 }
 

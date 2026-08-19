@@ -299,7 +299,7 @@ func DesktopFile(spec Spec, executableLink string) []byte {
 		"Type=Application",
 		"Name=" + desktopText(spec.Name),
 		"Exec=" + desktopExec(executableLink),
-		"TryExec=" + desktopExec(executableLink),
+		"TryExec=" + desktopText(executableLink),
 		"Icon=" + desktopText(iconName(spec)),
 		"Terminal=false",
 		"Categories=" + categories,
@@ -823,7 +823,7 @@ func desktopText(value string) string {
 }
 
 func desktopExec(value string) string {
-	replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "`", "\\`", "$", "\\$", "%", "%%", "\n", " ", "\r", " ")
+	replacer := strings.NewReplacer("\\", "\\\\\\\\", "\"", "\\\"", "`", "\\`", "$", "\\$", "%", "%%", "\n", " ", "\r", " ")
 	return "\"" + replacer.Replace(value) + "\""
 }
 
