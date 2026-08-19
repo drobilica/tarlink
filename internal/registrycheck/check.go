@@ -54,10 +54,14 @@ func App(root, id string) (Selection, error) {
 	if err != nil {
 		return Selection{}, err
 	}
+	var items []*manifest.Manifest
 	for _, item := range all.Items {
 		if item.ID == id {
-			return Selection{Items: append([]*manifest.Manifest(nil), item)}, nil
+			items = append(items, item)
 		}
+	}
+	if len(items) > 0 {
+		return Selection{Items: items}, nil
 	}
 	return Selection{}, fmt.Errorf("application %q is not in the registry", id)
 }
