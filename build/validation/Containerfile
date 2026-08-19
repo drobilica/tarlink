@@ -1,0 +1,16 @@
+FROM docker.io/library/golang:1.26.0-bookworm@sha256:2a0ba12e116687098780d3ce700f9ce3cb340783779646aafbabed748fa6677c
+
+LABEL org.opencontainers.image.source="https://github.com/drobilica/tarlink" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.title="TarLink Linux validation environment"
+
+ENV GOTOOLCHAIN=local
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes desktop-file-utils jq \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY go.mod go.sum /tmp/tarlink/
+RUN cd /tmp/tarlink && go mod download && rm -rf /tmp/tarlink
+
+WORKDIR /workspace

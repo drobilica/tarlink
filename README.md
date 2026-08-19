@@ -73,7 +73,7 @@ TarLink verifies that downloaded bytes match the reviewed registry digest. The o
 
 ## Development
 
-End users should use `install.sh`. Contributors with Go installed may use `go install github.com/drobilica/tarlink/cmd/tarlink@latest` for development. Run [the canonical validation script](CONTRIBUTING.md) before opening a change; macOS contributors should see [CONTRIBUTING.md](CONTRIBUTING.md) for the Podman Linux-validation path.
+End users should use `install.sh`. Contributors with Go installed may use `go install github.com/drobilica/tarlink/cmd/tarlink@latest` for development. See [CONTRIBUTING.md](CONTRIBUTING.md) for the first pull/build, reusable checkout workflow, macOS Podman path, quick iteration checks, and the required full validation before opening a change.
 
 ```sh
 ./scripts/validate.sh
