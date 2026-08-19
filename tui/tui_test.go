@@ -14,20 +14,52 @@ import (
 )
 
 type fakeService struct {
-	applications    []app.Application
-	installedValues []app.Application
-	rolledBack      string
-	uninstalled     string
-	uninstallErr    error
-	installProgress []app.Progress
-	tarlinkVersion  app.TarLinkVersion
+	applications     []app.Application
+	installedValues  []app.Application
+	rolledBack       string
+	uninstalled      string
+	uninstallErr     error
+	installProgress  []app.Progress
+	tarlinkVersion   app.TarLinkVersion
+	blockOnCancel    bool
+	installStarted   chan struct{}
+	installCanceled  chan struct{}
+	blockSearch      bool
+	searchStarted    chan struct{}
+	searchCanceled   chan struct{}
+	blockVersions    bool
+	versionsStarted  chan struct{}
+	versionsCanceled chan struct{}
 }
 
-func (f *fakeService) Install(_ context.Context, _ string, sink app.ProgressSink) (app.Result, error) {
+// waitForCancel blocks until ctx is cancelled, signalling started/canceled via
+// the provided channels (which may be nil).
+func (f *fakeService) waitForCancel(ctx context.Context, started, canceled chan struct{}) error {
+	if started != nil {
+		close(started)
+	}
+	<-ctx.Done()
+	if canceled != nil {
+		close(canceled)
+	}
+	return ctx.Err()
+}
+
+func (f *fakeService) Install(ctx context.Context, _ string, sink app.ProgressSink) (app.Result, error) {
 	for _, event := range f.installProgress {
 		if sink != nil {
 			sink(event)
 		}
+	}
+	if f.blockOnCancel {
+		if f.installStarted != nil {
+			close(f.installStarted)
+		}
+		<-ctx.Done()
+		if f.installCanceled != nil {
+			close(f.installCanceled)
+		}
+		return app.Result{}, ctx.Err()
 	}
 	return app.Result{AppID: "blender", Version: "5.2.0"}, nil
 }
@@ -74,7 +106,10 @@ func (f *fakeService) List(context.Context) ([]app.Application, error) {
 func (f *fakeService) Info(context.Context, string) (app.Application, error) {
 	return app.Application{}, errors.New("unused")
 }
-func (f *fakeService) Search(_ context.Context, query string) ([]app.Application, error) {
+func (f *fakeService) Search(ctx context.Context, query string) ([]app.Application, error) {
+	if f.blockSearch {
+		return nil, f.waitForCancel(ctx, f.searchStarted, f.searchCanceled)
+	}
 	if query == "" {
 		return f.applications, nil
 	}
@@ -86,7 +121,10 @@ func (f *fakeService) Search(_ context.Context, query string) ([]app.Application
 	}
 	return values, nil
 }
-func (f *fakeService) Versions(context.Context, string) ([]app.Version, error) {
+func (f *fakeService) Versions(ctx context.Context, _ string) ([]app.Version, error) {
+	if f.blockVersions {
+		return nil, f.waitForCancel(ctx, f.versionsStarted, f.versionsCanceled)
+	}
 	return []app.Version{{Version: "5.2.0", Status: "current"}}, nil
 }
 func (f *fakeService) SyncRegistry(context.Context, app.ProgressSink) error {
@@ -213,7 +251,7 @@ func TestMouseWheelMovesThreeRowsWithBoundaries(t *testing.T) {
 
 func TestBusyFooterDoesNotExposeNavigationControls(t *testing.T) {
 	m := model{screen: screenAvailable, busy: "Installing", width: 80, height: 12}
-	if got := m.footer(); got != "q Quit" {
+	if got := m.footer(); got != "Esc Cancel  q Quit" {
 		t.Fatalf("busy footer = %q", got)
 	}
 }
@@ -295,7 +333,8 @@ func TestApplicationFilterSearchAndDetailsInteraction(t *testing.T) {
 	}
 	service := &fakeService{applications: values}
 	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: values, applicationFilter: filterInstalled, query: "installed"}
-	updated, _ := m.Update(m.searchCmd()())
+	cmd, _ := m.searchCmd()
+	updated, _ := m.Update(cmd())
 	m = updated.(model)
 	if len(m.visibleApplications()) != 1 || m.visibleApplications()[0].ID != "installed" || m.selected != 0 || m.listOffset != 0 {
 		t.Fatalf("search ignored active filter: %#v", m)
@@ -798,4 +837,501 @@ func TestProgressEventsRenderLifecycleAndUnknownLength(t *testing.T) {
 
 func displayWidth(value string) int {
 	return displaywidth.Options{ControlSequences: true}.String(value)
+}
+
+func TestProgressBarFixedWidthAtRepresentativeSizes(t *testing.T) {
+	bar := newProgress(false)
+	if bar.Width() != progressBarWidth {
+		t.Fatalf("initial progress bar width = %d, want %d", bar.Width(), progressBarWidth)
+	}
+	if got := displayWidth(bar.ViewAs(0.5)); got != progressBarWidth {
+		t.Fatalf("rendered progress bar width = %d, want %d", got, progressBarWidth)
+	}
+	// Stable standard width across wide and normal resize, shrinking only on
+	// genuinely narrow terminals, with graceful rendering at every size.
+	for _, tc := range []struct {
+		terminal int
+		want     int
+	}{
+		{120, progressBarWidth},
+		{80, progressBarWidth},
+		{60, progressBarWidth},
+		{40, 18},
+		{24, 14},
+		{20, 14},
+	} {
+		m := model{
+			color: false, theme: newTheme(false), busy: "Installing",
+			progress:    app.Progress{Stage: app.ProgressDownloading, BytesDone: 50, BytesTotal: 100},
+			width:       tc.terminal,
+			height:      12,
+			progressBar: newProgress(false),
+		}
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: tc.terminal, Height: 12})
+		m = updated.(model)
+		if m.progressBar.Width() != tc.want {
+			t.Fatalf("width %d: progress bar width = %d, want %d", tc.terminal, m.progressBar.Width(), tc.want)
+		}
+		line := m.progressLine()
+		if !strings.Contains(line, "50%") {
+			t.Fatalf("width %d: progress line missing percentage: %q", tc.terminal, line)
+		}
+	}
+	// Wide/normal resize keeps the standard width stable.
+	stable := model{progressBar: newProgress(false), width: 80}
+	updated, _ := stable.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	stable = updated.(model)
+	updated, _ = stable.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	stable = updated.(model)
+	if stable.progressBar.Width() != progressBarWidth {
+		t.Fatalf("wide/normal resize changed bar width to %d, want stable %d", stable.progressBar.Width(), progressBarWidth)
+	}
+}
+
+func TestProgressBarWidthHelperIsDeterministic(t *testing.T) {
+	for _, tc := range []struct {
+		terminal int
+		want     int
+	}{
+		{200, 24}, {120, 24}, {80, 24}, {60, 24},
+		{59, 18}, {40, 18}, {39, 14}, {24, 14}, {10, 14}, {0, 14},
+	} {
+		if got := progressBarWidthFor(tc.terminal); got != tc.want {
+			t.Errorf("progressBarWidthFor(%d) = %d, want %d", tc.terminal, got, tc.want)
+		}
+	}
+}
+
+func TestBusyHelpShowsEscCancelAndQuit(t *testing.T) {
+	m := model{screen: screenAvailable, busy: "Installing", width: 120, height: 12}
+	help := m.helpView()
+	if !strings.Contains(help, "Esc Cancel") || !strings.Contains(help, "q Quit") {
+		t.Fatalf("busy help must show Esc Cancel and q Quit: %q", help)
+	}
+	if strings.Contains(help, "Back") {
+		t.Fatalf("busy help mislabeled Esc as Back: %q", help)
+	}
+}
+
+func TestProgressBarRenderingFitsTerminalWidth(t *testing.T) {
+	for _, width := range []int{120, 80, 40, 24, 20} {
+		m := model{
+			color: false, theme: newTheme(false), busy: "Installing",
+			progress:      app.Progress{Stage: app.ProgressDownloading, BytesDone: 245 << 20, BytesTotal: 365 << 20},
+			progressSpeed: 1 << 20,
+			width:         width,
+			height:        16,
+			progressBar:   newProgress(false),
+		}
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 16})
+		for _, line := range strings.Split(updated.(model).View().Content, "\n") {
+			if displayWidth(line) > width {
+				t.Fatalf("width %d: line exceeds width: %q", width, line)
+			}
+		}
+	}
+}
+
+func TestOperationCancellationViaContextAndReuse(t *testing.T) {
+	service := &fakeService{
+		applications:    []app.Application{{ID: "blender", Name: "Blender"}},
+		blockOnCancel:   true,
+		installStarted:  make(chan struct{}),
+		installCanceled: make(chan struct{}),
+	}
+	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: service.applications}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	modelBusy := updated.(model)
+	if command == nil || modelBusy.busy == "" || modelBusy.opCancel == nil {
+		t.Fatalf("install did not start as cancellable operation: %#v", modelBusy)
+	}
+	var result tea.Msg
+	done := make(chan struct{})
+	go func() {
+		result = command()
+		close(done)
+	}()
+	select {
+	case <-service.installStarted:
+	case <-time.After(time.Second):
+		t.Fatal("operation did not reach the service")
+	}
+	// Esc cancels the active operation.
+	cancelled, _ := modelBusy.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	select {
+	case <-service.installCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("active operation was not cancelled via context")
+	}
+	<-done
+	message, ok := result.(operationMsg)
+	if !ok || !errors.Is(message.err, context.Canceled) {
+		t.Fatalf("operation result = %#v, want context.Canceled", result)
+	}
+	finished, _ := cancelled.(model).Update(result)
+	modelDone := finished.(model)
+	if modelDone.busy != "" || modelDone.err != nil || modelDone.opCancel != nil || modelDone.progress.Stage != "" {
+		t.Fatalf("cancellation left stale state: %#v", modelDone)
+	}
+	if !strings.Contains(modelDone.View().Content, "cancelled") {
+		t.Fatalf("cancellation not indicated to the user: %q", modelDone.View().Content)
+	}
+	// A subsequent operation remains reusable on the same model.
+	service.blockOnCancel = false
+	updated, command = modelDone.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil || updated.(model).opCancel == nil {
+		t.Fatalf("subsequent operation not reusable: %#v", updated.(model))
+	}
+	if message := command(); message.(operationMsg).err != nil {
+		t.Fatalf("subsequent operation failed: %#v", message)
+	}
+}
+
+func TestQuitDuringBusyCancelsOperation(t *testing.T) {
+	service := &fakeService{
+		applications:    []app.Application{{ID: "blender", Name: "Blender"}},
+		blockOnCancel:   true,
+		installStarted:  make(chan struct{}),
+		installCanceled: make(chan struct{}),
+	}
+	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: service.applications}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	modelBusy := updated.(model)
+	if command == nil {
+		t.Fatal("install did not start")
+	}
+	done := make(chan struct{})
+	go func() {
+		command()
+		close(done)
+	}()
+	select {
+	case <-service.installStarted:
+	case <-time.After(time.Second):
+		t.Fatal("operation did not reach the service")
+	}
+	quit, quitCmd := modelBusy.Update(tea.KeyPressMsg{Text: "q"})
+	if quitCmd == nil {
+		t.Fatal("q did not quit")
+	}
+	select {
+	case <-service.installCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("quit did not cancel the active operation")
+	}
+	<-done
+	_ = quit
+}
+
+func TestStaleFeedbackClearedOnNavigationAndNewOperation(t *testing.T) {
+	m := model{screen: screenAvailable, status: "Installed blender 5.2.0", err: errors.New("stale error"), width: 80, height: 12}
+	updated, command := m.Update(tea.KeyPressMsg{Text: "i"})
+	modelAfterNav := updated.(model)
+	if command != nil || modelAfterNav.status != "" || modelAfterNav.err != nil {
+		t.Fatalf("navigation did not clear stale feedback: %#v", modelAfterNav)
+	}
+
+	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}}}
+	start := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications, err: errors.New("stale error")}
+	updated, command = start.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	modelAfterConfirm := updated.(model)
+	if command != nil || modelAfterConfirm.err != nil {
+		t.Fatalf("opening an operation did not clear stale error: %#v", modelAfterConfirm)
+	}
+}
+
+func TestStaleFeedbackClearedOnSelectionAndFilterNavigation(t *testing.T) {
+	values := []app.Application{
+		{ID: "one", Name: "One", InstalledVersion: "1.0"},
+		{ID: "two", Name: "Two", InstalledVersion: "1.0"},
+		{ID: "three", Name: "Three"},
+	}
+	// Success feedback must disappear on selection navigation (Up/Down).
+	for _, key := range []tea.KeyPressMsg{
+		{Code: tea.KeyUp},
+		{Code: tea.KeyDown},
+	} {
+		m := model{
+			screen: screenInstalled, installed: values, selected: 1,
+			status: "Installed blender 5.2.0", err: errors.New("stale error"), width: 80, height: 12,
+		}
+		updated, command := m.Update(key)
+		modelAfter := updated.(model)
+		if command != nil || modelAfter.status != "" || modelAfter.err != nil {
+			t.Fatalf("key %s did not clear stale feedback on selection: %#v", key, modelAfter)
+		}
+	}
+
+	// Filter navigation (Left/Right) on the available screen must clear feedback.
+	for _, key := range []tea.KeyPressMsg{
+		{Code: tea.KeyLeft},
+		{Code: tea.KeyRight},
+	} {
+		m := model{
+			screen: screenAvailable, available: values, status: "Installed blender 5.2.0",
+			err: errors.New("stale error"), width: 80, height: 12,
+		}
+		updated, command := m.Update(key)
+		modelAfter := updated.(model)
+		if command != nil || modelAfter.status != "" || modelAfter.err != nil {
+			t.Fatalf("key %s did not clear stale feedback on filter change: %#v", key, modelAfter)
+		}
+	}
+
+	// Starting a search must clear stale feedback.
+	m := model{
+		screen: screenInstalled, installed: values, status: "Installed blender 5.2.0",
+		err: errors.New("stale error"), width: 80, height: 12,
+	}
+	updated, command := m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	modelAfter := updated.(model)
+	if command != nil || modelAfter.status != "" || modelAfter.err != nil {
+		t.Fatalf("search did not clear stale feedback: %#v", modelAfter)
+	}
+}
+
+func TestSelectionNavigationKeepsActiveBusyState(t *testing.T) {
+	values := []app.Application{{ID: "one", Name: "One"}, {ID: "two", Name: "Two"}}
+	m := model{
+		screen: screenInstalled, installed: values, busy: "Installing one",
+		progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 10, BytesTotal: 100},
+		width:    80, height: 12,
+	}
+	// Selection navigation while busy must not clear the active operation state.
+	updated, command := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	modelAfter := updated.(model)
+	if command != nil || modelAfter.busy != "Installing one" || modelAfter.progress.Stage != app.ProgressDownloading {
+		t.Fatalf("busy operation state was disturbed by selection navigation: %#v", modelAfter)
+	}
+}
+
+func TestNewOperationClearsStaleProgress(t *testing.T) {
+	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender"}}}
+	m := model{
+		ctx: context.Background(), service: service, screen: screenAvailable, available: service.applications,
+		progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 10, BytesTotal: 100},
+		width:    80,
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	modelBusy := updated.(model)
+	if command == nil || modelBusy.progress.Stage != "" {
+		t.Fatalf("starting operation did not clear stale progress: %#v", modelBusy)
+	}
+}
+
+func TestResponsiveLayoutFitsAtRepresentativeSizes(t *testing.T) {
+	detail := &app.Application{
+		ID: "blender", Name: "Blender", Summary: "A 3D creation suite", Homepage: "https://blender.org",
+		Categories: []string{"graphics"}, RegistryVersion: "5.2.0", InstalledVersion: "5.1.0", UpdateAvailable: true,
+	}
+	for _, width := range []int{120, 80, 40, 24, 20} {
+		scenarios := []model{
+			{screen: screenAvailable, available: []app.Application{{ID: "a", Name: "Alpha"}}, width: width, height: 16},
+			{screen: screenInstalled, installed: []app.Application{{ID: "a", Name: "Alpha", InstalledVersion: "1.0"}}, width: width, height: 16},
+			{screen: screenUpdates, installed: []app.Application{{ID: "a", Name: "Alpha", InstalledVersion: "1.0", UpdateAvailable: true}}, width: width, height: 16},
+			{screen: screenDetails, detail: detail, width: width, height: 16},
+			{screen: screenRollback, detail: detail, width: width, height: 16},
+		}
+		for _, m := range scenarios {
+			view := m.View().Content
+			if view == "" {
+				t.Fatalf("width %d screen %d rendered empty view", width, m.screen)
+			}
+			for _, line := range strings.Split(view, "\n") {
+				if displayWidth(line) > width {
+					t.Fatalf("width %d screen %d: line exceeds terminal width: %q", width, m.screen, line)
+				}
+			}
+		}
+	}
+}
+
+func TestListBoundsMatchRenderedContent(t *testing.T) {
+	values := []app.Application{{ID: "a", Name: "Alpha"}, {ID: "b", Name: "Beta"}}
+	scenarios := []struct {
+		name string
+		m    model
+	}{
+		{"installed", model{screen: screenInstalled, installed: values, width: 80, height: 24}},
+		{"available", model{screen: screenAvailable, available: values, width: 80, height: 24}},
+		{"available-searching", model{screen: screenAvailable, available: values, searching: true, query: "app", width: 80, height: 24}},
+		{"busy-progress", model{screen: screenInstalled, installed: values, busy: "Installing", progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 1, BytesTotal: 2}, width: 80, height: 24}},
+		{"status", model{screen: screenInstalled, installed: values, status: "Installed alpha", width: 80, height: 24}},
+		{"upgrade-banner", model{screen: screenInstalled, installed: values, upgradeAvailable: true, width: 80, height: 24}},
+	}
+	for _, sc := range scenarios {
+		start, _ := sc.m.listBoundsWithoutRows()
+		lines := strings.Split(strings.TrimSuffix(sc.m.View().Content, "\n"), "\n")
+		if len(lines) <= start {
+			t.Fatalf("%s: list start row %d but only %d lines rendered", sc.name, start, len(lines))
+		}
+		if !strings.Contains(lines[start], "Alpha") {
+			t.Fatalf("%s: first application not at computed row %d: %q", sc.name, start, lines[start])
+		}
+		if sc.m.listRows() < 1 {
+			t.Fatalf("%s: listRows %d < 1", sc.name, sc.m.listRows())
+		}
+	}
+}
+
+func TestFooterVisibleAtRepresentativeSizes(t *testing.T) {
+	values := make([]app.Application, 20)
+	for i := range values {
+		values[i] = app.Application{ID: string(rune('a' + i)), Name: "Application " + string(rune('a'+i))}
+	}
+	detail := &app.Application{
+		ID: "blender", Name: "Blender", Summary: "A 3D creation suite", Homepage: "https://blender.org",
+		Categories: []string{"graphics"}, RegistryVersion: "5.2.0", InstalledVersion: "5.1.0", UpdateAvailable: true,
+	}
+	sizes := [][2]int{{120, 40}, {80, 24}, {60, 18}, {80, 12}, {60, 10}, {80, 6}}
+	for _, size := range sizes {
+		width, height := size[0], size[1]
+		scenarios := []model{
+			{screen: screenInstalled, installed: values, width: width, height: height},
+			{screen: screenAvailable, available: values, width: width, height: height},
+			{screen: screenAvailable, available: values, searching: true, query: "app", width: width, height: height},
+			{screen: screenInstalled, installed: values, busy: "Installing", progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 1, BytesTotal: 2}, width: width, height: height},
+			{screen: screenInstalled, installed: values, status: "Installed blender", width: width, height: height},
+			{screen: screenDetails, detail: detail, width: width, height: height},
+		}
+		for _, m := range scenarios {
+			lines := strings.Split(strings.TrimSuffix(m.View().Content, "\n"), "\n")
+			for i, line := range lines {
+				if displayWidth(line) > width {
+					t.Fatalf("%dx%d screen %d: width overflow line %d: %q", width, height, m.screen, i, line)
+				}
+			}
+			if len(lines) > height {
+				t.Fatalf("%dx%d screen %d: rendered %d lines exceeds height, footer lost", width, height, m.screen, len(lines))
+			}
+		}
+	}
+}
+
+func TestTightHeaderProvidesListRowsWithinHeight(t *testing.T) {
+	values := make([]app.Application, 40)
+	for i := range values {
+		values[i] = app.Application{ID: string(rune('a' + i)), Name: "Application"}
+	}
+	for _, size := range [][2]int{{80, 24}, {60, 18}, {80, 12}} {
+		width, height := size[0], size[1]
+		m := model{screen: screenInstalled, installed: values, width: width, height: height}
+		rows := m.listRows()
+		// The rendered list must fit entirely within the height budget.
+		if rows > height {
+			t.Fatalf("%dx%d: listRows %d exceeds height", width, height, rows)
+		}
+		// Chrome (title, header, separator, blank-before-footer, footer) leaves
+		// room for the list without overflowing the height.
+		if rows+len(footerLines(m.footer(), width))+2 > height {
+			t.Fatalf("%dx%d: header+list+footer overflow height", width, height)
+		}
+	}
+}
+
+func TestSearchCancellationViaContext(t *testing.T) {
+	service := &fakeService{
+		applications:   []app.Application{{ID: "blender", Name: "Blender"}},
+		blockSearch:    true,
+		searchStarted:  make(chan struct{}),
+		searchCanceled: make(chan struct{}),
+	}
+	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: service.applications}
+	// Begin searching then submit the query.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	modelBusy := updated.(model)
+	if command == nil || modelBusy.busy != "Searching" || modelBusy.opCancel == nil {
+		t.Fatalf("search did not start as cancellable: %#v", modelBusy)
+	}
+	var result tea.Msg
+	done := make(chan struct{})
+	go func() {
+		result = command()
+		close(done)
+	}()
+	select {
+	case <-service.searchStarted:
+	case <-time.After(time.Second):
+		t.Fatal("search did not reach the service")
+	}
+	// Esc cancels the active search.
+	cancelled, _ := modelBusy.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	select {
+	case <-service.searchCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("active search was not cancelled via context")
+	}
+	<-done
+	msg, ok := result.(searchMsg)
+	if !ok || !msg.cancelled {
+		t.Fatalf("search result = %#v, want cancelled searchMsg", result)
+	}
+	finished, _ := cancelled.(model).Update(result)
+	modelDone := finished.(model)
+	if modelDone.busy != "" || modelDone.err != nil || modelDone.opCancel != nil {
+		t.Fatalf("search cancellation left stale state: %#v", modelDone)
+	}
+	// The prior list must be preserved (no scary generic failure).
+	if len(modelDone.available) != 1 {
+		t.Fatalf("search cancellation lost available list: %#v", modelDone.available)
+	}
+	if !strings.Contains(modelDone.View().Content, "cancelled") {
+		t.Fatalf("search cancellation not indicated: %q", modelDone.View().Content)
+	}
+}
+
+func TestVersionsCancellationViaContext(t *testing.T) {
+	service := &fakeService{
+		applications:     []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}},
+		blockVersions:    true,
+		versionsStarted:  make(chan struct{}),
+		versionsCanceled: make(chan struct{}),
+	}
+	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications}
+	// Open details then request versions.
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: 'v', Text: "v"})
+	modelBusy := updated.(model)
+	if command == nil || modelBusy.busy != "Loading versions" || modelBusy.opCancel == nil {
+		t.Fatalf("versions did not start as cancellable: %#v", modelBusy)
+	}
+	var result tea.Msg
+	done := make(chan struct{})
+	go func() {
+		result = command()
+		close(done)
+	}()
+	select {
+	case <-service.versionsStarted:
+	case <-time.After(time.Second):
+		t.Fatal("versions did not reach the service")
+	}
+	// Esc cancels the active versions load.
+	cancelled, _ := modelBusy.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	select {
+	case <-service.versionsCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("active versions load was not cancelled via context")
+	}
+	<-done
+	msg, ok := result.(versionsMsg)
+	if !ok || !msg.cancelled {
+		t.Fatalf("versions result = %#v, want cancelled versionsMsg", result)
+	}
+	finished, _ := cancelled.(model).Update(result)
+	modelDone := finished.(model)
+	if modelDone.busy != "" || modelDone.err != nil || modelDone.opCancel != nil {
+		t.Fatalf("versions cancellation left stale state: %#v", modelDone)
+	}
+	// Should stay on the prior (details) screen, not jump to versions.
+	if modelDone.screen != screenDetails {
+		t.Fatalf("versions cancellation changed screen to %v, want details", modelDone.screen)
+	}
+	if !strings.Contains(modelDone.View().Content, "cancelled") {
+		t.Fatalf("versions cancellation not indicated: %q", modelDone.View().Content)
+	}
 }

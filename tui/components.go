@@ -97,7 +97,11 @@ func (m model) helpView() string {
 	h.SetWidth(viewWidth(m.width))
 	b := m.keyMap()
 	if m.busy != "" {
-		return h.ShortHelpView([]keypkg.Binding{b.Quit})
+		// During an active operation Esc cancels (not "back"); reuse the same
+		// Cancel key binding, just relabeled, alongside q to quit.
+		cancel := b.Cancel
+		cancel.SetHelp("Esc", "Cancel")
+		return h.ShortHelpView([]keypkg.Binding{cancel, b.Quit})
 	}
 	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
 		return h.ShortHelpView([]keypkg.Binding{b.Enter, b.Cancel, b.Quit})
@@ -120,7 +124,7 @@ func (m model) helpView() string {
 }
 
 func newProgress(color bool) progress.Model {
-	bar := progress.New(progress.WithFillCharacters('█', '░'))
+	bar := progress.New(progress.WithFillCharacters('█', '░'), progress.WithWidth(progressBarWidth))
 	if color {
 		bar.FullColor = lipgloss.Color("36")
 		bar.EmptyColor = lipgloss.Color("90")

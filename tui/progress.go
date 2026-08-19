@@ -9,7 +9,26 @@ import (
 const (
 	speedWindow = 8 * time.Second
 	etaWarmup   = 2 * time.Second
+	// progressBarWidth is the standard display width of the Bubbles progress
+	// bar (excluding the trailing percentage), used for normal and wide
+	// terminals.
+	progressBarWidth = 24
 )
+
+// progressBarWidthFor returns the deterministic progress bar width for a given
+// terminal width. It holds the standard width stable across wide and normal
+// resize and only shrinks on genuinely narrow terminals so the bar still
+// renders gracefully.
+func progressBarWidthFor(terminalWidth int) int {
+	switch {
+	case terminalWidth < 40:
+		return 14
+	case terminalWidth < 60:
+		return 18
+	default:
+		return progressBarWidth
+	}
+}
 
 type progressSample struct {
 	at    time.Time

@@ -3,6 +3,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -48,13 +49,15 @@ type loadedMsg struct {
 }
 
 type searchMsg struct {
-	values []app.Application
-	err    error
+	values    []app.Application
+	err       error
+	cancelled bool
 }
 
 type versionsMsg struct {
-	values []app.Version
-	err    error
+	values    []app.Version
+	err       error
+	cancelled bool
 }
 type versionMsg struct {
 	value app.TarLinkVersion
@@ -118,6 +121,7 @@ type model struct {
 	tarlinkVersion      app.TarLinkVersion
 	upgradeAvailable    bool
 	cancel              context.CancelFunc
+	opCancel            context.CancelFunc
 }
 
 // Run starts the terminal renderer. All application changes are delegated to
@@ -145,7 +149,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = message.Height
 		m.clampViewport()
 		m.help.SetWidth(m.width)
-		m.progressBar.SetWidth(max(1, viewWidth(m.width)-24))
+		m.progressBar.SetWidth(progressBarWidthFor(m.width))
 		return m, nil
 	case loadedMsg:
 		m.busy = ""
@@ -165,6 +169,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case searchMsg:
 		m.busy = ""
+		m.opCancel = nil
+		if message.cancelled {
+			m.err = nil
+			m.status = "Search cancelled"
+			return m, nil
+		}
 		m.err = message.err
 		if message.err == nil {
 			m.available = message.values
@@ -174,6 +184,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case versionsMsg:
 		m.busy = ""
+		m.opCancel = nil
+		if message.cancelled {
+			m.err = nil
+			m.status = "Loading cancelled"
+			return m, nil
+		}
 		m.err = message.err
 		if message.err == nil {
 			m.versions = message.values
@@ -183,8 +199,14 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case operationMsg:
 		m.busy = ""
 		m.resetProgress()
+		m.opCancel = nil
 		m.err = message.err
 		m.status = message.message
+		if errors.Is(message.err, context.Canceled) {
+			m.err = nil
+			m.status = "Operation cancelled"
+			return m, nil
+		}
 		if message.err != nil {
 			m.status = ""
 			return m, nil
@@ -237,7 +259,6 @@ func (m model) View() tea.View {
 	if m.upgradeAvailable {
 		line(m.style("UPDATE AVAILABLE "+m.tarlinkVersion.Current+" -> "+m.tarlinkVersion.Latest+" [U] (press U to upgrade)", warning))
 	}
-	body.WriteByte('\n')
 	if m.busy != "" {
 		line(m.style(m.busy+"...", accent))
 		if m.progress.Stage != "" {
@@ -415,6 +436,9 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	pressed := message.String()
 	bindings := m.keyMap()
 	if keypkg.Matches(message, bindings.CtrlC) {
+		if m.opCancel != nil {
+			m.opCancel()
+		}
 		if m.cancel != nil {
 			m.cancel()
 		}
@@ -428,7 +452,9 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "enter":
 			m.searching = false
 			m.busy = "Searching"
-			return m, m.searchCmd()
+			cmd, cancel := m.searchCmd()
+			m.opCancel = cancel
+			return m, cmd
 		case "backspace", "ctrl+h":
 			if m.query != "" {
 				_, size := utf8.DecodeLastRuneInString(m.query)
@@ -447,48 +473,63 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	if keypkg.Matches(message, bindings.Quit) {
+		if m.opCancel != nil {
+			m.opCancel()
+		}
 		if m.cancel != nil {
 			m.cancel()
 		}
 		return m, tea.Quit
 	}
 	if m.busy != "" {
+		if keypkg.Matches(message, bindings.Cancel) && m.opCancel != nil {
+			m.opCancel()
+		}
 		return m, nil
 	}
 	switch {
 	case keypkg.Matches(message, bindings.Upgrade):
 		if m.upgradeAvailable {
+			m.clearFeedback()
 			m.returnTo = m.screen
 			m.confirmSet = false
 			m.screen = screenUpgrade
 		}
 	case keypkg.Matches(message, bindings.Up):
+		m.clearFeedback()
 		m.moveSelection(-1)
 	case keypkg.Matches(message, bindings.Down):
+		m.clearFeedback()
 		m.moveSelection(1)
 	case keypkg.Matches(message, bindings.Left):
 		if m.screen == screenAvailable {
+			m.clearFeedback()
 			m.changeFilter(-1)
 		}
 	case keypkg.Matches(message, bindings.Right):
 		if m.screen == screenAvailable {
+			m.clearFeedback()
 			m.changeFilter(1)
 		}
 	case keypkg.Matches(message, bindings.Search):
+		m.clearFeedback()
 		m.screen = screenAvailable
 		m.searching = true
 		m.query = ""
 		m.selected = 0
 		m.listOffset = 0
 	case keypkg.Matches(message, bindings.Installed):
+		m.clearFeedback()
 		m.screen = screenInstalled
 		m.selected = 0
 		m.listOffset = 0
 	case keypkg.Matches(message, bindings.Updates):
+		m.clearFeedback()
 		m.screen = screenUpdates
 		m.selected = 0
 		m.listOffset = 0
 	case keypkg.Matches(message, bindings.Cancel):
+		m.clearFeedback()
 		if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
 			m.screen = m.confirmationTarget()
 			m.confirmSet = false
@@ -513,20 +554,28 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case keypkg.Matches(message, bindings.Enter):
 		if m.screen == screenUpgrade {
 			m.busy = "Upgrading TarLink"
-			m.resetProgress()
-			return m, m.upgradeCmd()
+			m.startOperation()
+			cmd, cancel := m.upgradeCmd()
+			m.opCancel = cancel
+			return m, cmd
 		}
 		if m.screen == screenRollback {
 			if id := m.selectedID(); id != "" {
 				m.busy = "Rolling back"
-				return m, m.rollbackCmd(id)
+				m.startOperation()
+				cmd, cancel := m.rollbackCmd(id)
+				m.opCancel = cancel
+				return m, cmd
 			}
 			return m, nil
 		}
 		if m.screen == screenUninstall {
 			if id := m.selectedID(); id != "" && m.selectedInstalled() {
 				m.busy = "Uninstalling"
-				return m, m.uninstallCmd(id)
+				m.startOperation()
+				cmd, cancel := m.uninstallCmd(id)
+				m.opCancel = cancel
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -535,6 +584,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		visible := m.visibleApplications()
 		if len(visible) != 0 {
+			m.clearFeedback()
 			selected := visible[m.selected]
 			m.detail = &selected
 			m.returnTo = m.screen
@@ -542,6 +592,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case keypkg.Matches(message, bindings.Versions):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
+			m.clearFeedback()
 			m.setDetail(id)
 			if m.screen == screenDetails {
 				m.versionsFromDetails = true
@@ -550,10 +601,13 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.versionsFromDetails = false
 			}
 			m.busy = "Loading versions"
-			return m, m.versionsCmd(id)
+			cmd, cancel := m.versionsCmd(id)
+			m.opCancel = cancel
+			return m, cmd
 		}
 	case keypkg.Matches(message, bindings.Rollback):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
+			m.clearFeedback()
 			m.setDetail(id)
 			if m.screen != screenDetails && m.screen != screenVersions {
 				m.returnTo = m.screen
@@ -564,6 +618,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case keypkg.Matches(message, bindings.Uninstall):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
+			m.clearFeedback()
 			m.setDetail(id)
 			if m.screen != screenDetails && m.screen != screenVersions {
 				m.returnTo = m.screen
@@ -601,13 +656,18 @@ func (m model) activateSelected() (tea.Model, tea.Cmd) {
 	switch {
 	case m.detail.InstalledVersion == "":
 		m.busy = "Installing " + id
-		m.resetProgress()
-		return m, m.installCmd(id)
+		m.startOperation()
+		cmd, cancel := m.installCmd(id)
+		m.opCancel = cancel
+		return m, cmd
 	case m.detail.UpdateAvailable:
 		m.busy = "Updating " + id
-		m.resetProgress()
-		return m, m.updateCmd(id)
+		m.startOperation()
+		cmd, cancel := m.updateCmd(id)
+		m.opCancel = cancel
+		return m, cmd
 	default:
+		m.clearFeedback()
 		m.status = id + " is already up to date"
 		return m, nil
 	}
@@ -631,9 +691,9 @@ func (m model) checkVersionCmd() tea.Cmd {
 	}
 }
 
-func (m model) upgradeCmd() tea.Cmd {
-	return m.operationCmd(func(sink app.ProgressSink) (operationMsg, error) {
-		value, err := m.service.UpgradeTarLink(m.ctx, sink)
+func (m model) upgradeCmd() (tea.Cmd, context.CancelFunc) {
+	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
+		value, err := m.service.UpgradeTarLink(ctx, sink)
 		message := ""
 		if err == nil {
 			message = "TarLink upgraded to " + value.Latest + ". The new version will be used the next time TarLink starts."
@@ -642,59 +702,83 @@ func (m model) upgradeCmd() tea.Cmd {
 	})
 }
 
-func (m model) searchCmd() tea.Cmd {
-	return func() tea.Msg {
-		values, err := m.service.Search(m.ctx, m.query)
+func (m model) searchCmd() (tea.Cmd, context.CancelFunc) {
+	return m.cancellableCmd(func(ctx context.Context) tea.Msg {
+		values, err := m.service.Search(ctx, m.query)
 		return searchMsg{values: values, err: err}
-	}
+	}, searchMsg{cancelled: true})
 }
 
-func (m model) versionsCmd(id string) tea.Cmd {
-	return func() tea.Msg {
-		values, err := m.service.Versions(m.ctx, id)
+func (m model) versionsCmd(id string) (tea.Cmd, context.CancelFunc) {
+	return m.cancellableCmd(func(ctx context.Context) tea.Msg {
+		values, err := m.service.Versions(ctx, id)
 		return versionsMsg{values: values, err: err}
-	}
+	}, versionsMsg{cancelled: true})
 }
 
-func (m model) installCmd(id string) tea.Cmd {
-	return m.operationCmd(func(sink app.ProgressSink) (operationMsg, error) {
-		result, err := m.service.Install(m.ctx, id, sink)
+func (m model) installCmd(id string) (tea.Cmd, context.CancelFunc) {
+	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
+		result, err := m.service.Install(ctx, id, sink)
 		return operationMsg{message: resultMessage("Installed", result)}, err
 	})
 }
 
-func (m model) updateCmd(id string) tea.Cmd {
-	return m.operationCmd(func(sink app.ProgressSink) (operationMsg, error) {
-		result, err := m.service.Update(m.ctx, id, sink)
+func (m model) updateCmd(id string) (tea.Cmd, context.CancelFunc) {
+	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
+		result, err := m.service.Update(ctx, id, sink)
 		return operationMsg{message: resultMessage("Updated", result)}, err
 	})
 }
 
-func (m model) rollbackCmd(id string) tea.Cmd {
-	return m.operationCmd(func(sink app.ProgressSink) (operationMsg, error) {
-		result, err := m.service.Rollback(m.ctx, id, sink)
+func (m model) rollbackCmd(id string) (tea.Cmd, context.CancelFunc) {
+	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
+		result, err := m.service.Rollback(ctx, id, sink)
 		return operationMsg{message: resultMessage("Rolled back", result), next: screenDetails, move: true}, err
 	})
 }
 
-func (m model) operationCmd(operation func(app.ProgressSink) (operationMsg, error)) tea.Cmd {
-	hub := &operationHub{wake: make(chan struct{}, 1), result: make(chan operationMsg, 1)}
-	return func() tea.Msg {
-		ctx := m.ctx
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		hub.ctx = ctx
+func (m model) operationCmd(operation func(context.Context, app.ProgressSink) (operationMsg, error)) (tea.Cmd, context.CancelFunc) {
+	base := m.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	opCtx, opCancel := context.WithCancel(base)
+	hub := &operationHub{wake: make(chan struct{}, 1), result: make(chan operationMsg, 1), ctx: opCtx}
+	cmd := func() tea.Msg {
 		go func() {
 			sink := func(event app.Progress) {
 				hub.publish(event)
 			}
-			result, err := operation(sink)
+			result, err := operation(opCtx, sink)
 			result.err = err
 			hub.finish(result)
 		}()
-		return hub.next(ctx)
+		return hub.next(opCtx)
 	}
+	return cmd, opCancel
+}
+
+// cancellableCmd runs a non-progress command (search, versions) in a
+// per-operation context so it can be cancelled via Esc. It returns the
+// produced message on completion, or the cancelled message once the context is
+// cancelled.
+func (m model) cancellableCmd(run func(ctx context.Context) tea.Msg, cancelled tea.Msg) (tea.Cmd, context.CancelFunc) {
+	base := m.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	opCtx, opCancel := context.WithCancel(base)
+	done := make(chan tea.Msg, 1)
+	cmd := func() tea.Msg {
+		go func() { done <- run(opCtx) }()
+		select {
+		case msg := <-done:
+			return msg
+		case <-opCtx.Done():
+			return cancelled
+		}
+	}
+	return cmd, opCancel
 }
 
 func waitProgress(hub *operationHub) tea.Cmd {
@@ -790,9 +874,9 @@ func (h *operationHub) next(ctx context.Context) tea.Msg {
 	}
 }
 
-func (m model) uninstallCmd(id string) tea.Cmd {
-	return m.operationCmd(func(sink app.ProgressSink) (operationMsg, error) {
-		err := m.service.Uninstall(m.ctx, id, sink)
+func (m model) uninstallCmd(id string) (tea.Cmd, context.CancelFunc) {
+	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
+		err := m.service.Uninstall(ctx, id, sink)
 		next := m.confirmationTarget()
 		if next == screenVersions {
 			next = screenDetails
@@ -945,28 +1029,32 @@ func (m model) listRows() int {
 }
 
 func (m model) listBoundsWithoutRows() (start, rows int) {
-	start = 4
-	if m.screen == screenAvailable {
-		start++
-	}
+	start = 1 // title row
 	if m.upgradeAvailable {
-		start++
+		start++ // update banner row
 	}
 	if m.busy != "" {
 		start++
 		if m.progress.Stage != "" {
 			start++
 		}
-		start++
+		start++ // blank after the busy block
 	}
 	if m.err != nil {
-		start += 3
+		start += 3 // failure heading + detail + blank
 	}
 	if m.status != "" {
-		start += 2
+		start += 2 // status + blank
 	}
-	if m.screen == screenAvailable && (m.searching || m.query != "") {
-		start++
+	start++ // screen header
+	if m.screen == screenAvailable {
+		start++ // filter row
+		if m.searching || m.query != "" {
+			start++ // search row
+		}
+		start++ // blank separator before the list
+	} else {
+		start++ // blank separator before the list
 	}
 	return start, 0
 }
@@ -1123,7 +1211,7 @@ func (m model) progressLine() string {
 		if bar.Width() == 0 {
 			bar = newProgress(m.color)
 		}
-		bar.SetWidth(max(8, viewWidth(m.width)-len(stage)-30))
+		bar.SetWidth(progressBarWidthFor(m.width))
 		line += " " + bar.ViewAs(percent)
 		if viewWidth(m.width) >= 60 {
 			line += "  " + fmt.Sprintf("%s / %s", bytesLabel(m.progress.BytesDone), bytesLabel(m.progress.BytesTotal))
@@ -1145,6 +1233,21 @@ func (m *model) resetProgress() {
 	m.progressSpeed = 0
 	m.progressSpeedAt = time.Time{}
 	m.estimator.Reset()
+}
+
+// clearFeedback deterministically clears stale success/error feedback when the
+// user navigates away from a completed operation's result.
+func (m *model) clearFeedback() {
+	m.status = ""
+	m.err = nil
+}
+
+// startOperation resets progress and clears stale feedback before a new
+// active operation begins, so a previous operation's success/error never
+// leaks into the next one.
+func (m *model) startOperation() {
+	m.clearFeedback()
+	m.resetProgress()
 }
 
 func bytesLabel(value int64) string {
