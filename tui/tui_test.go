@@ -74,8 +74,17 @@ func (f *fakeService) List(context.Context) ([]app.Application, error) {
 func (f *fakeService) Info(context.Context, string) (app.Application, error) {
 	return app.Application{}, errors.New("unused")
 }
-func (f *fakeService) Search(context.Context, string) ([]app.Application, error) {
-	return f.applications, nil
+func (f *fakeService) Search(_ context.Context, query string) ([]app.Application, error) {
+	if query == "" {
+		return f.applications, nil
+	}
+	values := make([]app.Application, 0, len(f.applications))
+	for _, value := range f.applications {
+		if strings.Contains(strings.ToLower(value.ID), strings.ToLower(query)) || strings.Contains(strings.ToLower(value.Name), strings.ToLower(query)) {
+			values = append(values, value)
+		}
+	}
+	return values, nil
 }
 func (f *fakeService) Versions(context.Context, string) ([]app.Version, error) {
 	return []app.Version{{Version: "5.2.0", Status: "current"}}, nil
@@ -212,15 +221,92 @@ func TestBusyFooterDoesNotExposeNavigationControls(t *testing.T) {
 func TestHelpUsesContextRelevantBindings(t *testing.T) {
 	list := model{screen: screenAvailable, width: 120}
 	help := list.helpView()
-	for _, value := range []string{"Navigate", "Details", "Search", "Installed", "Updates", "Quit"} {
+	for _, value := range []string{"Navigate", "Filter", "Details", "Search", "Installed", "Updates", "Quit"} {
 		if !strings.Contains(help, value) {
 			t.Fatalf("list help omitted %q: %q", value, help)
 		}
+	}
+	upgradeHelp := (model{screen: screenAvailable, width: 120, upgradeAvailable: true}).helpView()
+	if !strings.Contains(upgradeHelp, "Filter") {
+		t.Fatalf("upgrade help omitted filter navigation: %q", upgradeHelp)
+	}
+	installedUpgradeHelp := (model{screen: screenInstalled, width: 120, upgradeAvailable: true}).helpView()
+	if strings.Contains(installedUpgradeHelp, "Filter") {
+		t.Fatalf("installed help exposed unavailable filter navigation: %q", installedUpgradeHelp)
+	}
+	installedHelp := (model{screen: screenInstalled, width: 120}).helpView()
+	if strings.Contains(installedHelp, "Filter") {
+		t.Fatalf("installed help exposed unavailable filter navigation: %q", installedHelp)
 	}
 	details := model{screen: screenDetails, width: 120}
 	help = details.helpView()
 	if !strings.Contains(help, "Back") || strings.Contains(help, "Search") || strings.Contains(help, "Updates") {
 		t.Fatalf("details help exposed irrelevant actions: %q", help)
+	}
+}
+
+func TestApplicationFilterCyclesAndResetsViewport(t *testing.T) {
+	values := []app.Application{
+		{ID: "one", Name: "One", InstalledVersion: "1.0"},
+		{ID: "two", Name: "Two"},
+		{ID: "three", Name: "Three", InstalledVersion: "1.0"},
+	}
+	m := model{screen: screenAvailable, available: values, selected: 2, listOffset: 2, width: 80, height: 12}
+
+	updated, command := m.Update(tea.KeyPressMsg{Code: tea.KeyLeft})
+	if command != nil {
+		t.Fatal("filter change returned a command")
+	}
+	m = updated.(model)
+	if m.applicationFilter != filterNotInstalled || m.selected != 0 || m.listOffset != 0 || len(m.visibleApplications()) != 1 || m.visibleApplications()[0].ID != "two" {
+		t.Fatalf("not-installed filter state = %#v", m)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = updated.(model)
+	if m.applicationFilter != filterAll || len(m.visibleApplications()) != len(values) {
+		t.Fatalf("filter did not cycle back to all: %#v", m)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	if updated.(model).applicationFilter != filterInstalled {
+		t.Fatalf("right did not select installed filter: %#v", updated)
+	}
+}
+
+func TestApplicationFilterEmptyResultsAndUpdatesPreservation(t *testing.T) {
+	values := []app.Application{{ID: "one", Name: "One", InstalledVersion: "1.0", UpdateAvailable: true}}
+	m := model{screen: screenAvailable, available: values, installed: values, width: 80, height: 12}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = updated.(model)
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	m = updated.(model)
+	if len(m.visibleApplications()) != 0 || m.selected != 0 || !strings.Contains(m.View().Content, "No applications.") {
+		t.Fatalf("empty not-installed filter = %#v, view=%q", m, m.View().Content)
+	}
+	updated, command := m.Update(tea.KeyPressMsg{Text: "u"})
+	if command != nil || updated.(model).screen != screenUpdates || len(updated.(model).visibleApplications()) != 1 {
+		t.Fatalf("updates binding changed: model=%#v command=%v", updated, command)
+	}
+}
+
+func TestApplicationFilterSearchAndDetailsInteraction(t *testing.T) {
+	values := []app.Application{
+		{ID: "installed", Name: "Installed", InstalledVersion: "1.0"},
+		{ID: "new", Name: "New"},
+	}
+	service := &fakeService{applications: values}
+	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: values, applicationFilter: filterInstalled, query: "installed"}
+	updated, _ := m.Update(m.searchCmd()())
+	m = updated.(model)
+	if len(m.visibleApplications()) != 1 || m.visibleApplications()[0].ID != "installed" || m.selected != 0 || m.listOffset != 0 {
+		t.Fatalf("search ignored active filter: %#v", m)
+	}
+	updated, command := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command != nil || updated.(model).screen != screenDetails || updated.(model).detail == nil || updated.(model).detail.ID != "installed" {
+		t.Fatalf("filtered detail interaction failed: model=%#v command=%v", updated, command)
+	}
+	updated, command = updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if command != nil || updated.(model).screen != screenAvailable || updated.(model).applicationFilter != filterInstalled {
+		t.Fatalf("details back lost filter: model=%#v", updated)
 	}
 }
 

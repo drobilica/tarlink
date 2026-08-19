@@ -33,6 +33,14 @@ const (
 	screenUpgrade
 )
 
+type applicationFilter uint8
+
+const (
+	filterAll applicationFilter = iota
+	filterInstalled
+	filterNotInstalled
+)
+
 type loadedMsg struct {
 	available []app.Application
 	installed []app.Application
@@ -87,6 +95,7 @@ type model struct {
 	confirmSet          bool
 	available           []app.Application
 	installed           []app.Application
+	applicationFilter   applicationFilter
 	versions            []app.Version
 	selected            int
 	listOffset          int
@@ -249,6 +258,7 @@ func (m model) View() tea.View {
 	switch m.screen {
 	case screenAvailable:
 		line(m.style("APPLICATIONS", accent))
+		line(m.filterView())
 		if m.searching {
 			line("Search /" + m.query + "_")
 			body.WriteByte('\n')
@@ -258,7 +268,7 @@ func (m model) View() tea.View {
 		} else {
 			body.WriteString("\n")
 		}
-		writeApplications(&body, m.available, m.selected, m.listOffset, m.listRows(), m.width)
+		writeApplications(&body, m.visibleApplications(), m.selected, m.listOffset, m.listRows(), m.width)
 	case screenInstalled:
 		line(m.style("INSTALLED", accent))
 		body.WriteByte('\n')
@@ -456,6 +466,14 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.moveSelection(-1)
 	case keypkg.Matches(message, bindings.Down):
 		m.moveSelection(1)
+	case keypkg.Matches(message, bindings.Left):
+		if m.screen == screenAvailable {
+			m.changeFilter(-1)
+		}
+	case keypkg.Matches(message, bindings.Right):
+		if m.screen == screenAvailable {
+			m.changeFilter(1)
+		}
 	case keypkg.Matches(message, bindings.Search):
 		m.screen = screenAvailable
 		m.searching = true
@@ -828,9 +846,44 @@ func (m model) visibleApplications() []app.Application {
 		return m.installed
 	case screenUpdates:
 		return updates(m.installed)
-	default:
+	}
+	if m.applicationFilter == filterAll {
 		return m.available
 	}
+	visible := make([]app.Application, 0, len(m.available))
+	for _, value := range m.available {
+		installed := value.InstalledVersion != ""
+		if (m.applicationFilter == filterInstalled && installed) ||
+			(m.applicationFilter == filterNotInstalled && !installed) {
+			visible = append(visible, value)
+		}
+	}
+	return visible
+}
+
+func (m model) filterView() string {
+	labels := [...]string{"All", "Installed", "Not installed"}
+	var parts []string
+	for index, label := range labels {
+		if applicationFilter(index) == m.applicationFilter {
+			parts = append(parts, "["+label+"]")
+		} else {
+			parts = append(parts, label)
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m *model) changeFilter(delta int) {
+	value := int(m.applicationFilter) + delta
+	if value < 0 {
+		value = int(filterNotInstalled)
+	} else if value > int(filterNotInstalled) {
+		value = int(filterAll)
+	}
+	m.applicationFilter = applicationFilter(value)
+	m.selected = 0
+	m.listOffset = 0
 }
 
 func (m model) selectedID() string {
@@ -893,6 +946,9 @@ func (m model) listRows() int {
 
 func (m model) listBoundsWithoutRows() (start, rows int) {
 	start = 4
+	if m.screen == screenAvailable {
+		start++
+	}
 	if m.upgradeAvailable {
 		start++
 	}

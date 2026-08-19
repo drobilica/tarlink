@@ -49,4 +49,8 @@ It indicates that legally obtained original game content must be supplied
 separately by the user. TarLink does not locate, download, verify, extract,
 modify, or require that content during installation.
 
+When `desktop.icon` is absent, TarLink uses the desktop environment's generic
+`application-x-executable` fallback. Registry metadata must not name an icon
+unless that exact safe, regular file exists in the verified archive.
+
 The canonical example is [manifest-v1.example.yaml](../schema/manifest-v1.example.yaml).

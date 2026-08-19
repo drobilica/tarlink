@@ -199,6 +199,13 @@ func TestIconLifecycleUsesHicolorAndValidatesSource(t *testing.T) {
 	if got, err := os.ReadFile(want); err != nil || string(got) != string(icon) {
 		t.Fatalf("installed icon = %q, %v", got, err)
 	}
+	desktop, err := os.ReadFile(paths.DesktopEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(desktop), "Icon=tarlink-blender\n") {
+		t.Fatalf("desktop entry does not refer to the installed themed icon: %q", desktop)
+	}
 	if err := ValidateOwned(spec); err != nil {
 		t.Fatal(err)
 	}
@@ -285,6 +292,19 @@ func TestDesktopFileUsesTheCorrectEncodingForExecAndTryExec(t *testing.T) {
 		if output, err := exec.Command(validator, path).CombinedOutput(); err != nil {
 			t.Fatalf("desktop-file-validate: %v\n%s", err, output)
 		}
+	}
+}
+
+func TestDesktopFileUsesDeclaredOrExplicitFallbackIcon(t *testing.T) {
+	spec := testSpec(t.TempDir())
+	declared := string(DesktopFile(spec, ExpectedPaths(spec).ExecutableLink))
+	if !strings.Contains(declared, "Icon=application-x-executable\n") {
+		t.Fatalf("missing-icon desktop entry has unexpected icon: %q", declared)
+	}
+	spec.Icon = "share/icon.svg"
+	withIcon := string(DesktopFile(spec, ExpectedPaths(spec).ExecutableLink))
+	if !strings.Contains(withIcon, "Icon=tarlink-blender\n") {
+		t.Fatalf("declared-icon desktop entry has unexpected icon: %q", withIcon)
 	}
 }
 

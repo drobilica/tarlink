@@ -30,15 +30,17 @@ func (t tuiTheme) render(value string, valueTone tone) string {
 }
 
 type tuiKeyMap struct {
-	Up, Down, Enter, Search, Installed, Updates keypkg.Binding
-	Upgrade, Versions, Rollback, Uninstall      keypkg.Binding
-	Cancel, Quit, CtrlC                         keypkg.Binding
+	Up, Down, Left, Right, Enter, Search, Installed, Updates keypkg.Binding
+	Upgrade, Versions, Rollback, Uninstall                   keypkg.Binding
+	Cancel, Quit, CtrlC                                      keypkg.Binding
 }
 
 func newKeyMap() tuiKeyMap {
 	return tuiKeyMap{
 		Up:        keypkg.NewBinding(keypkg.WithKeys("up"), keypkg.WithHelp("↑", "Navigate")),
 		Down:      keypkg.NewBinding(keypkg.WithKeys("down"), keypkg.WithHelp("↓", "Navigate")),
+		Left:      keypkg.NewBinding(keypkg.WithKeys("left"), keypkg.WithHelp("←/→", "Filter")),
+		Right:     keypkg.NewBinding(keypkg.WithKeys("right")),
 		Enter:     keypkg.NewBinding(keypkg.WithKeys("enter"), keypkg.WithHelp("Enter", "Details")),
 		Search:    keypkg.NewBinding(keypkg.WithKeys("/"), keypkg.WithHelp("/", "Search")),
 		Installed: keypkg.NewBinding(keypkg.WithKeys("i"), keypkg.WithHelp("i", "Installed")),
@@ -58,6 +60,8 @@ func (m model) keyMap() tuiKeyMap {
 	if m.busy != "" {
 		b.Up.SetEnabled(false)
 		b.Down.SetEnabled(false)
+		b.Left.SetEnabled(false)
+		b.Right.SetEnabled(false)
 		b.Enter.SetEnabled(false)
 		b.Search.SetEnabled(false)
 		b.Installed.SetEnabled(false)
@@ -102,9 +106,17 @@ func (m model) helpView() string {
 		return h.ShortHelpView([]keypkg.Binding{b.Cancel, b.Quit})
 	}
 	if m.upgradeAvailable {
-		return h.ShortHelpView([]keypkg.Binding{b.Upgrade, b.Up, b.Down, b.Enter, b.Quit})
+		bindings := []keypkg.Binding{b.Upgrade, b.Up, b.Down, b.Enter, b.Quit}
+		if m.screen == screenAvailable {
+			bindings = []keypkg.Binding{b.Upgrade, b.Up, b.Down, b.Left, b.Enter, b.Quit}
+		}
+		return h.ShortHelpView(bindings)
 	}
-	return h.ShortHelpView([]keypkg.Binding{b.Up, b.Down, b.Enter, b.Search, b.Installed, b.Updates, b.Quit})
+	bindings := []keypkg.Binding{b.Up, b.Down, b.Enter, b.Search, b.Installed, b.Updates, b.Quit}
+	if m.screen == screenAvailable {
+		bindings = []keypkg.Binding{b.Up, b.Down, b.Left, b.Enter, b.Search, b.Installed, b.Updates, b.Quit}
+	}
+	return h.ShortHelpView(bindings)
 }
 
 func newProgress(color bool) progress.Model {
