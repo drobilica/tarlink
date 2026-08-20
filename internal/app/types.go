@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+
+	"github.com/drobilica/tarlink/internal/integration"
 )
 
 // ProgressStage is a stable, renderer-independent lifecycle stage.
@@ -85,7 +87,12 @@ type Service interface {
 	CheckTarLinkVersion(context.Context) (TarLinkVersion, error)
 	CheckTarLinkVersionFresh(context.Context) (TarLinkVersion, error)
 	UpgradeTarLink(context.Context, ProgressSink) (TarLinkVersion, error)
+	CheckInstallPath(string) ([]integration.PathConflict, error)
 }
+
+// PathConflict is an alias for integration.PathConflict, exposed through the
+// service API to keep the UI-independent boundary stable.
+type PathConflict = integration.PathConflict
 
 type ErrorCode string
 

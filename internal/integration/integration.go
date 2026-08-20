@@ -18,6 +18,65 @@ var ErrConflict = errors.New("integration path is occupied by a non-TarLink file
 
 const maxDesktopBytes = 64 << 10
 
+// PathConflict describes a PATH issue that could shadow or hide a managed
+// command after TarLink installs its executable link.
+type PathConflict struct {
+	// Type is "not_in_path" when the TarLink bin directory is absent from
+	// PATH, or "shadowed" when an earlier PATH entry contains an executable
+	// that shares the managed command name.
+	Type string
+	// Executable is the managed command name (the application ID) being
+	// installed.
+	Executable string
+	// Directory is the PATH entry responsible for the conflict.
+	Directory string
+	// Candidate is the resolved path of the conflicting entry.
+	Candidate string
+}
+
+// CheckPath inspects the supplied PATH value for issues that would hide or
+// shadow a managed command after install. It is read-only: it never executes
+// a command, modifies PATH, or writes to the filesystem. Only the directory
+// entries in PATH are inspected for a name collision with spec.ID.
+func CheckPath(spec Spec, pathValue string) []PathConflict {
+	var conflicts []PathConflict
+	if spec.ID == "" || spec.LocalBinDirectory == "" {
+		return conflicts
+	}
+	binDir := filepath.Clean(spec.LocalBinDirectory)
+	directories := filepath.SplitList(pathValue)
+	binIndex := -1
+	for index, directory := range directories {
+		if filepath.Clean(directory) == binDir {
+			binIndex = index
+			break
+		}
+	}
+	if binIndex == -1 {
+		conflicts = append(conflicts, PathConflict{
+			Type: "not_in_path", Executable: spec.ID, Directory: binDir, Candidate: binDir,
+		})
+		return conflicts
+	}
+	for index := 0; index < binIndex; index++ {
+		directory := directories[index]
+		if directory == "" {
+			continue
+		}
+		candidate := filepath.Join(directory, spec.ID)
+		info, err := os.Lstat(candidate)
+		if err != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 || info.Mode()&0o111 != 0 {
+			conflicts = append(conflicts, PathConflict{
+				Type: "shadowed", Executable: spec.ID, Directory: directory, Candidate: candidate,
+			})
+		}
+	}
+	return conflicts
+}
+
 type Paths struct {
 	ExecutableLink string
 	DesktopEntry   string

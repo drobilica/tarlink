@@ -30,6 +30,7 @@ type fakeService struct {
 	blockVersions    bool
 	versionsStarted  chan struct{}
 	versionsCanceled chan struct{}
+	pathConflicts    []app.PathConflict
 }
 
 // waitForCancel blocks until ctx is cancelled, signalling started/canceled via
@@ -141,6 +142,9 @@ func (f *fakeService) CheckTarLinkVersionFresh(context.Context) (app.TarLinkVers
 }
 func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.TarLinkVersion, error) {
 	return app.TarLinkVersion{}, errors.New("unused")
+}
+func (f *fakeService) CheckInstallPath(string) ([]app.PathConflict, error) {
+	return f.pathConflicts, nil
 }
 
 func TestModelLoadsAndShowsApplications(t *testing.T) {
@@ -349,6 +353,37 @@ func TestApplicationFilterSearchAndDetailsInteraction(t *testing.T) {
 	}
 }
 
+func TestSelectedRowIsVisuallyHighlighted(t *testing.T) {
+	values := []app.Application{
+		{ID: "one", Name: "One"},
+		{ID: "two", Name: "Two"},
+		{ID: "three", Name: "Three"},
+	}
+	m := model{
+		screen: screenInstalled, installed: values, selected: 1,
+		width: 80, height: 12, color: true, theme: newTheme(true),
+	}
+	lines := strings.Split(m.View().Content, "\n")
+	var selectedLine string
+	for _, line := range lines {
+		if strings.Contains(line, "Two") {
+			selectedLine = line
+		}
+	}
+	if selectedLine == "" {
+		t.Fatalf("selected row not rendered: %q", m.View().Content)
+	}
+	if !strings.Contains(selectedLine, "\x1b[") {
+		t.Fatalf("selected row lacks visual highlight: %q", selectedLine)
+	}
+	// The non-selected row must not be styled.
+	for _, line := range lines {
+		if strings.Contains(line, "One") && strings.Contains(line, "\x1b[") {
+			t.Fatalf("non-selected row was styled: %q", line)
+		}
+	}
+}
+
 func TestNoColorThemeAndProgressRemainPlainText(t *testing.T) {
 	m := model{
 		color:    false,
@@ -398,6 +433,50 @@ func TestUninstallRequiresConfirmation(t *testing.T) {
 	}
 	if service.uninstalled != "" {
 		t.Fatalf("opening confirmation called uninstall for %q", service.uninstalled)
+	}
+}
+
+func TestInstallPathConflictRequiresConfirmation(t *testing.T) {
+	service := &fakeService{
+		applications: []app.Application{{ID: "blender", Name: "Blender"}},
+		pathConflicts: []app.PathConflict{
+			{Type: "shadowed", Executable: "blender", Directory: "/usr/bin", Candidate: "/usr/bin/blender"},
+		},
+	}
+	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: service.applications}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("install path check did not start")
+	}
+	updated, command = updated.(model).Update(command())
+	modelAfterCheck := updated.(model)
+	if command != nil || modelAfterCheck.screen != screenInstallConfirm {
+		t.Fatalf("path conflict did not open confirmation: screen=%v command=%v", modelAfterCheck.screen, command)
+	}
+	view := modelAfterCheck.View().Content
+	if !strings.Contains(view, "PATH CONFLICT") || !strings.Contains(view, "shadow") || !strings.Contains(view, "Enter Install anyway") {
+		t.Fatalf("path conflict view is unclear: %q", view)
+	}
+	// Cancelling returns to details without installing.
+	updated, command = modelAfterCheck.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	modelAfterCancel := updated.(model)
+	if command != nil || modelAfterCancel.screen != screenDetails || modelAfterCancel.detail == nil {
+		t.Fatalf("cancel did not return to details: model=%#v command=%v", modelAfterCancel, command)
+	}
+	// Confirming installs despite the conflict.
+	updated, command = modelAfterCancel.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("re-entry path check did not start")
+	}
+	updated, command = updated.(model).Update(command())
+	modelAfterConfirm := updated.(model)
+	if command != nil || modelAfterConfirm.screen != screenInstallConfirm {
+		t.Fatalf("re-entry did not reach install confirmation: model=%#v", modelAfterConfirm)
+	}
+	updated, command = modelAfterConfirm.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil || updated.(model).busy != "Installing blender" {
+		t.Fatalf("confirmed install did not start: model=%#v command=%v", updated.(model), command)
 	}
 }
 
@@ -816,7 +895,12 @@ func TestProgressEventsRenderLifecycleAndUnknownLength(t *testing.T) {
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	if command == nil {
-		t.Fatal("install did not start")
+		t.Fatal("install path check did not start")
+	}
+	// No PATH conflicts: the path check proceeds directly to install.
+	updated, command = updated.(model).Update(command())
+	if command == nil {
+		t.Fatal("install did not start after path check")
 	}
 	updated, command = updated.(model).Update(command())
 	progressModel := updated.(model)
@@ -942,6 +1026,11 @@ func TestOperationCancellationViaContextAndReuse(t *testing.T) {
 	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: service.applications}
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("install path check did not start")
+	}
+	// No PATH conflicts: path check proceeds to the cancellable install.
+	updated, command = updated.(model).Update(command())
 	modelBusy := updated.(model)
 	if command == nil || modelBusy.busy == "" || modelBusy.opCancel == nil {
 		t.Fatalf("install did not start as cancellable operation: %#v", modelBusy)
@@ -980,6 +1069,10 @@ func TestOperationCancellationViaContextAndReuse(t *testing.T) {
 	// A subsequent operation remains reusable on the same model.
 	service.blockOnCancel = false
 	updated, command = modelDone.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatalf("path check did not restart: %#v", updated.(model))
+	}
+	updated, command = updated.(model).Update(command())
 	if command == nil || updated.(model).opCancel == nil {
 		t.Fatalf("subsequent operation not reusable: %#v", updated.(model))
 	}
@@ -998,6 +1091,10 @@ func TestQuitDuringBusyCancelsOperation(t *testing.T) {
 	m := model{ctx: context.Background(), service: service, screen: screenAvailable, available: service.applications}
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("install path check did not start")
+	}
+	updated, command = updated.(model).Update(command())
 	modelBusy := updated.(model)
 	if command == nil {
 		t.Fatal("install did not start")
@@ -1116,6 +1213,10 @@ func TestNewOperationClearsStaleProgress(t *testing.T) {
 	}
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("install path check did not start")
+	}
+	updated, command = updated.(model).Update(command())
 	modelBusy := updated.(model)
 	if command == nil || modelBusy.progress.Stage != "" {
 		t.Fatalf("starting operation did not clear stale progress: %#v", modelBusy)

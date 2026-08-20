@@ -17,10 +17,11 @@ type fakeService struct {
 	validatedRoot  string
 	tarlinkVersion app.TarLinkVersion
 	upgradeValue   app.TarLinkVersion
+	pathConflicts  []app.PathConflict
 }
 
 func (f *fakeService) Install(context.Context, string, app.ProgressSink) (app.Result, error) {
-	return app.Result{}, errors.New("unused")
+	return app.Result{AppID: "blender", Version: "5.2.0"}, nil
 }
 func (f *fakeService) Update(context.Context, string, app.ProgressSink) (app.Result, error) {
 	return app.Result{}, errors.New("unused")
@@ -65,6 +66,9 @@ func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.Tar
 		return f.upgradeValue, nil
 	}
 	return app.TarLinkVersion{}, errors.New("unused")
+}
+func (f *fakeService) CheckInstallPath(string) ([]app.PathConflict, error) {
+	return f.pathConflicts, nil
 }
 
 func TestNoArgumentsLaunchesTUI(t *testing.T) {
@@ -170,6 +174,30 @@ func TestLegacyRemoveCommandIsRejected(t *testing.T) {
 	runner := Runner{Service: &fakeService{}, Stdout: io.Discard, Stderr: io.Discard}
 	if code := runner.Run(context.Background(), []string{"remove", "demo"}); code != exitInvalidArguments {
 		t.Fatalf("legacy remove command code=%d", code)
+	}
+}
+
+func TestInstallPathConflictsRequireAcknowledgement(t *testing.T) {
+	service := &fakeService{applications: []app.Application{{ID: "blender"}}}
+	var out, errOut bytes.Buffer
+	runner := Runner{Service: service, Stdout: &out, Stderr: &errOut}
+
+	// A shadowing conflict refuses install unless acknowledged.
+	service.pathConflicts = []app.PathConflict{{Type: "shadowed", Executable: "blender", Directory: "/usr/bin", Candidate: "/usr/bin/blender"}}
+	if code := runner.Run(context.Background(), []string{"install", "blender"}); code != exitConflict || !bytes.Contains(errOut.Bytes(), []byte("--force-path")) {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+	// Acknowledging proceeds with install.
+	errOut.Reset()
+	if code := runner.Run(context.Background(), []string{"install", "blender", "--force-path"}); code != 0 || out.String() != "Installed blender 5.2.0\n" {
+		t.Fatalf("acknowledged install code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	// Without conflicts, install proceeds without the flag.
+	service.pathConflicts = nil
+	out.Reset()
+	errOut.Reset()
+	if code := runner.Run(context.Background(), []string{"install", "blender"}); code != 0 {
+		t.Fatalf("clean install code=%d stderr=%q", code, errOut.String())
 	}
 }
 

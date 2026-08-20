@@ -8,7 +8,7 @@ import (
 )
 
 type tuiTheme struct {
-	accent, success, warning, danger, muted lipgloss.Style
+	accent, success, warning, danger, muted, selected lipgloss.Style
 }
 
 func newTheme(color bool) tuiTheme {
@@ -21,6 +21,7 @@ func newTheme(color bool) tuiTheme {
 	styles.warning = lipgloss.NewStyle().Foreground(lipgloss.Color("33"))
 	styles.danger = lipgloss.NewStyle().Foreground(lipgloss.Color("31"))
 	styles.muted = lipgloss.NewStyle().Foreground(lipgloss.Color("90"))
+	styles.selected = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("36")).Bold(true)
 	return styles
 }
 
@@ -103,7 +104,7 @@ func (m model) helpView() string {
 		cancel.SetHelp("Esc", "Cancel")
 		return h.ShortHelpView([]keypkg.Binding{cancel, b.Quit})
 	}
-	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
+	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm {
 		return h.ShortHelpView([]keypkg.Binding{b.Enter, b.Cancel, b.Quit})
 	}
 	if m.screen == screenDetails || m.screen == screenVersions {

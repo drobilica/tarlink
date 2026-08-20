@@ -25,6 +25,55 @@ func testSpec(root string) Spec {
 	return spec
 }
 
+func TestCheckPathDetectsShadowingAndMissingBinDir(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	earlier := filepath.Join(root, "usr", "bin")
+	// Create an executable that shadows the managed command name.
+	if err := os.MkdirAll(earlier, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(earlier, "blender"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := Spec{ID: "blender", LocalBinDirectory: binDir}
+	pathValue := earlier + string(os.PathListSeparator) + binDir
+	conflicts := CheckPath(spec, pathValue)
+	if len(conflicts) != 1 || conflicts[0].Type != "shadowed" || conflicts[0].Candidate != filepath.Join(earlier, "blender") {
+		t.Fatalf("conflicts = %#v, want one shadowed conflict", conflicts)
+	}
+
+	// Non-executable entries do not shadow.
+	plain := filepath.Join(root, "usr", "share")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(plain, "blender"), []byte("not executable"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	spec2 := Spec{ID: "blender", LocalBinDirectory: binDir}
+	path2 := plain + string(os.PathListSeparator) + binDir
+	if conflicts := CheckPath(spec2, path2); len(conflicts) != 0 {
+		t.Fatalf("non-executable conflicts = %#v, want none", conflicts)
+	}
+
+	// A missing bin directory is reported as not_in_path.
+	missing := Spec{ID: "blender", LocalBinDirectory: binDir}
+	if conflicts := CheckPath(missing, earlier); len(conflicts) != 1 || conflicts[0].Type != "not_in_path" {
+		t.Fatalf("missing bin conflicts = %#v, want not_in_path", conflicts)
+	}
+
+	// The bin directory itself is never reported as shadowing.
+	if conflicts := CheckPath(spec, binDir); len(conflicts) != 0 {
+		t.Fatalf("bin-only conflicts = %#v, want none", conflicts)
+	}
+
+	// Empty or missing ID/bin is a no-op.
+	if conflicts := CheckPath(Spec{}, ""); len(conflicts) != 0 {
+		t.Fatalf("empty spec conflicts = %#v, want none", conflicts)
+	}
+}
+
 func TestEnsureAndRemoveOwned(t *testing.T) {
 	spec := testSpec(t.TempDir())
 	paths, _, err := Ensure(spec)

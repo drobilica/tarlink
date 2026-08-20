@@ -20,7 +20,7 @@ Usage:
   tarlink registry sync
   tarlink registry validate <path>
   tarlink search <query> [--json]
-  tarlink install <app>
+  tarlink install <app> [--force-path]
   tarlink update <app>
   tarlink update --all
   tarlink list [--json]
@@ -91,9 +91,21 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			err = r.printApplications(result, jsonOutput)
 		}
 	case "install":
-		value, parseErr := oneValue(arguments[1:])
+		value, forcePath, parseErr := installArguments(arguments[1:])
 		if parseErr != nil {
-			return r.invalid("usage: tarlink install <app>")
+			return r.invalid("usage: tarlink install <app> [--force-path]")
+		}
+		conflicts, checkErr := r.Service.CheckInstallPath(value)
+		if checkErr != nil {
+			err = checkErr
+			break
+		}
+		if len(conflicts) != 0 && !forcePath {
+			if err := r.printPathConflicts(value, conflicts); err != nil {
+				return r.fail(err)
+			}
+			_, _ = fmt.Fprintf(r.Stderr, "Refusing to install %s because a PATH conflict was detected.\nRe-run with --force-path to acknowledge and install anyway.\n", value)
+			return exitConflict
 		}
 		var result app.Result
 		result, err = r.Service.Install(ctx, value, r.progress())
@@ -368,6 +380,34 @@ func oneValue(arguments []string) (string, error) {
 		return "", errors.New("one value required")
 	}
 	return arguments[0], nil
+}
+
+func installArguments(arguments []string) (string, bool, error) {
+	forcePath := false
+	if len(arguments) == 2 && arguments[1] == "--force-path" {
+		forcePath = true
+		arguments = arguments[:1]
+	}
+	value, err := oneValue(arguments)
+	return value, forcePath, err
+}
+
+func (r Runner) printPathConflicts(appID string, conflicts []app.PathConflict) error {
+	for _, conflict := range conflicts {
+		switch conflict.Type {
+		case "not_in_path":
+			_, err := fmt.Fprintf(r.Stderr, "Warning: %s is not in your PATH, so %s would not be runnable as a command.\n", conflict.Directory, appID)
+			if err != nil {
+				return err
+			}
+		case "shadowed":
+			_, err := fmt.Fprintf(r.Stderr, "Warning: %s shadows %s; running %q would use %s instead of the TarLink-installed command.\n", conflict.Directory, appID, appID, conflict.Candidate)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func oneValueJSON(arguments []string) (string, bool, error) {

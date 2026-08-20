@@ -86,6 +86,17 @@ func (core *Core) UpgradeTarLink(ctx context.Context, sink ProgressSink) (TarLin
 	return TarLinkVersion{Current: value.Current, Latest: value.Latest, UpgradeAvailable: upgrade.IsNewer(value.Current, value.Latest)}, err
 }
 
+// CheckInstallPath inspects the current PATH for conflicts that could hide or
+// shadow the executable TarLink would install for appID. It is a read-only,
+// pre-install advisory and never modifies the environment or filesystem.
+func (core *Core) CheckInstallPath(appID string) ([]integration.PathConflict, error) {
+	if err := filesystem.ValidateID(appID); err != nil {
+		return nil, &Error{Code: CodeInvalidArguments, Op: "check install path", Err: err}
+	}
+	spec := integration.Spec{ID: appID, LocalBinDirectory: core.layout.Bin}
+	return integration.CheckPath(spec, os.Getenv("PATH")), nil
+}
+
 func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
 	item, _, err := core.resolve(ctx, appID, sink)
 	if err != nil {

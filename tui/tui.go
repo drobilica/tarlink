@@ -32,6 +32,7 @@ const (
 	screenRollback
 	screenUninstall
 	screenUpgrade
+	screenInstallConfirm
 )
 
 type applicationFilter uint8
@@ -62,6 +63,12 @@ type versionsMsg struct {
 type versionMsg struct {
 	value app.TarLinkVersion
 	err   error
+}
+
+type pathCheckMsg struct {
+	appID     string
+	conflicts []app.PathConflict
+	err       error
 }
 
 type operationMsg struct {
@@ -96,6 +103,7 @@ type model struct {
 	versionsFromDetails bool
 	confirmTo           screen
 	confirmSet          bool
+	pathConflicts       []app.PathConflict
 	available           []app.Application
 	installed           []app.Application
 	applicationFilter   applicationFilter
@@ -167,6 +175,19 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.upgradeAvailable = message.value.UpgradeAvailable
 		}
 		return m, nil
+	case pathCheckMsg:
+		m.busy = ""
+		if message.err != nil {
+			m.err = message.err
+			return m, nil
+		}
+		m.pathConflicts = message.conflicts
+		if len(message.conflicts) != 0 {
+			m.returnTo = m.screen
+			m.screen = screenInstallConfirm
+			return m, nil
+		}
+		return m.startInstall(message.appID)
 	case searchMsg:
 		m.busy = ""
 		m.opCancel = nil
@@ -289,15 +310,15 @@ func (m model) View() tea.View {
 		} else {
 			body.WriteString("\n")
 		}
-		writeApplications(&body, m.visibleApplications(), m.selected, m.listOffset, m.listRows(), m.width)
+		writeApplications(&body, m.visibleApplications(), m.selected, m.listOffset, m.listRows(), m.width, m.theme)
 	case screenInstalled:
 		line(m.style("INSTALLED", accent))
 		body.WriteByte('\n')
-		writeApplications(&body, m.installed, m.selected, m.listOffset, m.listRows(), m.width)
+		writeApplications(&body, m.installed, m.selected, m.listOffset, m.listRows(), m.width, m.theme)
 	case screenUpdates:
 		line(m.style("UPDATES", accent))
 		body.WriteByte('\n')
-		writeApplications(&body, updates(m.installed), m.selected, m.listOffset, m.listRows(), m.width)
+		writeApplications(&body, updates(m.installed), m.selected, m.listOffset, m.listRows(), m.width, m.theme)
 	case screenDetails:
 		line(m.style("APPLICATION DETAILS", accent))
 		body.WriteByte('\n')
@@ -362,6 +383,23 @@ func (m model) View() tea.View {
 		line(m.tarlinkVersion.Current + " → " + m.tarlinkVersion.Latest)
 		body.WriteByte('\n')
 		line("Enter Upgrade   Esc Cancel")
+	case screenInstallConfirm:
+		line(m.style("INSTALL PATH CONFLICT", warning))
+		body.WriteByte('\n')
+		if m.detail != nil {
+			line("Installing " + m.detail.Name + " (" + m.detail.ID + ") may be shadowed or hidden by your PATH.")
+			body.WriteByte('\n')
+			for _, conflict := range m.pathConflicts {
+				switch conflict.Type {
+				case "not_in_path":
+					line("- " + conflict.Directory + " is not in your PATH; " + m.detail.ID + " would not run as a command.")
+				case "shadowed":
+					line("- " + conflict.Directory + " shadows " + m.detail.ID + "; running \"" + m.detail.ID + "\" would use " + conflict.Candidate + ".")
+				}
+			}
+			body.WriteByte('\n')
+			line("Enter Install anyway   Esc Cancel")
+		}
 	}
 
 	body.WriteByte('\n')
@@ -530,7 +568,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.listOffset = 0
 	case keypkg.Matches(message, bindings.Cancel):
 		m.clearFeedback()
-		if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade {
+		if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm {
 			m.screen = m.confirmationTarget()
 			m.confirmSet = false
 			if m.screen != screenDetails {
@@ -574,6 +612,16 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.busy = "Uninstalling"
 				m.startOperation()
 				cmd, cancel := m.uninstallCmd(id)
+				m.opCancel = cancel
+				return m, cmd
+			}
+			return m, nil
+		}
+		if m.screen == screenInstallConfirm {
+			if id := m.selectedID(); id != "" {
+				m.busy = "Installing " + id
+				m.startOperation()
+				cmd, cancel := m.installCmd(id)
 				m.opCancel = cancel
 				return m, cmd
 			}
@@ -655,9 +703,9 @@ func (m model) activateSelected() (tea.Model, tea.Cmd) {
 	id := m.detail.ID
 	switch {
 	case m.detail.InstalledVersion == "":
-		m.busy = "Installing " + id
-		m.startOperation()
-		cmd, cancel := m.installCmd(id)
+		m.clearFeedback()
+		m.busy = "Checking installation path"
+		cmd, cancel := m.pathCheckCmd(id)
 		m.opCancel = cancel
 		return m, cmd
 	case m.detail.UpdateAvailable:
@@ -671,6 +719,23 @@ func (m model) activateSelected() (tea.Model, tea.Cmd) {
 		m.status = id + " is already up to date"
 		return m, nil
 	}
+}
+
+// startInstall begins the install operation directly after a PATH check found
+// no conflicts. It is called from the path-check completion handler.
+func (m model) startInstall(id string) (tea.Model, tea.Cmd) {
+	m.busy = "Installing " + id
+	m.startOperation()
+	cmd, cancel := m.installCmd(id)
+	m.opCancel = cancel
+	return m, cmd
+}
+
+func (m model) pathCheckCmd(id string) (tea.Cmd, context.CancelFunc) {
+	return m.cancellableCmd(func(ctx context.Context) tea.Msg {
+		conflicts, err := m.service.CheckInstallPath(id)
+		return pathCheckMsg{appID: id, conflicts: conflicts, err: err}
+	}, pathCheckMsg{err: context.Canceled})
 }
 
 func (m model) loadCmd() tea.Cmd {
@@ -971,7 +1036,7 @@ func (m *model) changeFilter(delta int) {
 }
 
 func (m model) selectedID() string {
-	if m.detail != nil && (m.screen == screenDetails || m.screen == screenVersions || m.screen == screenRollback || m.screen == screenUninstall) {
+	if m.detail != nil && (m.screen == screenDetails || m.screen == screenVersions || m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenInstallConfirm) {
 		return m.detail.ID
 	}
 	visible := m.visibleApplications()
@@ -1074,7 +1139,7 @@ func updates(values []app.Application) []app.Application {
 	return result
 }
 
-func writeApplications(destination *strings.Builder, values []app.Application, selected, offset, rows, width int) {
+func writeApplications(destination *strings.Builder, values []app.Application, selected, offset, rows, width int, theme tuiTheme) {
 	if len(values) == 0 {
 		destination.WriteString(truncate("No applications.", viewWidth(width), "…") + "\n")
 		return
@@ -1092,16 +1157,20 @@ func writeApplications(destination *strings.Builder, values []app.Application, s
 		width = viewWidth(width)
 		name := truncate(value.Name, max(1, width-4), "…")
 		status := installedLabel(value)
+		var row string
 		if width >= 60 {
 			name = truncate(value.Name, min(24, max(1, width/3)), "…")
 			status = truncate(status, min(24, max(1, width/3)), "…")
-			destination.WriteString(marker + name + strings.Repeat(" ", max(1, width-4-displaywidth.String(name)-displaywidth.String(status))) + status)
+			row = marker + name + strings.Repeat(" ", max(1, width-4-displaywidth.String(name)-displaywidth.String(status))) + status
 		} else if width >= 38 {
-			destination.WriteString(marker + name + " " + truncate(status, max(1, width-3-displaywidth.String(name)), "…"))
+			row = marker + name + " " + truncate(status, max(1, width-3-displaywidth.String(name)), "…")
 		} else {
-			destination.WriteString(marker + truncate(value.Name, max(1, width-2), "…"))
+			row = marker + truncate(value.Name, max(1, width-2), "…")
 		}
-		destination.WriteByte('\n')
+		if index == selected {
+			row = theme.selected.Render(row)
+		}
+		destination.WriteString(row + "\n")
 	}
 }
 
