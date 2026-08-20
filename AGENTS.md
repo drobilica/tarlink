@@ -31,7 +31,7 @@ TarLink is a rootless, single-user Linux application manager. Preserve its narro
 
 Use the configured `orchestrator`, `worker`, and `specialist` roles.
 
-* The orchestrator owns planning, delegation, integration, final review, and user communication.
+* In Codex, the primary thread is the orchestrator; in OpenCode, the configured orchestrator fills that role. It owns planning, delegation, integration, final review, and user communication.
 * Default implementation, repository exploration, testing, and routine debugging to workers.
 * Use the specialist only for genuinely difficult implementation, debugging, refactoring, or when a worker is blocked.
 * Keep delegated scopes focused. Parallelize only independent work.

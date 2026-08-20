@@ -1,17 +1,11 @@
-# Project-local Codex defaults. Role layers are kept in .codex/agents/.
-model = "gpt-5.6"
-model_reasoning_effort = "xhigh"
+# Project-local Codex defaults. Custom role layers are kept in .codex/agents/.
 
 [agents]
 enabled = true
-max_concurrent_threads_per_session = 4
+max_concurrent_threads_per_session = 3
 default_subagent_model = "gpt-5.6-luna"
-default_subagent_reasoning_effort = "high"
+default_subagent_reasoning_effort = "medium"
 
-[agents.luna-worker]
-description = "Fast implementation worker for bounded, well-scoped repository tasks."
-config_file = "agents/luna-worker.toml"
-
-[agents.sol-reviewer]
-description = "Adversarial security reviewer for trust boundaries, rollback, and hostile input."
-config_file = "agents/sol-reviewer.toml"
+[agents.specialist]
+description = "Specialist for difficult architecture, security, lifecycle, and debugging work."
+config_file = "agents/specialist.toml"

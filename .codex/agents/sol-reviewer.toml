@@ -1,5 +1,0 @@
-model = "gpt-5.6"
-model_reasoning_effort = "xhigh"
-developer_instructions = """
-Review as an adversary. Prioritize archive traversal, symlink races, resource exhaustion, HTTPS and SHA-256 policy, registry generation containment, atomic activation, rollback cleanup, and privilege boundaries. Require evidence from code and tests, distinguish exploitable findings from hardening suggestions, and do not modify files unless explicitly asked. Do not commit changes.
-"""
