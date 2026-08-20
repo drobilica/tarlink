@@ -25,13 +25,15 @@ platform:
 release:
   version: <filesystem-safe version>
   url: <HTTPS release artifact URL>
-  archive: tar.gz | tar.xz | zip
+  archive: tar.gz | tar.xz | zip | appimage
   verification:
     algorithm: sha256 | sha512
     digest: <exact lowercase hexadecimal digest>
     source: <authoritative upstream HTTPS checksum URL>
 application:
-  executable: <canonical relative path below the extracted root>
+  executables:
+    - name: <installed command name>
+      path: <canonical relative path below the extracted root>
 desktop:
   enabled: true | false
   categories: [Development | Emulator | Game | Graphics | Utility]
@@ -43,6 +45,11 @@ SHA-256 digests contain exactly 64 lowercase hexadecimal characters; SHA-512 dig
 `verification.source` records the upstream checksum publication from which registry reviewers obtained the digest. TarLink verifies the artifact against the reviewed digest; it does not substitute a preferred algorithm or derive a different digest.
 
 Unknown fields, aliases, anchors, merge keys, multiple documents, invalid UTF-8, noncanonical paths, unsupported categories, and arbitrary process metadata are rejected. `desktop.icon`, when present, must be a canonical relative path and desktop integration must be enabled. A manifest cannot supply commands, hooks, environment variables, destinations, scripts, or post-install actions.
+
+For `archive: appimage`, the artifact is an opaque verified AppImage Type 2
+file. Every executable mapping targets the canonical `appimage` payload file;
+multiple names may expose aliases for the same artifact. Type 1 AppImages,
+extraction or mounting, and declarative desktop icons are not supported.
 
 `requirements` is optional and currently accepts only `original-game-data`.
 It indicates that legally obtained original game content must be supplied

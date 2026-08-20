@@ -118,10 +118,13 @@ func (core *Core) validateUninstallRoots(states []state.State) error {
 	for _, installed := range states {
 		known[installed.App] = struct{}{}
 		spec := integration.Spec{
-			ID: installed.App, Executable: installed.Executable,
+			ID:                installed.App,
 			ApplicationRoot:   filepath.Join(core.layout.Apps, installed.App),
 			LocalBinDirectory: core.layout.Bin, DesktopDirectory: core.layout.Desktop, IconDirectory: core.layout.Icons,
 			DesktopEnabled: installed.DesktopEnabled, DesktopSHA256: installed.Integration.DesktopSHA256,
+		}
+		for _, executable := range installed.Executables {
+			spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path})
 		}
 		if installed.Integration.IconFile != "" {
 			spec.Icon = "icon" + filepath.Ext(installed.Integration.IconFile)

@@ -93,19 +93,19 @@ func writeInstalledUninstallFixture(t *testing.T, layout filesystem.Layout, appI
 		t.Fatal(err)
 	}
 	spec := integration.Spec{
-		ID: appID, Name: appID, Executable: "bin/run", ApplicationRoot: appRoot,
+		ID: appID, Name: appID, Executables: []integration.ExecutableSpec{{Name: appID, Path: "bin/run"}}, ApplicationRoot: appRoot,
 		LocalBinDirectory: layout.Bin, DesktopDirectory: layout.Desktop, DesktopEnabled: true,
 		DesktopCategories: []string{"Utility"},
 	}
-	spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).ExecutableLink)
+	spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
 	paths, _, err := integration.Ensure(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
 	value := state.State{
-		Schema: state.Schema, App: appID, Current: "v1", Executable: "bin/run", DesktopEnabled: true,
+		Schema: state.Schema, App: appID, Current: "v1", Artifact: "tar.gz", Executables: []state.Executable{{Name: appID, Path: "bin/run"}}, DesktopEnabled: true,
 		Integration: state.Integration{
-			ExecutableLink: paths.ExecutableLink, ExecutableTarget: filepath.Join(appRoot, "current", "bin", "run"),
+			Executables:  []state.ExecutableIntegration{{Name: appID, Path: "bin/run", Link: paths.Executables[0].Link, Target: filepath.Join(appRoot, "current", "bin", "run")}},
 			DesktopEntry: paths.DesktopEntry, DesktopSHA256: spec.DesktopSHA256,
 		},
 	}

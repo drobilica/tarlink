@@ -73,7 +73,7 @@ release:
     algorithm: sha256
     digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     source: https://example.com/SHA256SUMS
-application: {executable: fixture}
+application: {executables: [{name: fixture, path: fixture}]}
 desktop: {enabled: false, categories: []}
 `
 	var output bytes.Buffer
@@ -92,7 +92,7 @@ desktop: {enabled: false, categories: []}
 	if arm64 {
 		armManifest := strings.Replace(manifest, `version: "`+amd64Version+`"`, `version: "`+arm64Version+`"`, 1)
 		armManifest = strings.Replace(armManifest, "arch: amd64", "arch: arm64", 1)
-		armManifest = strings.Replace(armManifest, "executable: fixture", "executable: fixture-arm64", 1)
+		armManifest = strings.Replace(armManifest, "name: fixture, path: fixture", "name: fixture-arm64, path: fixture", 1)
 		entries = append(entries, struct {
 			name string
 			mode int64
@@ -342,7 +342,7 @@ func TestSearchUsesExactRuntimePlatformVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	item, err := catalog.ManifestForPlatform("fixture", "linux", "arm64")
-	if err != nil || item.Release.Version != "2.0" || item.Application.Executable != "fixture-arm64" {
+	if err != nil || item.Release.Version != "2.0" || item.Application.Executables[0].Name != "fixture-arm64" {
 		t.Fatalf("arm64 manifest=%#v error=%v", item, err)
 	}
 }
@@ -365,10 +365,9 @@ func TestListDoesNotClaimRegistryDataWithoutRuntimeVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
-		Schema: state.Schema, App: "fixture", Current: "0.9", Executable: "fixture",
+		Schema: state.Schema, App: "fixture", Current: "0.9", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
 		Integration: state.Integration{
-			ExecutableLink:   filepath.Join(core.layout.Bin, "fixture"),
-			ExecutableTarget: filepath.Join(core.layout.Apps, "fixture", "current", "fixture"),
+			Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -386,10 +385,9 @@ func TestListPrefersExactRuntimeVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
-		Schema: state.Schema, App: "fixture", Current: "1.5", Executable: "fixture",
+		Schema: state.Schema, App: "fixture", Current: "1.5", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
 		Integration: state.Integration{
-			ExecutableLink:   filepath.Join(core.layout.Bin, "fixture"),
-			ExecutableTarget: filepath.Join(core.layout.Apps, "fixture", "current", "fixture"),
+			Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -418,7 +416,7 @@ func TestListUsesSharedRegistryFreshnessPolicy(t *testing.T) {
 	if err := os.Chtimes(generation, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{Schema: state.Schema, App: "fixture", Current: "0.9", Executable: "fixture", Integration: state.Integration{ExecutableLink: filepath.Join(core.layout.Bin, "fixture"), ExecutableTarget: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}}); err != nil {
+	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{Schema: state.Schema, App: "fixture", Current: "0.9", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}}, Integration: state.Integration{Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}}}}); err != nil {
 		t.Fatal(err)
 	}
 	version = "2.0"

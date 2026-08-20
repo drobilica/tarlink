@@ -20,7 +20,9 @@ release:
     source: https://download.blender.org/release/Blender5.2/blender-5.2.0.sha256
   archive: tar.xz
 application:
-  executable: blender
+  executables:
+    - name: blender
+      path: blender
 desktop:
   enabled: true
   icon: blender.svg

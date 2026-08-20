@@ -28,11 +28,14 @@ tarlink install blender
 tarlink update blender
 tarlink rollback blender
 tarlink uninstall blender
+tarlink doctor
 ```
 
 Additional commands include `list`, `info`, `versions`, `update --all`, `upgrade`, and `version`. `update` manages applications; `upgrade` explicitly upgrades TarLink itself. Running `tarlink` launches the TUI. In the TUI, `x`/`delete` opens an uninstall confirmation and `U` opens the TarLink upgrade flow; Enter confirms and Esc cancels. Structured JSON is available for `search`, `list`, `info`, and `versions` with `--json`.
 
 Before installing, TarLink checks `PATH` for a command that would shadow or hide the executable it is about to manage. If `~/.local/bin` is missing from `PATH`, or an earlier `PATH` entry already provides a command with the same name, `tarlink install` refuses unless you acknowledge the conflict with `tarlink install <app> --force-path`. The TUI shows the same conflicts on a confirmation screen and requires Enter to proceed; it never changes or executes anything on your `PATH`.
+
+`tarlink doctor` performs a read-only integrity audit of TarLink's managed state, application payloads, executable links, and declarative desktop integration. It reports PATH conditions as warnings; warnings alone exit successfully, while integrity errors or an audit failure return a non-zero exit status. Doctor never repairs, removes, reinstalls, or executes applications.
 
 TarLink downloads the registry automatically when it is absent. A validated cache younger than 24 hours is used without networking. When the cache is stale, TarLink attempts a transactional refresh and keeps the last successfully validated generation if the network is unavailable. Force a refresh with:
 

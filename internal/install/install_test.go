@@ -99,7 +99,7 @@ func (server artifactServer) manifest(version string) *manifest.Manifest {
 		Release: manifest.Release{Version: version, URL: server.server.URL, Verification: manifest.Verification{
 			Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.server.URL + "/SHA256SUMS",
 		}, Archive: "tar.gz"},
-		Application: manifest.Application{Executable: "bin/run"},
+		Application: manifest.Application{Executables: []manifest.Executable{{Name: "run", Path: "bin/run"}}},
 		Desktop:     manifest.Desktop{Enabled: true, Categories: []string{"Utility"}},
 	}
 }
@@ -317,7 +317,7 @@ func TestRollbackRejectsSymlinkedAppsRoot(t *testing.T) {
 
 func TestInstallRefusesIntegrationConflict(t *testing.T) {
 	layout := testLayout(t)
-	conflict := filepath.Join(layout.Bin, "fixture")
+	conflict := filepath.Join(layout.Bin, "run")
 	if err := os.WriteFile(conflict, []byte("user owned"), 0o700); err != nil {
 		t.Fatal(err)
 	}

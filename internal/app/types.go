@@ -88,6 +88,7 @@ type Service interface {
 	CheckTarLinkVersionFresh(context.Context) (TarLinkVersion, error)
 	UpgradeTarLink(context.Context, ProgressSink) (TarLinkVersion, error)
 	CheckInstallPath(string) ([]integration.PathConflict, error)
+	Doctor(context.Context) (DoctorReport, error)
 }
 
 // PathConflict is an alias for integration.PathConflict, exposed through the

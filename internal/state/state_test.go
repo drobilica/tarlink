@@ -11,11 +11,11 @@ import (
 )
 
 func testState() State {
-	return State{Schema: Schema, App: "demo", Current: "1.2.3", Executable: "bin/demo", Integration: Integration{ExecutableLink: "/tmp/bin/demo", ExecutableTarget: "/tmp/apps/demo/current/bin/demo"}}
+	return State{Schema: Schema, App: "demo", Current: "1.2.3", Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}}, Integration: Integration{Executables: []ExecutableIntegration{{Name: "demo", Path: "bin/demo", Link: "/tmp/bin/demo", Target: "/tmp/apps/demo/current/bin/demo"}}}}
 }
 
 func TestDecodeStrictAndTrailing(t *testing.T) {
-	b := []byte(`{"schema":1,"app":"demo","current":"1.2.3","executable":"bin/demo","desktop_enabled":false,"integration":{"executable_link":"/tmp/bin/demo","executable_target":"/tmp/apps/demo/current/bin/demo","desktop_entry":"","desktop_sha256":""}}`)
+	b := []byte(`{"schema":1,"app":"demo","current":"1.2.3","artifact":"tar.gz","executables":[{"name":"demo","path":"bin/demo"}],"desktop_enabled":false,"integration":{"executables":[{"name":"demo","path":"bin/demo","link":"/tmp/bin/demo","target":"/tmp/apps/demo/current/bin/demo"}],"desktop_entry":"","desktop_sha256":""}}`)
 	if _, err := Decode(b); err != nil {
 		t.Fatal(err)
 	}
@@ -83,16 +83,15 @@ func TestValidateForLayoutRequiresCanonicalOwnedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := State{
-		Schema: Schema, App: "demo", Current: "1.2.3", Executable: "bin/demo",
+		Schema: Schema, App: "demo", Current: "1.2.3", Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}},
 		Integration: Integration{
-			ExecutableLink:   filepath.Join(layout.Bin, "demo"),
-			ExecutableTarget: filepath.Join(layout.Apps, "demo", "current", "bin", "demo"),
+			Executables: []ExecutableIntegration{{Name: "demo", Path: "bin/demo", Link: filepath.Join(layout.Bin, "demo"), Target: filepath.Join(layout.Apps, "demo", "current", "bin", "demo")}},
 		},
 	}
 	if err := value.ValidateForLayout(layout); err != nil {
 		t.Fatalf("canonical state rejected: %v", err)
 	}
-	value.Integration.ExecutableLink = filepath.Join(home, "unrelated", "demo")
+	value.Integration.Executables[0].Link = filepath.Join(home, "unrelated", "demo")
 	if err := value.ValidateForLayout(layout); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("unrelated integration accepted: %v", err)
 	}
@@ -105,8 +104,8 @@ func TestValidateForLayoutRequiresCanonicalIconOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := testState()
-	value.Integration.ExecutableLink = filepath.Join(layout.Bin, "demo")
-	value.Integration.ExecutableTarget = filepath.Join(layout.Apps, "demo", "current", "bin", "demo")
+	value.Integration.Executables[0].Link = filepath.Join(layout.Bin, "demo")
+	value.Integration.Executables[0].Target = filepath.Join(layout.Apps, "demo", "current", "bin", "demo")
 	value.DesktopEnabled = true
 	value.Integration.DesktopEntry = filepath.Join(layout.Desktop, "tarlink-demo.desktop")
 	value.Integration.DesktopSHA256 = strings.Repeat("b", 64)

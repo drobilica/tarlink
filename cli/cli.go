@@ -30,6 +30,7 @@ Usage:
   tarlink uninstall <app>
   tarlink uninstall --all
   tarlink upgrade
+  tarlink doctor
   tarlink version
 `
 
@@ -59,7 +60,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	if r.Service == nil && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" {
 		return r.fail(errors.New("TarLink core is unavailable"))
 	}
-	if arguments[0] != "upgrade" && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" && !contains(arguments[1:], "--json") {
+	if arguments[0] != "upgrade" && arguments[0] != "doctor" && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" && !contains(arguments[1:], "--json") {
 		if value, checkErr := r.Service.CheckTarLinkVersion(ctx); checkErr == nil && value.UpgradeAvailable {
 			_, _ = fmt.Fprintf(r.Stderr, "TarLink %s is available (current %s).\nRun `tarlink upgrade` to update.\n", value.Latest, value.Current)
 		}
@@ -141,6 +142,18 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				_, err = fmt.Fprintf(r.Stdout, "TarLink %s is already up to date.\n", value.Current)
 			} else {
 				_, err = fmt.Fprintf(r.Stdout, "TarLink %s → %s\nTarLink upgraded to %s\n", value.Current, value.Latest, value.Latest)
+			}
+		}
+	case "doctor":
+		if len(arguments) != 1 {
+			return r.invalid("usage: tarlink doctor")
+		}
+		var report app.DoctorReport
+		report, err = r.Service.Doctor(ctx)
+		if err == nil {
+			err = r.printDoctor(report)
+			if err == nil && report.Errors > 0 {
+				err = &app.Error{Code: app.CodeStateCorrupt, Op: "doctor", Err: errors.New("integrity errors found")}
 			}
 		}
 	case "list":
@@ -331,6 +344,49 @@ func (r Runner) printUpdateAll(result app.UpdateAllResult) error {
 		return &app.Error{Code: result.FailureCodes[failedIDs[0]], Op: "update all", Err: errors.New("one or more applications failed to update")}
 	}
 	return nil
+}
+
+func (r Runner) printDoctor(report app.DoctorReport) error {
+	if _, err := io.WriteString(r.Stdout, "TarLink doctor\n\nGlobal\n"); err != nil {
+		return err
+	}
+	print := func(check app.DoctorCheck, indent string) error {
+		mark := "✓"
+		if check.Status == "warning" {
+			mark = "⚠"
+		}
+		if check.Status == "error" {
+			mark = "✗"
+		}
+		_, err := fmt.Fprintf(r.Stdout, "%s%s %s", indent, mark, check.Label)
+		if err != nil {
+			return err
+		}
+		if check.Detail != "" {
+			_, err = fmt.Fprintf(r.Stdout, ": %s", check.Detail)
+		}
+		if err == nil {
+			_, err = io.WriteString(r.Stdout, "\n")
+		}
+		return err
+	}
+	for _, check := range report.Global {
+		if err := print(check, "  "); err != nil {
+			return err
+		}
+	}
+	for _, application := range report.Applications {
+		if _, err := fmt.Fprintf(r.Stdout, "\n%s\n", application.ID); err != nil {
+			return err
+		}
+		for _, check := range application.Checks {
+			if err := print(check, "  "); err != nil {
+				return err
+			}
+		}
+	}
+	_, err := fmt.Fprintf(r.Stdout, "\nSummary: %d error(s), %d warning(s)\n", report.Errors, report.Warnings)
+	return err
 }
 
 func (r Runner) printResult(action string, result app.Result) error {

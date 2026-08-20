@@ -59,7 +59,12 @@ type Verification struct {
 }
 
 type Application struct {
-	Executable string `yaml:"executable" json:"executable"`
+	Executables []Executable `yaml:"executables" json:"executables"`
+}
+
+type Executable struct {
+	Name string `yaml:"name" json:"name"`
+	Path string `yaml:"path" json:"path"`
 }
 
 type Desktop struct {
@@ -157,8 +162,17 @@ func validateManifestShape(document *yaml.Node) error {
 	if _, err := requiredMapping(release["verification"], "release.verification", []string{"algorithm", "digest", "source"}, nil); err != nil {
 		return err
 	}
-	if _, err := requiredMapping(root["application"], "application", []string{"executable"}, nil); err != nil {
+	application, err := requiredMapping(root["application"], "application", []string{"executables"}, nil)
+	if err != nil {
 		return err
+	}
+	if application["executables"].Kind != yaml.SequenceNode || len(application["executables"].Content) == 0 {
+		return errors.New("application.executables must be a non-empty sequence")
+	}
+	for index, value := range application["executables"].Content {
+		if _, err := requiredMapping(value, fmt.Sprintf("application.executables[%d]", index), []string{"name", "path"}, nil); err != nil {
+			return err
+		}
 	}
 	_, err = requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories", "icon"})
 	if err != nil {
@@ -260,12 +274,31 @@ func (m Manifest) Validate() error {
 		return err
 	}
 	switch m.Release.Archive {
-	case "tar.gz", "tar.xz", "zip":
+	case "tar.gz", "tar.xz", "zip", "appimage":
 	default:
 		return fmt.Errorf("unsupported archive format %q", m.Release.Archive)
 	}
-	if err := ValidateRelativePath(m.Application.Executable); err != nil {
-		return fmt.Errorf("invalid application executable: %w", err)
+	if len(m.Application.Executables) == 0 {
+		return errors.New("application.executables must not be empty")
+	}
+	seenNames := make(map[string]bool, len(m.Application.Executables))
+	for _, executable := range m.Application.Executables {
+		if executable.Name == "" || strings.ContainsAny(executable.Name, `/\\`) || executable.Name == "." || executable.Name == ".." || strings.TrimSpace(executable.Name) != executable.Name {
+			return fmt.Errorf("invalid executable name %q", executable.Name)
+		}
+		if seenNames[executable.Name] {
+			return fmt.Errorf("duplicate executable name %q", executable.Name)
+		}
+		seenNames[executable.Name] = true
+		if err := ValidateRelativePath(executable.Path); err != nil {
+			return fmt.Errorf("invalid executable path for %q: %w", executable.Name, err)
+		}
+		if m.Release.Archive == "appimage" && executable.Path != "appimage" {
+			return fmt.Errorf("AppImage executable %q must target appimage", executable.Name)
+		}
+	}
+	if m.Release.Archive == "appimage" && m.Desktop.Icon != "" {
+		return errors.New("AppImage releases cannot declare desktop icons")
 	}
 	if m.Desktop.Enabled && len(m.Desktop.Categories) == 0 {
 		return errors.New("desktop categories are required when desktop integration is enabled")

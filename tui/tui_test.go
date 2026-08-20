@@ -146,6 +146,9 @@ func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.Tar
 func (f *fakeService) CheckInstallPath(string) ([]app.PathConflict, error) {
 	return f.pathConflicts, nil
 }
+func (f *fakeService) Doctor(context.Context) (app.DoctorReport, error) {
+	return app.DoctorReport{}, nil
+}
 
 func TestModelLoadsAndShowsApplications(t *testing.T) {
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", RegistryVersion: "5.2.0"}}}

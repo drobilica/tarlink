@@ -15,13 +15,13 @@ import (
 
 func testSpec(root string) Spec {
 	spec := Spec{
-		ID: "blender", Name: "Blender", Executable: "bin/blender",
+		ID: "blender", Name: "Blender", Executables: []ExecutableSpec{{Name: "blender", Path: "bin/blender"}},
 		ApplicationRoot:   filepath.Join(root, "apps", "blender"),
 		LocalBinDirectory: filepath.Join(root, "bin"),
 		DesktopDirectory:  filepath.Join(root, "applications"),
 		DesktopEnabled:    true, DesktopCategories: []string{"Graphics"},
 	}
-	spec.DesktopSHA256 = DesktopDigest(spec, ExpectedPaths(spec).ExecutableLink)
+	spec.DesktopSHA256 = DesktopDigest(spec, ExpectedPaths(spec).Executables[0].Link)
 	return spec
 }
 
@@ -36,7 +36,7 @@ func TestCheckPathDetectsShadowingAndMissingBinDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(earlier, "blender"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	spec := Spec{ID: "blender", LocalBinDirectory: binDir}
+	spec := Spec{ID: "blender", Executables: []ExecutableSpec{{Name: "blender", Path: "bin/blender"}}, LocalBinDirectory: binDir}
 	pathValue := earlier + string(os.PathListSeparator) + binDir
 	conflicts := CheckPath(spec, pathValue)
 	if len(conflicts) != 1 || conflicts[0].Type != "shadowed" || conflicts[0].Candidate != filepath.Join(earlier, "blender") {
@@ -51,14 +51,14 @@ func TestCheckPathDetectsShadowingAndMissingBinDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(plain, "blender"), []byte("not executable"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	spec2 := Spec{ID: "blender", LocalBinDirectory: binDir}
+	spec2 := Spec{ID: "blender", Executables: []ExecutableSpec{{Name: "blender", Path: "bin/blender"}}, LocalBinDirectory: binDir}
 	path2 := plain + string(os.PathListSeparator) + binDir
 	if conflicts := CheckPath(spec2, path2); len(conflicts) != 0 {
 		t.Fatalf("non-executable conflicts = %#v, want none", conflicts)
 	}
 
 	// A missing bin directory is reported as not_in_path.
-	missing := Spec{ID: "blender", LocalBinDirectory: binDir}
+	missing := Spec{ID: "blender", Executables: []ExecutableSpec{{Name: "blender", Path: "bin/blender"}}, LocalBinDirectory: binDir}
 	if conflicts := CheckPath(missing, earlier); len(conflicts) != 1 || conflicts[0].Type != "not_in_path" {
 		t.Fatalf("missing bin conflicts = %#v, want not_in_path", conflicts)
 	}
@@ -86,7 +86,7 @@ func TestEnsureAndRemoveOwned(t *testing.T) {
 	if err := RemoveOwned(spec); err != nil {
 		t.Fatalf("RemoveOwned() error = %v", err)
 	}
-	for _, path := range []string{paths.ExecutableLink, paths.DesktopEntry} {
+	for _, path := range []string{paths.Executables[0].Link, paths.DesktopEntry} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("integration remains at %s: %v", path, err)
 		}
@@ -98,7 +98,7 @@ func TestEnsureRefusesUnrelatedFiles(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			spec := testSpec(t.TempDir())
 			paths := ExpectedPaths(spec)
-			path := paths.ExecutableLink
+			path := paths.Executables[0].Link
 			if kind == "desktop" {
 				path = paths.DesktopEntry
 			}
@@ -137,10 +137,10 @@ func TestRemoveRefusesReplacedIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(paths.ExecutableLink); err != nil {
+	if err := os.Remove(paths.Executables[0].Link); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(paths.ExecutableLink, []byte("mine"), 0o600); err != nil {
+	if err := os.WriteFile(paths.Executables[0].Link, []byte("mine"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := RemoveOwned(spec); !errors.Is(err, ErrConflict) {
@@ -168,7 +168,7 @@ func TestRemoveRefusesModifiedDesktopWithOwnershipMarker(t *testing.T) {
 	if err := RemoveOwned(spec); !errors.Is(err, ErrConflict) {
 		t.Fatalf("RemoveOwned() error = %v", err)
 	}
-	if _, err := os.Lstat(paths.ExecutableLink); err != nil {
+	if _, err := os.Lstat(paths.Executables[0].Link); err != nil {
 		t.Fatalf("executable link was removed despite conflict: %v", err)
 	}
 }
@@ -179,7 +179,7 @@ func TestRemoveOwnedIsRetryableWhenIntegrationIsAlreadyMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(paths.ExecutableLink); err != nil {
+	if err := os.Remove(paths.Executables[0].Link); err != nil {
 		t.Fatal(err)
 	}
 	if err := RemoveOwned(spec); err != nil {
@@ -200,17 +200,17 @@ func TestRemoveOwnedRejectsSymlinkedIntegrationParent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(paths.ExecutableLink); err != nil {
+	if err := os.Remove(paths.Executables[0].Link); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Remove(filepath.Dir(paths.ExecutableLink)); err != nil {
+	if err := os.Remove(filepath.Dir(paths.Executables[0].Link)); err != nil {
 		t.Fatal(err)
 	}
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Dir(paths.ExecutableLink)); err != nil {
+	if err := os.Symlink(outside, filepath.Dir(paths.Executables[0].Link)); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executable)), filepath.Join(outside, spec.ID)); err != nil {
+	if err := os.Symlink(filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executables[0].Path)), filepath.Join(outside, spec.ID)); err != nil {
 		t.Fatal(err)
 	}
 	if err := RemoveOwned(spec); !errors.Is(err, filesystem.ErrSymlink) {
@@ -236,7 +236,7 @@ func TestIconLifecycleUsesHicolorAndValidatesSource(t *testing.T) {
 	}
 	digest := sha256.Sum256(icon)
 	spec.IconSHA256 = hex.EncodeToString(digest[:])
-	spec.DesktopSHA256 = DesktopDigest(spec, ExpectedPaths(spec).ExecutableLink)
+	spec.DesktopSHA256 = DesktopDigest(spec, ExpectedPaths(spec).Executables[0].Link)
 	paths, _, err := Ensure(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +299,7 @@ func TestDesktopFilePassesDesktopFileValidate(t *testing.T) {
 	}
 	spec := testSpec(t.TempDir())
 	path := filepath.Join(t.TempDir(), "tarlink-blender.desktop")
-	if err := os.WriteFile(path, DesktopFile(spec, ExpectedPaths(spec).ExecutableLink), 0o644); err != nil {
+	if err := os.WriteFile(path, DesktopFile(spec, ExpectedPaths(spec).Executables[0].Link), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if output, err := exec.Command(validator, path).CombinedOutput(); err != nil {
@@ -346,12 +346,12 @@ func TestDesktopFileUsesTheCorrectEncodingForExecAndTryExec(t *testing.T) {
 
 func TestDesktopFileUsesDeclaredOrExplicitFallbackIcon(t *testing.T) {
 	spec := testSpec(t.TempDir())
-	declared := string(DesktopFile(spec, ExpectedPaths(spec).ExecutableLink))
+	declared := string(DesktopFile(spec, ExpectedPaths(spec).Executables[0].Link))
 	if !strings.Contains(declared, "Icon=application-x-executable\n") {
 		t.Fatalf("missing-icon desktop entry has unexpected icon: %q", declared)
 	}
 	spec.Icon = "share/icon.svg"
-	withIcon := string(DesktopFile(spec, ExpectedPaths(spec).ExecutableLink))
+	withIcon := string(DesktopFile(spec, ExpectedPaths(spec).Executables[0].Link))
 	if !strings.Contains(withIcon, "Icon=tarlink-blender\n") {
 		t.Fatalf("declared-icon desktop entry has unexpected icon: %q", withIcon)
 	}
@@ -372,7 +372,7 @@ func TestUpdateReplacesIconAndRollbackRestoresIt(t *testing.T) {
 	}
 	oldDigest := sha256.Sum256(oldContent)
 	previous.IconSHA256 = hex.EncodeToString(oldDigest[:])
-	previous.DesktopSHA256 = DesktopDigest(previous, ExpectedPaths(previous).ExecutableLink)
+	previous.DesktopSHA256 = DesktopDigest(previous, ExpectedPaths(previous).Executables[0].Link)
 	oldPaths, _, err := Ensure(previous)
 	if err != nil {
 		t.Fatal(err)
@@ -387,7 +387,7 @@ func TestUpdateReplacesIconAndRollbackRestoresIt(t *testing.T) {
 	}
 	newDigest := sha256.Sum256(newContent)
 	next.IconSHA256 = hex.EncodeToString(newDigest[:])
-	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).ExecutableLink)
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
 	newPaths, rollback, err := Update(next, previous)
 	if err != nil {
 		t.Fatal(err)
@@ -410,7 +410,7 @@ func TestUpdateCanAddAndRemoveAnIcon(t *testing.T) {
 	root := t.TempDir()
 	previous := testSpec(root)
 	previous.IconDirectory = filepath.Join(root, "data", "icons", "hicolor")
-	previous.DesktopSHA256 = DesktopDigest(previous, ExpectedPaths(previous).ExecutableLink)
+	previous.DesktopSHA256 = DesktopDigest(previous, ExpectedPaths(previous).Executables[0].Link)
 	if _, _, err := Ensure(previous); err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ func TestUpdateCanAddAndRemoveAnIcon(t *testing.T) {
 	}
 	digest := sha256.Sum256(content)
 	next.IconSHA256 = hex.EncodeToString(digest[:])
-	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).ExecutableLink)
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
 	added, undoAdd, err := Update(next, previous)
 	if err != nil {
 		t.Fatal(err)

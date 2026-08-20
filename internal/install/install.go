@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/drobilica/tarlink/internal/appimage"
 	"github.com/drobilica/tarlink/internal/archive"
 	"github.com/drobilica/tarlink/internal/download"
 	"github.com/drobilica/tarlink/internal/filesystem"
@@ -131,8 +133,8 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	if installed.Current == item.Release.Version {
 		return Outcome{}, ErrNoUpdate
 	}
-	if installed.Executable != item.Application.Executable {
-		return Outcome{}, fmt.Errorf("%w: executable path changed from %q to %q", ErrConflict, installed.Executable, item.Application.Executable)
+	if !sameExecutables(installed.Executables, item.Application.Executables) {
+		return Outcome{}, fmt.Errorf("%w: executable mappings changed during update", ErrConflict)
 	}
 	if installed.DesktopEnabled != item.Desktop.Enabled {
 		return Outcome{}, fmt.Errorf("%w: desktop integration setting cannot change during update", ErrConflict)
@@ -298,26 +300,60 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 			returnErr = cleanupErr
 		}
 	}()
-	extracted := filepath.Join(stage, "extracted")
-	if err := os.Mkdir(extracted, 0o700); err != nil {
-		return Outcome{}, err
-	}
-	manager.report(progress, "extracting", 0, 0)
-	if err := archive.ExtractPathWithProgress(ctx, artifactPath, extracted, archive.Format(item.Release.Archive), manager.Limits, func(stage string, current, total int64) {
-		progressStage := "extracting"
-		if stage == archive.ProgressPreparing {
-			progressStage = "extracting-preparing"
+	var applicationRoot string
+	if item.Release.Archive == "appimage" {
+		manager.report(progress, "validating", 0, 0)
+		if err := appimage.ValidatePath(artifactPath, item.Platform.Arch); err != nil {
+			return Outcome{}, err
 		}
-		manager.report(progress, progressStage, current, total)
-	}); err != nil {
-		return Outcome{}, err
+		applicationRoot = stage
+		file, openErr := os.Open(artifactPath)
+		if openErr != nil {
+			return Outcome{}, openErr
+		}
+		destination := filepath.Join(stage, "appimage")
+		out, createErr := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
+		if createErr == nil {
+			_, createErr = io.Copy(out, file)
+			closeErr := out.Close()
+			if createErr == nil {
+				createErr = closeErr
+			}
+		}
+		fileCloseErr := file.Close()
+		if createErr == nil {
+			createErr = fileCloseErr
+		}
+		if createErr != nil {
+			return Outcome{}, fmt.Errorf("stage AppImage: %w", createErr)
+		}
+		if err := os.Chmod(destination, 0o755); err != nil {
+			return Outcome{}, fmt.Errorf("set AppImage permission: %w", err)
+		}
+	} else {
+		extracted := filepath.Join(stage, "extracted")
+		if err := os.Mkdir(extracted, 0o700); err != nil {
+			return Outcome{}, err
+		}
+		manager.report(progress, "extracting", 0, 0)
+		if err := archive.ExtractPathWithProgress(ctx, artifactPath, extracted, archive.Format(item.Release.Archive), manager.Limits, func(stage string, current, total int64) {
+			progressStage := "extracting"
+			if stage == archive.ProgressPreparing {
+				progressStage = "extracting-preparing"
+			}
+			manager.report(progress, progressStage, current, total)
+		}); err != nil {
+			return Outcome{}, err
+		}
+		applicationRoot, err = normalizedApplicationRoot(extracted)
+		if err != nil {
+			return Outcome{}, err
+		}
 	}
-	applicationRoot, err := normalizedApplicationRoot(extracted)
-	if err != nil {
-		return Outcome{}, err
-	}
-	if err := validateExecutable(applicationRoot, item.Application.Executable); err != nil {
-		return Outcome{}, err
+	for _, executable := range item.Application.Executables {
+		if err := validateExecutable(applicationRoot, executable.Path); err != nil {
+			return Outcome{}, err
+		}
 	}
 	if item.Desktop.Icon != "" {
 		if _, err := integration.IconDigest(applicationRoot, item.Desktop.Icon); err != nil {
@@ -379,14 +415,17 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 
 	manager.report(progress, "integrating", 0, 0)
 	spec := integration.Spec{
-		ID: item.ID, Name: item.Name, Executable: item.Application.Executable,
+		ID: item.ID, Name: item.Name,
 		ApplicationRoot: appRoot, LocalBinDirectory: manager.Layout.Bin,
 		DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons,
 		Icon: item.Desktop.Icon, IconSourceRoot: finalPath, DesktopEnabled: item.Desktop.Enabled,
 		DesktopCategories: item.Desktop.Categories,
 	}
+	for _, executable := range item.Application.Executables {
+		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path})
+	}
 	if spec.DesktopEnabled {
-		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).ExecutableLink)
+		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
 	}
 	if spec.Icon != "" {
 		spec.IconSHA256, err = integration.IconDigest(spec.IconSourceRoot, spec.Icon)
@@ -409,7 +448,7 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 		if err := integration.ValidateOwned(existingSpec); err != nil {
 			return Outcome{}, err
 		}
-		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).ExecutableLink)
+		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
 		paths, cleanupIntegration, err = integration.Update(spec, existingSpec)
 		if err != nil {
 			return Outcome{}, err
@@ -458,15 +497,16 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 	}
 	newState := state.State{
 		Schema: state.Schema, App: item.ID, Current: item.Release.Version, Previous: oldVersion,
-		Executable: item.Application.Executable, DesktopEnabled: desktopEnabled,
+		Executables: manifestExecutables(item.Application.Executables), Artifact: item.Release.Archive, DesktopEnabled: desktopEnabled,
 		Integration: state.Integration{
-			ExecutableLink:   paths.ExecutableLink,
-			ExecutableTarget: filepath.Join(appRoot, "current", filepath.FromSlash(item.Application.Executable)),
-			DesktopEntry:     desktopPath,
-			DesktopSHA256:    spec.DesktopSHA256,
-			IconFile:         paths.IconFile, IconSHA256: spec.IconSHA256,
+			DesktopEntry:  desktopPath,
+			DesktopSHA256: spec.DesktopSHA256,
+			IconFile:      paths.IconFile, IconSHA256: spec.IconSHA256,
 			IconSource: item.Desktop.Icon,
 		},
+	}
+	for _, executable := range paths.Executables {
+		newState.Integration.Executables = append(newState.Integration.Executables, state.ExecutableIntegration{Name: executable.Name, Path: executablePath(item.Application.Executables, executable.Name), Link: executable.Link, Target: executable.Target})
 	}
 	if installed != nil {
 		newState.Integration.PreviousIconFile = installed.Integration.IconFile
@@ -510,8 +550,10 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	if err != nil {
 		return Outcome{}, err
 	}
-	if err := validateExecutable(retained, installed.Executable); err != nil {
-		return Outcome{}, err
+	for _, executable := range installed.Executables {
+		if err := validateExecutable(retained, executable.Path); err != nil {
+			return Outcome{}, err
+		}
 	}
 	spec, err := manager.integrationSpec(installed, "", nil)
 	if err != nil {
@@ -610,26 +652,61 @@ func (manager *Manager) persistState(installed state.State) (bool, error) {
 func (manager *Manager) integrationSpec(installed state.State, name string, categories []string) (integration.Spec, error) {
 	appRoot := filepath.Join(manager.Layout.Apps, installed.App)
 	spec := integration.Spec{
-		ID: installed.App, Name: name, Executable: installed.Executable, ApplicationRoot: appRoot,
+		ID: installed.App, Name: name, ApplicationRoot: appRoot,
 		LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons,
 		DesktopEnabled: installed.DesktopEnabled, DesktopCategories: categories,
 		DesktopSHA256:  installed.Integration.DesktopSHA256,
 		IconSHA256:     installed.Integration.IconSHA256,
 		IconSourceRoot: filepath.Join(appRoot, "current"), Icon: installed.Integration.IconSource,
 	}
+	for _, executable := range installed.Executables {
+		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path})
+	}
 	if spec.Icon == "" && installed.Integration.IconFile != "" {
 		spec.Icon = "icon" + filepath.Ext(installed.Integration.IconFile)
 	}
 	expected := integration.ExpectedPaths(spec)
-	expectedTarget := filepath.Join(appRoot, "current", filepath.FromSlash(installed.Executable))
 	expectedDesktop := ""
 	if installed.DesktopEnabled {
 		expectedDesktop = expected.DesktopEntry
 	}
-	if installed.Integration.ExecutableLink != expected.ExecutableLink || installed.Integration.ExecutableTarget != expectedTarget || installed.Integration.DesktopEntry != expectedDesktop || installed.Integration.IconFile != expected.IconFile {
+	if installed.Integration.DesktopEntry != expectedDesktop || installed.Integration.IconFile != expected.IconFile || len(installed.Integration.Executables) != len(expected.Executables) {
 		return integration.Spec{}, fmt.Errorf("%w: state integration paths do not match the canonical layout", ErrConflict)
 	}
+	for index, executable := range expected.Executables {
+		recorded := installed.Integration.Executables[index]
+		if recorded.Link != executable.Link || recorded.Target != executable.Target {
+			return integration.Spec{}, fmt.Errorf("%w: executable integration paths do not match", ErrConflict)
+		}
+	}
 	return spec, nil
+}
+
+func manifestExecutables(values []manifest.Executable) []state.Executable {
+	result := make([]state.Executable, 0, len(values))
+	for _, value := range values {
+		result = append(result, state.Executable{Name: value.Name, Path: value.Path})
+	}
+	return result
+}
+func executablePath(values []manifest.Executable, name string) string {
+	for _, value := range values {
+		if value.Name == name {
+			return value.Path
+		}
+	}
+	return ""
+}
+func sameExecutables(a []state.Executable, b []manifest.Executable) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for index := range a {
+		if a[index].Name != b[index].Name || a[index].Path != b[index].Path {
+			return false
+		}
+	}
+	return true
 }
 
 func (manager *Manager) lock(ctx context.Context, appID string) (*locking.Lock, error) {

@@ -34,15 +34,19 @@ type PathConflict struct {
 	Candidate string
 }
 
+type ExecutableSpec struct{ Name, Path string }
+type ExecutablePath struct{ Name, Link, Target string }
+
 // CheckPath inspects the supplied PATH value for issues that would hide or
 // shadow a managed command after install. It is read-only: it never executes
 // a command, modifies PATH, or writes to the filesystem. Only the directory
 // entries in PATH are inspected for a name collision with spec.ID.
 func CheckPath(spec Spec, pathValue string) []PathConflict {
 	var conflicts []PathConflict
-	if spec.ID == "" || spec.LocalBinDirectory == "" {
+	if spec.LocalBinDirectory == "" {
 		return conflicts
 	}
+	executables := spec.Executables
 	binDir := filepath.Clean(spec.LocalBinDirectory)
 	directories := filepath.SplitList(pathValue)
 	binIndex := -1
@@ -53,40 +57,42 @@ func CheckPath(spec Spec, pathValue string) []PathConflict {
 		}
 	}
 	if binIndex == -1 {
-		conflicts = append(conflicts, PathConflict{
-			Type: "not_in_path", Executable: spec.ID, Directory: binDir, Candidate: binDir,
-		})
+		for _, executable := range executables {
+			conflicts = append(conflicts, PathConflict{Type: "not_in_path", Executable: executable.Name, Directory: binDir, Candidate: binDir})
+		}
 		return conflicts
 	}
-	for index := 0; index < binIndex; index++ {
-		directory := directories[index]
-		if directory == "" {
-			continue
-		}
-		candidate := filepath.Join(directory, spec.ID)
-		info, err := os.Lstat(candidate)
-		if err != nil {
-			continue
-		}
-		if info.Mode()&os.ModeSymlink != 0 || info.Mode()&0o111 != 0 {
-			conflicts = append(conflicts, PathConflict{
-				Type: "shadowed", Executable: spec.ID, Directory: directory, Candidate: candidate,
-			})
+	for _, executable := range executables {
+		for index := 0; index < binIndex; index++ {
+			directory := directories[index]
+			if directory == "" {
+				continue
+			}
+			candidate := filepath.Join(directory, executable.Name)
+			info, err := os.Lstat(candidate)
+			if err != nil {
+				continue
+			}
+			if info.Mode()&os.ModeSymlink != 0 || info.Mode()&0o111 != 0 {
+				conflicts = append(conflicts, PathConflict{
+					Type: "shadowed", Executable: executable.Name, Directory: directory, Candidate: candidate,
+				})
+			}
 		}
 	}
 	return conflicts
 }
 
 type Paths struct {
-	ExecutableLink string
-	DesktopEntry   string
-	IconFile       string
+	Executables  []ExecutablePath
+	DesktopEntry string
+	IconFile     string
 }
 
 type Spec struct {
 	ID                string
 	Name              string
-	Executable        string
+	Executables       []ExecutableSpec
 	ApplicationRoot   string
 	LocalBinDirectory string
 	DesktopDirectory  string
@@ -101,8 +107,7 @@ type Spec struct {
 
 func ExpectedPaths(spec Spec) Paths {
 	paths := Paths{
-		ExecutableLink: filepath.Join(spec.LocalBinDirectory, spec.ID),
-		DesktopEntry:   filepath.Join(spec.DesktopDirectory, "tarlink-"+spec.ID+".desktop"),
+		DesktopEntry: filepath.Join(spec.DesktopDirectory, "tarlink-"+spec.ID+".desktop"),
 	}
 	if spec.Icon != "" {
 		size := "48x48"
@@ -110,6 +115,16 @@ func ExpectedPaths(spec Spec) Paths {
 			size = "scalable"
 		}
 		paths.IconFile = filepath.Join(spec.IconDirectory, size, "apps", "tarlink-"+spec.ID+filepath.Ext(filepath.FromSlash(spec.Icon)))
+	}
+	paths.Executables = executablePaths(spec)
+	return paths
+}
+
+func executablePaths(spec Spec) []ExecutablePath {
+	values := spec.Executables
+	paths := make([]ExecutablePath, 0, len(values))
+	for _, executable := range values {
+		paths = append(paths, ExecutablePath{Name: executable.Name, Link: filepath.Join(spec.LocalBinDirectory, executable.Name), Target: filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(executable.Path))})
 	}
 	return paths
 }
@@ -123,7 +138,18 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 	}
 	paths := ExpectedPaths(spec)
 	previousPaths := ExpectedPaths(previous)
-	content := DesktopFile(spec, paths.ExecutableLink)
+	if len(spec.Executables) > 0 {
+		for _, executable := range paths.Executables {
+			created, err := ensureSymlink(executable.Link, executable.Target)
+			if err != nil {
+				return Paths{}, nil, err
+			}
+			if created {
+				previousPaths.Executables = append(previousPaths.Executables, executable)
+			}
+		}
+	}
+	content := DesktopFile(spec, paths.Executables[0].Link)
 	var undo []func() error
 	rollback := func() error {
 		var errs []error
@@ -300,21 +326,30 @@ func SwitchIcon(current, next Spec) (func() error, error) {
 // this call and is intended for pre-activation rollback.
 func Ensure(spec Spec) (Paths, func() error, error) {
 	paths := ExpectedPaths(spec)
-	target := filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executable))
-	createdLink, err := ensureSymlink(paths.ExecutableLink, target)
-	if err != nil {
-		return Paths{}, nil, err
+	created := make([]string, 0, len(paths.Executables))
+	for _, executable := range paths.Executables {
+		createdLink, err := ensureSymlink(executable.Link, executable.Target)
+		if err != nil {
+			for _, link := range created {
+				_ = os.Remove(link)
+			}
+			return Paths{}, nil, err
+		}
+		if createdLink {
+			created = append(created, executable.Link)
+		}
 	}
 	createdDesktop := false
+	var err error
 	if spec.DesktopEnabled {
-		content := DesktopFile(spec, paths.ExecutableLink)
+		content := DesktopFile(spec, paths.Executables[0].Link)
 		createdDesktop, err = ensureDesktop(paths.DesktopEntry, spec.ID, content)
 		if err != nil {
 			if createdDesktop {
 				_ = os.Remove(paths.DesktopEntry)
 			}
-			if createdLink {
-				_ = os.Remove(paths.ExecutableLink)
+			for _, link := range created {
+				_ = os.Remove(link)
 			}
 			return Paths{}, nil, err
 		}
@@ -326,8 +361,8 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 			if createdDesktop {
 				_ = os.Remove(paths.DesktopEntry)
 			}
-			if createdLink {
-				_ = os.Remove(paths.ExecutableLink)
+			for _, link := range created {
+				_ = os.Remove(link)
 			}
 			return Paths{}, nil, err
 		}
@@ -337,8 +372,8 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 		if createdDesktop {
 			errs = appendIf(errs, os.Remove(paths.DesktopEntry))
 		}
-		if createdLink {
-			errs = appendIf(errs, os.Remove(paths.ExecutableLink))
+		for _, link := range created {
+			errs = appendIf(errs, os.Remove(link))
 		}
 		if createdIcon {
 			errs = appendIf(errs, os.Remove(paths.IconFile))
@@ -374,12 +409,13 @@ func DesktopDigest(spec Spec, executableLink string) string {
 
 func ValidateOwned(spec Spec) error {
 	paths := ExpectedPaths(spec)
-	target := filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executable))
-	if err := validateIntegrationParent(paths.ExecutableLink); err != nil {
-		return err
-	}
-	if err := validateSymlink(paths.ExecutableLink, target); err != nil {
-		return err
+	for _, executable := range paths.Executables {
+		if err := validateIntegrationParent(executable.Link); err != nil {
+			return err
+		}
+		if err := validateSymlink(executable.Link, executable.Target); err != nil {
+			return err
+		}
 	}
 	if spec.DesktopEnabled {
 		if err := validateIntegrationParent(paths.DesktopEntry); err != nil {
@@ -402,12 +438,13 @@ func ValidateOwned(spec Spec) error {
 
 func ValidateOwnedForRemoval(spec Spec) error {
 	paths := ExpectedPaths(spec)
-	target := filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executable))
-	if err := validateIntegrationParent(paths.ExecutableLink); err != nil {
-		return err
-	}
-	if err := validateSymlinkForRemoval(paths.ExecutableLink, target); err != nil {
-		return err
+	for _, executable := range paths.Executables {
+		if err := validateIntegrationParent(executable.Link); err != nil {
+			return err
+		}
+		if err := validateSymlinkForRemoval(executable.Link, executable.Target); err != nil {
+			return err
+		}
 	}
 	if spec.DesktopEnabled {
 		if err := validateIntegrationParent(paths.DesktopEntry); err != nil {
@@ -443,15 +480,15 @@ func RemoveOwned(spec Spec) error {
 	}
 	paths := ExpectedPaths(spec)
 	var errs []error
+	for _, executable := range paths.Executables {
+		errs = appendIf(errs, detachOwned(executable.Link, func(link string) error { return validateSymlinkForRemoval(link, executable.Target) }))
+	}
 	if spec.DesktopEnabled {
 		errs = appendIf(errs, detachOwned(paths.DesktopEntry, func(path string) error { return validateDesktopForRemoval(path, spec.ID, spec.DesktopSHA256) }))
 	}
 	if spec.Icon != "" {
 		errs = appendIf(errs, detachOwned(paths.IconFile, func(path string) error { return validateIconForRemoval(path, spec.IconSHA256) }))
 	}
-	errs = appendIf(errs, detachOwned(paths.ExecutableLink, func(path string) error {
-		return validateSymlinkForRemoval(path, filepath.Join(spec.ApplicationRoot, "current", filepath.FromSlash(spec.Executable)))
-	}))
 	return errors.Join(errs...)
 }
 

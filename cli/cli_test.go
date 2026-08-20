@@ -18,6 +18,7 @@ type fakeService struct {
 	tarlinkVersion app.TarLinkVersion
 	upgradeValue   app.TarLinkVersion
 	pathConflicts  []app.PathConflict
+	doctorReport   app.DoctorReport
 }
 
 func (f *fakeService) Install(context.Context, string, app.ProgressSink) (app.Result, error) {
@@ -69,6 +70,20 @@ func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.Tar
 }
 func (f *fakeService) CheckInstallPath(string) ([]app.PathConflict, error) {
 	return f.pathConflicts, nil
+}
+func (f *fakeService) Doctor(context.Context) (app.DoctorReport, error) {
+	return f.doctorReport, nil
+}
+
+func TestDoctorExitStatusDistinguishesWarningsAndErrors(t *testing.T) {
+	warning := &fakeService{doctorReport: app.DoctorReport{Warnings: 1}}
+	if code := (Runner{Service: warning, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), []string{"doctor"}); code != 0 {
+		t.Fatalf("warning-only doctor code=%d", code)
+	}
+	errorReport := &fakeService{doctorReport: app.DoctorReport{Errors: 1}}
+	if code := (Runner{Service: errorReport, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), []string{"doctor"}); code == 0 {
+		t.Fatal("doctor integrity error returned success")
+	}
 }
 
 func TestNoArgumentsLaunchesTUI(t *testing.T) {

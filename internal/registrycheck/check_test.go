@@ -34,7 +34,7 @@ release:
     digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     source: https://example.com/SHA256SUMS
   archive: tar.gz
-application: {executable: fixture}
+application: {executables: [{name: fixture, path: fixture}]}
 desktop: {enabled: false, categories: []}
 `
 
@@ -132,7 +132,7 @@ func checkerArchive(t *testing.T, executable, body string) []byte {
 	return output.Bytes()
 }
 
-func checkerMaterializeManifest(server *httptest.Server, data []byte, executable string) *manifest.Manifest {
+func checkerMaterializeManifest(server *httptest.Server, data []byte, executableName, executablePath string) *manifest.Manifest {
 	digest := sha256.Sum256(data)
 	return &manifest.Manifest{
 		Schema: 1, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
@@ -140,7 +140,7 @@ func checkerMaterializeManifest(server *httptest.Server, data []byte, executable
 		Release: manifest.Release{Version: "1.0", URL: server.URL, Verification: manifest.Verification{
 			Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.URL + "/SHA256SUMS",
 		}, Archive: "tar.gz"},
-		Application: manifest.Application{Executable: executable},
+		Application: manifest.Application{Executables: []manifest.Executable{{Name: executableName, Path: executablePath}}},
 		Desktop:     manifest.Desktop{Enabled: false, Categories: []string{}},
 	}
 }
@@ -153,7 +153,7 @@ func TestMaterializeWithClientLifecycleAndNoExecution(t *testing.T) {
 	}))
 	defer server.Close()
 	client := &download.Client{HTTP: server.Client(), RedirectLimit: 2}
-	if err := MaterializeWithClient(context.Background(), checkerMaterializeManifest(server, data, "bin/run"), client); err != nil {
+	if err := MaterializeWithClient(context.Background(), checkerMaterializeManifest(server, data, "run", "bin/run"), client); err != nil {
 		t.Fatalf("MaterializeWithClient() error = %v", err)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -179,7 +179,7 @@ func TestMaterializeWithClientReportsMaterializationFailures(t *testing.T) {
 				_, _ = writer.Write(data)
 			}))
 			defer server.Close()
-			item := checkerMaterializeManifest(server, data, test.executable)
+			item := checkerMaterializeManifest(server, data, "run", test.executable)
 			if test.mutate != nil {
 				test.mutate(item)
 			}

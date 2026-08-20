@@ -24,7 +24,7 @@ release:
     algorithm: sha256
     digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
     source: https://download.blender.org/release/Blender5.2/blender-5.2.0.sha256
-application: {executable: blender}
+application: {executables: [{name: blender, path: blender}]}
 desktop: {enabled: true, categories: [Graphics]}
 `
 
@@ -88,7 +88,7 @@ func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
 	root := createRegistry(t)
 	arm64 := strings.Replace(testManifest, "arch: amd64", "arch: arm64", 1)
 	arm64 = strings.Replace(arm64, `version: "5.2.0"`, `version: "5.2.0-arm64"`, 1)
-	arm64 = strings.Replace(arm64, "executable: blender", "executable: blender-arm64", 1)
+	arm64 = strings.Replace(arm64, "name: blender, path: blender", "name: blender-arm64, path: blender", 1)
 	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-arm64.yaml"), []byte(arm64), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -100,17 +100,17 @@ func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("amd64 lookup error = %v", err)
 	}
-	if amd64.Release.Version != "5.2.0" || amd64.Application.Executable != "blender" {
+	if amd64.Release.Version != "5.2.0" || amd64.Application.Executables[0].Name != "blender" {
 		t.Fatalf("amd64 manifest = %#v", amd64)
 	}
 	arm, err := catalog.ManifestForPlatform("blender", "linux", "arm64")
 	if err != nil {
 		t.Fatalf("arm64 lookup error = %v", err)
 	}
-	if arm.Release.Version != "5.2.0-arm64" || arm.Application.Executable != "blender-arm64" {
+	if arm.Release.Version != "5.2.0-arm64" || arm.Application.Executables[0].Name != "blender-arm64" {
 		t.Fatalf("arm64 manifest = %#v", arm)
 	}
-	if got := catalog.SearchForPlatform("3d", "linux", "arm64"); len(got) != 1 || got[0].ID != "blender" || got[0].Release.Version != "5.2.0-arm64" || got[0].Application.Executable != "blender-arm64" {
+	if got := catalog.SearchForPlatform("3d", "linux", "arm64"); len(got) != 1 || got[0].ID != "blender" || got[0].Release.Version != "5.2.0-arm64" || got[0].Application.Executables[0].Name != "blender-arm64" {
 		t.Fatalf("arm64 SearchForPlatform() = %#v", got)
 	}
 }

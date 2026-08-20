@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -160,7 +161,7 @@ func affectsMaterialization(before, after *manifest.Manifest) bool {
 	}
 	return before.Platform != after.Platform ||
 		before.Release != after.Release ||
-		before.Application != after.Application ||
+		!reflect.DeepEqual(before.Application, after.Application) ||
 		before.Desktop.Enabled != after.Desktop.Enabled ||
 		before.Desktop.Icon != after.Desktop.Icon
 }

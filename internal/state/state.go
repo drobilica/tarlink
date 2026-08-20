@@ -20,26 +20,38 @@ import (
 const Schema = 1
 
 type Integration struct {
-	ExecutableLink     string `json:"executable_link"`
-	ExecutableTarget   string `json:"executable_target"`
-	DesktopEntry       string `json:"desktop_entry"`
-	DesktopSHA256      string `json:"desktop_sha256"`
-	IconFile           string `json:"icon_file,omitempty"`
-	IconSHA256         string `json:"icon_sha256,omitempty"`
-	IconSource         string `json:"icon_source,omitempty"`
-	PreviousIconFile   string `json:"previous_icon_file,omitempty"`
-	PreviousIconSHA256 string `json:"previous_icon_sha256,omitempty"`
-	PreviousIconSource string `json:"previous_icon_source,omitempty"`
+	Executables        []ExecutableIntegration `json:"executables,omitempty"`
+	DesktopEntry       string                  `json:"desktop_entry"`
+	DesktopSHA256      string                  `json:"desktop_sha256"`
+	IconFile           string                  `json:"icon_file,omitempty"`
+	IconSHA256         string                  `json:"icon_sha256,omitempty"`
+	IconSource         string                  `json:"icon_source,omitempty"`
+	PreviousIconFile   string                  `json:"previous_icon_file,omitempty"`
+	PreviousIconSHA256 string                  `json:"previous_icon_sha256,omitempty"`
+	PreviousIconSource string                  `json:"previous_icon_source,omitempty"`
+}
+
+type ExecutableIntegration struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Link   string `json:"link"`
+	Target string `json:"target"`
 }
 
 type State struct {
-	Schema         int         `json:"schema"`
-	App            string      `json:"app"`
-	Current        string      `json:"current"`
-	Previous       string      `json:"previous,omitempty"`
-	Executable     string      `json:"executable"`
-	DesktopEnabled bool        `json:"desktop_enabled"`
-	Integration    Integration `json:"integration"`
+	Schema         int          `json:"schema"`
+	App            string       `json:"app"`
+	Current        string       `json:"current"`
+	Previous       string       `json:"previous,omitempty"`
+	Artifact       string       `json:"artifact"`
+	Executables    []Executable `json:"executables"`
+	DesktopEnabled bool         `json:"desktop_enabled"`
+	Integration    Integration  `json:"integration"`
+}
+
+type Executable struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 var ErrCorrupt = errors.New("corrupt state")
@@ -62,12 +74,31 @@ func (s State) Validate() error {
 			return fmt.Errorf("%w: current and previous versions must differ", ErrCorrupt)
 		}
 	}
-	if err := validateExecutable(s.Executable); err != nil {
-		return fmt.Errorf("%w: executable: %v", ErrCorrupt, err)
+	if s.Artifact != "tar.gz" && s.Artifact != "tar.xz" && s.Artifact != "zip" && s.Artifact != "appimage" {
+		return fmt.Errorf("%w: unsupported artifact kind", ErrCorrupt)
+	}
+	if len(s.Executables) == 0 {
+		return fmt.Errorf("%w: executable list is empty", ErrCorrupt)
+	}
+	seen := map[string]bool{}
+	for _, executable := range s.Executables {
+		if executable.Name == "" || strings.ContainsAny(executable.Name, `/\\`) || seen[executable.Name] {
+			return fmt.Errorf("%w: invalid or duplicate executable name", ErrCorrupt)
+		}
+		seen[executable.Name] = true
+		if err := validateExecutable(executable.Path); err != nil {
+			return fmt.Errorf("%w: executable %s: %v", ErrCorrupt, executable.Name, err)
+		}
+	}
+	if len(s.Integration.Executables) != len(s.Executables) {
+		return fmt.Errorf("%w: executable integration count mismatch", ErrCorrupt)
+	}
+	for _, integration := range s.Integration.Executables {
+		if integration.Name == "" || integration.Link == "" || integration.Target == "" {
+			return fmt.Errorf("%w: executable integration is incomplete", ErrCorrupt)
+		}
 	}
 	for name, path := range map[string]string{
-		"executable link":    s.Integration.ExecutableLink,
-		"executable target":  s.Integration.ExecutableTarget,
 		"desktop entry":      s.Integration.DesktopEntry,
 		"icon file":          s.Integration.IconFile,
 		"previous icon file": s.Integration.PreviousIconFile,
@@ -78,9 +109,6 @@ func (s State) Validate() error {
 		if !utf8.ValidString(path) || strings.IndexByte(path, 0) >= 0 || !filepath.IsAbs(path) || filepath.Clean(path) != path {
 			return fmt.Errorf("%w: %s must be absolute and clean", ErrCorrupt, name)
 		}
-	}
-	if s.Integration.ExecutableLink == "" || s.Integration.ExecutableTarget == "" {
-		return fmt.Errorf("%w: executable integration paths are required", ErrCorrupt)
 	}
 	if s.DesktopEnabled && s.Integration.DesktopEntry == "" {
 		return fmt.Errorf("%w: desktop entry required when desktop integration is enabled", ErrCorrupt)
@@ -141,10 +169,12 @@ func (s State) ValidateForLayout(l filesystem.Layout) error {
 		return err
 	}
 	appRoot := filepath.Join(l.Apps, s.App)
-	expectedLink := filepath.Join(l.Bin, s.App)
-	expectedTarget := filepath.Join(appRoot, "current", filepath.FromSlash(s.Executable))
-	if s.Integration.ExecutableLink != expectedLink || s.Integration.ExecutableTarget != expectedTarget {
-		return fmt.Errorf("%w: integration paths do not match the canonical layout", ErrCorrupt)
+	for _, executable := range s.Integration.Executables {
+		expectedLink := filepath.Join(l.Bin, executable.Name)
+		expectedTarget := filepath.Join(appRoot, "current", filepath.FromSlash(executable.Path))
+		if executable.Link != expectedLink || executable.Target != expectedTarget {
+			return fmt.Errorf("%w: executable integration paths do not match canonical layout", ErrCorrupt)
+		}
 	}
 	expectedDesktop := ""
 	if s.DesktopEnabled {
@@ -202,16 +232,19 @@ func Decode(data []byte) (State, error) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return State{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	for _, required := range []string{"schema", "app", "current", "executable", "desktop_enabled", "integration"} {
+	for _, required := range []string{"schema", "app", "current", "artifact", "desktop_enabled", "integration"} {
 		if _, ok := fields[required]; !ok {
 			return State{}, fmt.Errorf("%w: missing %s", ErrCorrupt, required)
 		}
+	}
+	if _, modern := fields["executables"]; !modern {
+		return State{}, fmt.Errorf("%w: missing executables", ErrCorrupt)
 	}
 	var integrationFields map[string]json.RawMessage
 	if err := json.Unmarshal(fields["integration"], &integrationFields); err != nil {
 		return State{}, fmt.Errorf("%w: integration must be an object", ErrCorrupt)
 	}
-	for _, required := range []string{"executable_link", "executable_target", "desktop_entry", "desktop_sha256"} {
+	for _, required := range []string{"executables", "desktop_entry", "desktop_sha256"} {
 		if _, ok := integrationFields[required]; !ok {
 			return State{}, fmt.Errorf("%w: integration missing %s", ErrCorrupt, required)
 		}

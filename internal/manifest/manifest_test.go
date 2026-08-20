@@ -25,7 +25,9 @@ release:
     source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256
   archive: tar.xz
 application:
-  executable: blender
+  executables:
+    - name: blender
+      path: blender
 desktop:
   enabled: true
   categories:
@@ -114,7 +116,7 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 	tests := map[string]func(string) string{
 		"unknown field": func(s string) string { return s + "script: echo unsafe\n" },
 		"script-like nested field": func(s string) string {
-			return strings.Replace(s, "  executable: blender", "  executable: blender\n  command: ./blender", 1)
+			return strings.Replace(s, "      path: blender", "      path: blender\n      command: ./blender", 1)
 		},
 		"missing verification": func(s string) string {
 			return strings.Replace(s, "  verification:\n    algorithm: sha256\n    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n    source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
@@ -144,14 +146,14 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 			return strings.Replace(s, "/release/Blender5.2/blender.tar.xz", "/release/Blender5.2/../blender.tar.xz", 1)
 		},
 		"invalid ID":          func(s string) string { return strings.Replace(s, "id: blender", "id: ../Blender", 1) },
-		"absolute executable": func(s string) string { return strings.Replace(s, "executable: blender", "executable: /blender", 1) },
-		"path traversal":      func(s string) string { return strings.Replace(s, "executable: blender", "executable: ../blender", 1) },
+		"absolute executable": func(s string) string { return strings.Replace(s, "      path: blender", "      path: /blender", 1) },
+		"path traversal":      func(s string) string { return strings.Replace(s, "      path: blender", "      path: ../blender", 1) },
 		"icon path traversal": func(s string) string { return strings.Replace(s, "icon: icons/blender.png", "icon: ../blender.png", 1) },
 		"icon when disabled": func(s string) string {
 			return strings.Replace(strings.Replace(s, "enabled: true", "enabled: false", 1), "categories:\n    - Graphics\n  icon:", "categories: []\n  icon:", 1)
 		},
 		"Windows path": func(s string) string {
-			return strings.Replace(s, "executable: blender", `executable: 'C:\\blender.exe'`, 1)
+			return strings.Replace(s, "      path: blender", `      path: 'C:\\blender.exe'`, 1)
 		},
 		"unsupported archive": func(s string) string { return strings.Replace(s, "archive: tar.xz", "archive: 7z", 1) },
 		"unsupported OS":      func(s string) string { return strings.Replace(s, "os: linux", "os: windows", 1) },

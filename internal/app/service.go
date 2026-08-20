@@ -94,6 +94,18 @@ func (core *Core) CheckInstallPath(appID string) ([]integration.PathConflict, er
 		return nil, &Error{Code: CodeInvalidArguments, Op: "check install path", Err: err}
 	}
 	spec := integration.Spec{ID: appID, LocalBinDirectory: core.layout.Bin}
+	// The CLI performs this check before installation. Resolve the manifest so
+	// every declared command is checked.
+	item, _, err := core.resolve(context.Background(), appID, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := core.checkManifestPlatform(item); err != nil {
+		return nil, err
+	}
+	for _, executable := range item.Application.Executables {
+		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path})
+	}
 	return integration.CheckPath(spec, os.Getenv("PATH")), nil
 }
 
