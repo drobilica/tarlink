@@ -97,9 +97,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			if parseErr != nil {
 				return r.invalid("usage: tarlink registry freshness <app> [--json]")
 			}
-			service, ok := r.Service.(interface {
-				Freshness(context.Context, string) (freshness.Report, error)
-			})
+			service, ok := r.Service.(app.FreshnessService)
 			if !ok {
 				return r.fail(errors.New("registry freshness is unavailable"))
 			}
@@ -129,9 +127,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 					}
 					return r.fail(readErr)
 				}
-				service, ok := r.Service.(interface {
-					Research(context.Context, app.ResearchOptions) (app.ResearchResult, error)
-				})
+				service, ok := r.Service.(app.ResearchService)
 				if !ok {
 					return r.fail(errors.New("registry research is unavailable"))
 				}
@@ -178,9 +174,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				return r.invalid("usage: tarlink registry " + arguments[1] + " <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]")
 			}
 			opts.Inspect = arguments[1] == "inspect"
-			service, ok := r.Service.(interface {
-				Research(context.Context, app.ResearchOptions) (app.ResearchResult, error)
-			})
+			service, ok := r.Service.(app.ResearchService)
 			if !ok {
 				return r.fail(errors.New("registry research is unavailable"))
 			}
@@ -220,10 +214,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			if parseErr != nil {
 				return r.invalid("usage: tarlink registry candidates [--changed] [--json]")
 			}
-			service, ok := r.Service.(interface {
-				CandidateLedger() (research.CandidateLedger, error)
-				CandidateChanges(context.Context) (research.CandidateChanges, error)
-			})
+			service, ok := r.Service.(app.CandidateService)
 			if !ok {
 				return r.fail(errors.New("candidate ledger is unavailable"))
 			}
@@ -260,10 +251,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			if parseErr != nil {
 				return r.invalid("usage: tarlink registry blockers [--capability <capability>] [--json]")
 			}
-			service, ok := r.Service.(interface {
-				Blockers(string) ([]research.BlockerSummary, error)
-				CapabilityPreflight(string) ([]research.CapabilityResult, error)
-			})
+			service, ok := r.Service.(app.BlockerService)
 			if !ok {
 				return r.fail(errors.New("blocker analysis is unavailable"))
 			}

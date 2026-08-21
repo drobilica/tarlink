@@ -4,6 +4,19 @@ These commands are advisory maintainer tooling. They report current GitHub
 release evidence and local artifact inspection; neither command approves an
 application or changes the official registry.
 
+## Registry validator pin
+
+The official `tarlink-registry` CI checks out an immutable TarLink commit for
+both structural validation and selected artifact materialization. That commit
+is the validator/schema contract for the registry workflow; it must remain a
+published TarLink release rather than a moving branch or an ad-hoc registry
+parser. When TarLink changes manifest schema or registry validation behavior,
+the TarLink release that contains the compatible validator is published first,
+then the registry workflow's pinned commit is advanced deliberately in a
+separate registry change. Until that update, the registry continues to be
+validated against the previous contract. Review the pinned commit and its
+release comment together when changing either side.
+
 ```text
 tarlink registry provenance OWNER/REPO [--release TAG] [--asset NAME] [--json] [--refresh]
 tarlink registry inspect OWNER/REPO [--release TAG] [--asset NAME] [--json] [--refresh]

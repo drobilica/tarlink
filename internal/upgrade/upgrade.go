@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	defaultAPIURL = "https://api.github.com/repos/drobilica/tarlink/releases"
-	cacheMaxAge   = 24 * time.Hour
-	maxAPIBytes   = 4 << 20
-	maxBinary     = 256 << 20
+	officialAPIURL         = "https://api.github.com/repos/drobilica/tarlink/releases"
+	officialReleaseBaseURL = "https://github.com/drobilica/tarlink/releases/download/v"
+	cacheMaxAge            = 24 * time.Hour
+	maxAPIBytes            = 4 << 20
+	maxBinary              = 256 << 20
 )
 
 var stableVersion = regexp.MustCompile(`^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
@@ -53,16 +54,19 @@ func IsNewer(current, latest string) bool {
 type Progress func(phase string, done, total int64)
 
 type Service struct {
-	Layout         filesystem.Layout
-	Client         *download.Client
-	Current        string
-	GOOS           string
-	GOARCH         string
-	APIURL         string
-	ReleaseBaseURL string
-	Now            func() time.Time
-	Executable     func() (string, error)
-	syncDirectory  func(string) error
+	Layout        filesystem.Layout
+	Client        *download.Client
+	Current       string
+	GOOS          string
+	GOARCH        string
+	Now           func() time.Time
+	Executable    func() (string, error)
+	syncDirectory func(string) error
+	// These hooks are intentionally unexported: production callers cannot
+	// redirect self-upgrade traffic away from the official GitHub endpoints.
+	// Tests in this package use them with an isolated HTTP test server.
+	testAPIURL         string
+	testReleaseBaseURL string
 }
 
 type release struct {
@@ -157,9 +161,12 @@ func (s *Service) Upgrade(ctx context.Context, progress Progress) (Version, erro
 }
 
 func (s *Service) fetchLatest(ctx context.Context) (string, error) {
-	apiURL := s.APIURL
-	if apiURL == "" {
-		apiURL = defaultAPIURL
+	apiURL := officialAPIURL
+	if s.testAPIURL != "" {
+		apiURL = s.testAPIURL
+	}
+	if s.testAPIURL == "" && !officialURL(apiURL, officialAPIURL) {
+		return "", errors.New("invalid official release API URL")
 	}
 	path := filepath.Join(s.Layout.Cache, ".upgrade-releases.json")
 	if s.Client == nil {
@@ -227,9 +234,12 @@ func (s *Service) replace(ctx context.Context, latest string, progress Progress)
 	if err := s.verifyInstallation(); err != nil {
 		return err
 	}
-	base := s.ReleaseBaseURL
-	if base == "" {
-		base = "https://github.com/drobilica/tarlink/releases/download/v"
+	base := officialReleaseBaseURL
+	if s.testReleaseBaseURL != "" {
+		base = s.testReleaseBaseURL
+	}
+	if s.testReleaseBaseURL == "" && !officialURL(base, officialReleaseBaseURL) {
+		return errors.New("invalid official release URL")
 	}
 	base += latest
 	assetName := "tarlink-linux-" + s.GOARCH
@@ -251,6 +261,19 @@ func (s *Service) replace(ctx context.Context, latest string, progress Progress)
 	}
 	report(progress, "verifying", 0, 0)
 	return s.atomicReplace(binaryCache, digest, progress)
+}
+
+// officialURL requires the exact HTTPS origin and path prefix used by the
+// TarLink release contract. It is deliberately strict so a future edit cannot
+// accidentally make self-upgrade configurable or permit an attacker-owned
+// endpoint.
+func officialURL(value, expected string) bool {
+	got, err := url.Parse(value)
+	want, wantErr := url.Parse(expected)
+	if err != nil || wantErr != nil || got.Scheme != "https" || got.Host != want.Host || got.User != nil || got.Path != want.Path || got.RawQuery != "" || got.Fragment != "" {
+		return false
+	}
+	return true
 }
 
 func (s *Service) verifyInstallation() error {

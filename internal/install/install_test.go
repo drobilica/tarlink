@@ -222,6 +222,62 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 }
 
+func TestUninstallFailureBeforeCleanupPreservesInstallation(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	if _, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	manager.fail = func(stage string) error {
+		if stage == "before_uninstall" {
+			return errors.New("injected uninstall failure")
+		}
+		return nil
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
+		t.Fatal("Uninstall() unexpectedly succeeded")
+	}
+	if _, err := state.LoadForApp(layout, "fixture"); err != nil {
+		t.Fatalf("state removed after injected failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture", "v1", "bin", "run")); err != nil {
+		t.Fatalf("installed executable removed after injected failure: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(layout.Bin, "run")); err != nil {
+		t.Fatalf("executable integration removed after injected failure: %v", err)
+	}
+}
+
+func TestUninstallIntegrationConflictPreservesInstallation(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	if _, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	desktop := filepath.Join(layout.Desktop, "tarlink-fixture.desktop")
+	content, err := os.ReadFile(desktop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktop, append(content, []byte("Comment=changed\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); !errors.Is(err, integration.ErrConflict) {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if _, err := state.LoadForApp(layout, "fixture"); err != nil {
+		t.Fatalf("state removed after integration conflict: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture")); err != nil {
+		t.Fatalf("application root removed after integration conflict: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(layout.Bin, "run")); err != nil {
+		t.Fatalf("executable integration removed after integration conflict: %v", err)
+	}
+}
+
 func TestNestedReleaseInstallAndFailedUpdatePreserveCurrent(t *testing.T) {
 	layout := testLayout(t)
 	server := newArtifactServer(t, nestedFixtureArchive(t, "nested-v1"))

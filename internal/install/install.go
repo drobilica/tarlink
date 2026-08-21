@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,6 +36,14 @@ type Progress func(stage string, current, total int64)
 type Outcome struct {
 	State    state.State
 	Warnings []string
+}
+
+// materializedArtifact is a validated application tree that remains private
+// to the staging directory. Publishing it and changing activation/state are a
+// separate transaction phase.
+type materializedArtifact struct {
+	stage           string
+	applicationRoot string
 }
 
 // Options carries lifecycle metadata selected by the application service. The
@@ -264,6 +273,204 @@ func (manager *Manager) UninstallLocked(ctx context.Context, appID string, progr
 	return manager.uninstallUnlocked(ctx, appID, progress)
 }
 
+// UninstallAll removes every installed application after validating the full
+// managed tree. The lifecycle lock is held across enumeration, preflight,
+// per-application removal, and root cleanup so bulk removal has the same
+// serialization and ownership policy as individual removal.
+func (manager *Manager) UninstallAll(ctx context.Context, progress func(string) Progress) error {
+	return manager.WithLifecycle(ctx, func() error {
+		states, err := manager.uninstallStates()
+		if err != nil {
+			return err
+		}
+		if err := manager.validateUninstallRoots(states); err != nil {
+			return err
+		}
+		var uninstallErrs []error
+		for _, installed := range states {
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					uninstallErrs = append(uninstallErrs, err)
+					break
+				}
+			}
+			var appProgress Progress
+			if progress != nil {
+				appProgress = progress(installed.App)
+			}
+			if err := manager.UninstallLocked(ctx, installed.App, appProgress); err != nil {
+				uninstallErrs = append(uninstallErrs, err)
+			}
+			if ctx != nil && ctx.Err() != nil {
+				break
+			}
+		}
+		if err := errors.Join(uninstallErrs...); err != nil {
+			return err
+		}
+		return manager.removeUninstallRoots()
+	})
+}
+
+func (manager *Manager) uninstallStates() ([]state.State, error) {
+	if err := manager.checkUninstallAnchor(manager.Layout.StateHome, manager.Layout.States); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(manager.Layout.States)
+	if errors.Is(err, os.ErrNotExist) {
+		return []state.State{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	result := make([]state.State, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("%w: unexpected state symlink %q", state.ErrCorrupt, entry.Name())
+		}
+		if strings.HasPrefix(entry.Name(), ".state-") {
+			if !strings.HasSuffix(entry.Name(), ".tmp") || !entry.Type().IsRegular() {
+				return nil, fmt.Errorf("%w: unexpected state entry %q", state.ErrCorrupt, entry.Name())
+			}
+			continue
+		}
+		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".json") {
+			return nil, fmt.Errorf("%w: unexpected state entry %q", state.ErrCorrupt, entry.Name())
+		}
+		appID := strings.TrimSuffix(entry.Name(), ".json")
+		if err := filesystem.ValidateID(appID); err != nil {
+			return nil, fmt.Errorf("%w: state filename %q", state.ErrCorrupt, entry.Name())
+		}
+		installed, err := state.LoadForApp(manager.Layout, appID)
+		if err != nil {
+			return nil, err
+		}
+		if installed.App != appID {
+			return nil, fmt.Errorf("%w: state app does not match filename", state.ErrCorrupt)
+		}
+		if err := installed.ValidateForLayout(manager.Layout); err != nil {
+			return nil, err
+		}
+		result = append(result, installed)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].App < result[j].App })
+	return result, nil
+}
+
+func (manager *Manager) validateUninstallRoots(states []state.State) error {
+	if err := manager.checkUninstallAnchor(manager.Layout.DataHome, manager.Layout.Apps); err != nil {
+		return err
+	}
+	if err := manager.checkUninstallAnchor(manager.Layout.CacheHome, manager.Layout.Cache); err != nil {
+		return err
+	}
+	if err := manager.checkUninstallAnchor(manager.Layout.StateHome, manager.Layout.Locks); err != nil {
+		return err
+	}
+	known := make(map[string]struct{}, len(states))
+	for _, installed := range states {
+		known[installed.App] = struct{}{}
+		spec, err := manager.integrationSpec(installed, "", nil)
+		if err != nil {
+			return fmt.Errorf("%s integration: %w", installed.App, err)
+		}
+		if err := integration.ValidateOwnedForRemoval(spec); err != nil {
+			return fmt.Errorf("%s integration: %w", installed.App, err)
+		}
+	}
+	if _, err := os.Lstat(manager.Layout.Apps); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(manager.Layout.Apps)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: unexpected application symlink %q", state.ErrCorrupt, entry.Name())
+		}
+		if strings.HasPrefix(entry.Name(), ".staging-") {
+			if !entry.IsDir() {
+				return fmt.Errorf("%w: unexpected staging entry %q", state.ErrCorrupt, entry.Name())
+			}
+			continue
+		}
+		if !entry.IsDir() {
+			return fmt.Errorf("%w: unexpected application entry %q", state.ErrCorrupt, entry.Name())
+		}
+		if _, ok := known[entry.Name()]; !ok {
+			return fmt.Errorf("%w: untracked application directory %q", state.ErrCorrupt, entry.Name())
+		}
+	}
+	return nil
+}
+
+func (manager *Manager) checkUninstallAnchor(anchor, path string) error {
+	if !filepath.IsAbs(anchor) || filepath.Clean(anchor) != anchor || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return filesystem.ErrOutsideRoot
+	}
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, anchor); err != nil {
+		return err
+	}
+	return filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, path)
+}
+
+func (manager *Manager) removeUninstallRoots() error {
+	for _, root := range []struct{ anchor, path string }{
+		{manager.Layout.DataHome, manager.Layout.Apps}, {manager.Layout.StateHome, manager.Layout.States},
+		{manager.Layout.StateHome, manager.Layout.Locks}, {manager.Layout.CacheHome, manager.Layout.Cache},
+	} {
+		if err := filesystem.SafeRemoveIfExists(root.anchor, root.path); err != nil {
+			return err
+		}
+	}
+	for _, parent := range []struct{ anchor, path string }{
+		{manager.Layout.DataHome, filepath.Dir(manager.Layout.Apps)},
+		{manager.Layout.StateHome, filepath.Dir(manager.Layout.States)},
+	} {
+		if err := manager.removeEmptyUninstallParent(parent.anchor, parent.path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manager *Manager) removeEmptyUninstallParent(anchor, path string) error {
+	if !filepath.IsAbs(anchor) || filepath.Clean(anchor) != anchor || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return filesystem.ErrOutsideRoot
+	}
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return filesystem.ErrSymlink
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("TarLink product root is not a directory")
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return nil
+	}
+	return filesystem.SafeRemoveIfExists(anchor, path)
+}
+
 // SetPinned updates only the pin bit under the same lifecycle and per-app
 // locks used by install/update, after validating the complete managed state.
 func (manager *Manager) SetPinned(ctx context.Context, appID string, pinned bool) error {
@@ -322,10 +529,26 @@ func removeStateFile(path string) error {
 }
 
 func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress Progress) (outcome Outcome, returnErr error) {
+	materialized, err := manager.materializeArtifact(ctx, item, progress)
+	if err != nil {
+		return Outcome{}, err
+	}
+	defer func() {
+		if cleanupErr := filesystem.SafeRemove(manager.Layout.Apps, materialized.stage); cleanupErr != nil && returnErr == nil {
+			returnErr = cleanupErr
+		}
+	}()
+	return manager.activateMaterialized(item, installed, options, progress, materialized.applicationRoot)
+}
+
+// materializeArtifact acquires, verifies, extracts, and validates an artifact
+// into a private staging directory. It never publishes application files or
+// changes integration, activation, or state.
+func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.Manifest, progress Progress) (materializedArtifact, error) {
 	manager.report(progress, "downloading", 0, 0)
 	artifacts := filepath.Join(manager.Layout.Cache, "artifacts")
 	if err := filesystem.SecureMkdirAll(artifacts, 0o700); err != nil {
-		return Outcome{}, err
+		return materializedArtifact{}, err
 	}
 	verification := item.Release.Verification
 	artifactPath := filepath.Join(artifacts, verification.Algorithm+"-"+verification.Digest+"."+strings.ReplaceAll(item.Release.Archive, ".", "-"))
@@ -335,32 +558,34 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 		ReportProgress: func(current, total int64) { manager.report(progress, "downloading", current, total) },
 	})
 	if err != nil {
-		return Outcome{}, err
+		return materializedArtifact{}, err
 	}
 	manager.report(progress, "verifying", 0, 0)
 	if err := manager.inject("after_download"); err != nil {
-		return Outcome{}, err
+		return materializedArtifact{}, err
 	}
 
 	stage, err := os.MkdirTemp(manager.Layout.Apps, ".staging-"+item.ID+"-*")
 	if err != nil {
-		return Outcome{}, err
+		return materializedArtifact{}, err
 	}
+	materialized := materializedArtifact{stage: stage}
+	cleanup := true
 	defer func() {
-		if cleanupErr := filesystem.SafeRemove(manager.Layout.Apps, stage); cleanupErr != nil && returnErr == nil {
-			returnErr = cleanupErr
+		if cleanup {
+			_ = filesystem.SafeRemove(manager.Layout.Apps, stage)
 		}
 	}()
 	var applicationRoot string
 	if item.Release.Archive == "appimage" {
 		manager.report(progress, "validating", 0, 0)
 		if err := appimage.ValidatePath(artifactPath, item.Platform.Arch); err != nil {
-			return Outcome{}, err
+			return materializedArtifact{}, err
 		}
 		applicationRoot = stage
 		file, openErr := os.Open(artifactPath)
 		if openErr != nil {
-			return Outcome{}, openErr
+			return materializedArtifact{}, openErr
 		}
 		destination := filepath.Join(stage, "appimage")
 		out, createErr := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
@@ -376,22 +601,22 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 			createErr = fileCloseErr
 		}
 		if createErr != nil {
-			return Outcome{}, fmt.Errorf("stage AppImage: %w", createErr)
+			return materializedArtifact{}, fmt.Errorf("stage AppImage: %w", createErr)
 		}
 		if err := os.Chmod(destination, 0o755); err != nil {
-			return Outcome{}, fmt.Errorf("set AppImage permission: %w", err)
+			return materializedArtifact{}, fmt.Errorf("set AppImage permission: %w", err)
 		}
 	} else {
 		outer := filepath.Join(stage, "outer")
 		if err := os.Mkdir(outer, 0o700); err != nil {
-			return Outcome{}, err
+			return materializedArtifact{}, err
 		}
 		extracted := outer
 		manager.report(progress, "extracting", 0, 0)
 		if !item.Release.NestedArchive.IsZero() {
 			final := filepath.Join(stage, "final")
 			if err := os.Mkdir(final, 0o700); err != nil {
-				return Outcome{}, err
+				return materializedArtifact{}, err
 			}
 			if err := archive.ExtractNestedPath(ctx, artifactPath, outer, final, archive.Format(item.Release.Archive), item.Release.NestedArchive.Path, archive.Format(item.Release.NestedArchive.Archive), manager.Limits, func(stage string, current, total int64) {
 				progressStage := "extracting"
@@ -400,7 +625,7 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 				}
 				manager.report(progress, progressStage, current, total)
 			}); err != nil {
-				return Outcome{}, err
+				return materializedArtifact{}, err
 			}
 			extracted = final
 		} else if err := archive.ExtractPathWithProgress(ctx, artifactPath, outer, archive.Format(item.Release.Archive), manager.Limits, func(stage string, current, total int64) {
@@ -410,26 +635,34 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 			}
 			manager.report(progress, progressStage, current, total)
 		}); err != nil {
-			return Outcome{}, err
+			return materializedArtifact{}, err
 		}
 		applicationRoot, err = normalizedApplicationRoot(extracted)
 		if err != nil {
-			return Outcome{}, err
+			return materializedArtifact{}, err
 		}
 	}
 	for _, executable := range item.Application.Executables {
 		if err := validateExecutable(applicationRoot, executable.Path); err != nil {
-			return Outcome{}, err
+			return materializedArtifact{}, err
 		}
 	}
 	if item.Desktop.Icon != "" {
 		if _, err := integration.IconDigest(applicationRoot, item.Desktop.Icon); err != nil {
-			return Outcome{}, fmt.Errorf("validate desktop icon: %w", err)
+			return materializedArtifact{}, fmt.Errorf("validate desktop icon: %w", err)
 		}
 	}
 	if err := manager.inject("after_extract"); err != nil {
-		return Outcome{}, err
+		return materializedArtifact{}, err
 	}
+	materialized.applicationRoot = applicationRoot
+	cleanup = false
+	return materialized, nil
+}
+
+// activateMaterialized publishes a validated staged application and commits
+// its integration, active version, state, and retention policy atomically.
+func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed *state.State, options Options, progress Progress, applicationRoot string) (outcome Outcome, returnErr error) {
 
 	appRoot := filepath.Join(manager.Layout.Apps, item.ID)
 	appRootCreated := false

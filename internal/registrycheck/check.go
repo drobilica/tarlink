@@ -30,11 +30,35 @@ func Structural(root string) error {
 	return err
 }
 
+// Select validates root once and selects the requested materialization set.
+// Keeping validation and selection together lets callers that need both avoid
+// reparsing every manifest (the registry checker is commonly run this way).
+func Select(root, appID string, allArtifacts bool, oldRoot string) (Selection, error) {
+	catalog, err := registry.ValidateTree(root)
+	if err != nil {
+		return Selection{}, err
+	}
+	switch {
+	case appID != "":
+		return appFromCatalog(catalog, appID)
+	case allArtifacts:
+		return allFromCatalog(catalog), nil
+	case oldRoot != "":
+		return changedFromCatalog(root, oldRoot, catalog)
+	default:
+		return Selection{}, nil
+	}
+}
+
 func All(root string) (Selection, error) {
 	catalog, err := registry.ValidateTree(root)
 	if err != nil {
 		return Selection{}, err
 	}
+	return allFromCatalog(catalog), nil
+}
+
+func allFromCatalog(catalog *registry.Catalog) Selection {
 	var items []*manifest.Manifest
 	for _, variants := range catalog.Variants {
 		for _, item := range variants {
@@ -53,14 +77,19 @@ func All(root string) (Selection, error) {
 		}
 		return items[i].Release.Version < items[j].Release.Version
 	})
-	return Selection{Items: items}, nil
+	return Selection{Items: items}
 }
 
 func App(root, id string) (Selection, error) {
-	all, err := All(root)
+	catalog, err := registry.ValidateTree(root)
 	if err != nil {
 		return Selection{}, err
 	}
+	return appFromCatalog(catalog, id)
+}
+
+func appFromCatalog(catalog *registry.Catalog, id string) (Selection, error) {
+	all := allFromCatalog(catalog)
 	var items []*manifest.Manifest
 	for _, item := range all.Items {
 		if item.ID == id {
@@ -76,9 +105,14 @@ func App(root, id string) (Selection, error) {
 // Changed selects new or materialization-affecting manifests. oldRoot is an
 // extracted tree from the comparison commit, not a YAML parser workaround.
 func Changed(root, oldRoot string) (Selection, error) {
-	if err := Structural(root); err != nil {
+	catalog, err := registry.ValidateTree(root)
+	if err != nil {
 		return Selection{}, err
 	}
+	return changedFromCatalog(root, oldRoot, catalog)
+}
+
+func changedFromCatalog(root, oldRoot string, _ *registry.Catalog) (Selection, error) {
 	current, err := manifestFiles(root)
 	if err != nil {
 		return Selection{}, err

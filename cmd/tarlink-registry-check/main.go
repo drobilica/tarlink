@@ -30,23 +30,13 @@ func main() {
 	if err != nil {
 		fail(err)
 	}
-	if err := registrycheck.Structural(root); err != nil {
-		fail(err)
-	}
-	var selection registrycheck.Selection
-	switch {
-	case *appID != "":
-		selection, err = registrycheck.App(root, *appID)
-	case *all:
-		selection, err = registrycheck.All(root)
-	case *oldRoot != "":
-		selection, err = registrycheck.Changed(root, *oldRoot)
-	default:
-		fmt.Println("registry structure is valid")
-		return
-	}
+	selection, err := registrycheck.Select(root, *appID, *all, *oldRoot)
 	if err != nil {
 		fail(err)
+	}
+	if *appID == "" && !*all && *oldRoot == "" {
+		fmt.Println("registry structure is valid")
+		return
 	}
 	for _, item := range selection.Items {
 		fmt.Printf("materializing %s %s/%s\n", item.ID, item.Platform.OS, item.Platform.Arch)

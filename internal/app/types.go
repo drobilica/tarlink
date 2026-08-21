@@ -6,7 +6,9 @@ import (
 	"strings"
 
 	"github.com/drobilica/tarlink/internal/filesystem"
+	"github.com/drobilica/tarlink/internal/freshness"
 	"github.com/drobilica/tarlink/internal/integration"
+	"github.com/drobilica/tarlink/internal/research"
 )
 
 // Selector is the presentation-independent form of app, app@channel and
@@ -127,6 +129,33 @@ type Service interface {
 	UpgradeTarLink(context.Context, ProgressSink) (TarLinkVersion, error)
 	CheckInstallPath(string) ([]integration.PathConflict, error)
 	Doctor(context.Context) (DoctorReport, error)
+}
+
+// FreshnessService exposes advisory upstream-release checks used by registry
+// maintenance commands. It is deliberately separate from Service: neither the
+// operational CLI nor the TUI require this maintainer-only capability.
+type FreshnessService interface {
+	Freshness(context.Context, string) (freshness.Report, error)
+}
+
+// ResearchService exposes advisory repository provenance and inspection. Its
+// results never enter the trusted registry or installation path.
+type ResearchService interface {
+	Research(context.Context, ResearchOptions) (ResearchResult, error)
+}
+
+// CandidateService exposes the read-only candidate ledger and its change
+// analysis to registry maintainers.
+type CandidateService interface {
+	CandidateLedger() (research.CandidateLedger, error)
+	CandidateChanges(context.Context) (research.CandidateChanges, error)
+}
+
+// BlockerService exposes read-only capability and blocker analysis for
+// registry-maintenance planning.
+type BlockerService interface {
+	Blockers(string) ([]research.BlockerSummary, error)
+	CapabilityPreflight(string) ([]research.CapabilityResult, error)
 }
 
 // PathConflict is an alias for integration.PathConflict, exposed through the

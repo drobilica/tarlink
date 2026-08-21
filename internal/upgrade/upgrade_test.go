@@ -27,6 +27,22 @@ func TestStableVersionComparison(t *testing.T) {
 	}
 }
 
+func TestOfficialURLPolicy(t *testing.T) {
+	for _, value := range []string{
+		"http://api.github.com/repos/drobilica/tarlink/releases",
+		"https://evil.example/repos/drobilica/tarlink/releases",
+		"https://api.github.com/repos/drobilica/tarlink/releases?redirect=1",
+		"https://attacker@api.github.com/repos/drobilica/tarlink/releases",
+	} {
+		if officialURL(value, officialAPIURL) {
+			t.Errorf("unsafe URL accepted: %q", value)
+		}
+	}
+	if !officialURL(officialAPIURL, officialAPIURL) || !officialURL(officialReleaseBaseURL, officialReleaseBaseURL) {
+		t.Fatal("official HTTPS URLs were rejected")
+	}
+}
+
 func TestChecksumForRejectsMalformedAndSelectsExactAsset(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "checksums.txt")
@@ -90,7 +106,7 @@ func TestCheckFreshBypassesCacheAndFallsBackOffline(t *testing.T) {
 	}))
 	defer server.Close()
 	service.Client = &download.Client{HTTP: server.Client()}
-	service.APIURL = server.URL + "/releases"
+	service.testAPIURL = server.URL + "/releases"
 	if err := writeCache(filepath.Join(dir, "update-check.json"), "1.1.0", now); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +125,7 @@ func TestCheckFreshBypassesCacheAndFallsBackOffline(t *testing.T) {
 func TestCheckFreshHonorsCancellationBeforeCacheFallback(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Unix(1000, 0)
-	service := &Service{Layout: filesystem.Layout{Cache: dir}, Current: "1.0.0", APIURL: "https://127.0.0.1/releases", Now: func() time.Time { return now }}
+	service := &Service{Layout: filesystem.Layout{Cache: dir}, Current: "1.0.0", testAPIURL: "https://127.0.0.1/releases", Now: func() time.Time { return now }}
 	if err := writeCache(filepath.Join(dir, "update-check.json"), "2.0.0", now); err != nil {
 		t.Fatal(err)
 	}
@@ -345,8 +361,8 @@ func TestUpgradeDownloadsVerifiesAndReplacesCanonicalInstallation(t *testing.T) 
 	}))
 	defer server.Close()
 	service.Client = &download.Client{HTTP: server.Client()}
-	service.APIURL = server.URL + "/releases"
-	service.ReleaseBaseURL = server.URL + "/download/v"
+	service.testAPIURL = server.URL + "/releases"
+	service.testReleaseBaseURL = server.URL + "/download/v"
 	service.GOOS, service.GOARCH = "linux", "amd64"
 	value, err := service.Upgrade(context.Background(), nil)
 	if err != nil || value.Latest != "2.0.0" {
