@@ -57,11 +57,23 @@ GitHub payloads, checksums, archive listings, downloaded paths, and credentials.
 Use this sequence at the start of a fresh registry task:
 
 ```text
+fetch both repositories
+↓
 ./scripts/agent-context.sh
+↓
 tarlink registry candidates --changed
-tarlink registry inspect OWNER/REPO --json
-tarlink registry provenance OWNER/REPO --release TAG --asset NAME --json
+↓
+consult registry-research/candidates.yaml
+↓
+inspect/provenance only for candidates requiring review
+↓
+manual research only for facts tooling cannot establish
 ```
+
+Do not repeat artifact or provenance investigation for an unchanged immutable
+release. A `RECHECK` result requires fresh investigation; it does not approve a
+candidate. Inspection and provenance output are advisory evidence only; the
+official registry remains the trust boundary.
 
 `candidates --changed` performs lightweight release discovery and compares the
 immutable GitHub release ID as well as its tag. A recreated release with the

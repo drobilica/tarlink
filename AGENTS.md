@@ -124,16 +124,29 @@ Documentation must describe implemented behavior or clearly marked plans; never 
 
 ## Registry candidate research
 
-Before registry or candidate work, run `./scripts/agent-context.sh`, inspect
-`registry-research/candidates.yaml`, and run `tarlink registry candidates
---changed`. Reuse Task 1 inspection and provenance evidence; do not repeat
-artifact investigation for an unchanged immutable release. Reinvestigate only
-when a recorded reconsideration condition is triggered, using manual web
-research only for facts canonical tooling cannot establish.
+For candidate or catalog work, fetch both repositories, then follow:
 
-Before implementing a security or artifact capability intended to unblock
-applications, run `tarlink registry blockers --capability <capability>` and
-record the affected and fully unlocked candidates. If none would be fully
-unlocked, do not implement it unless explicitly required for another reason.
-The inspector is advisory evidence; official registry manifests remain the
-trust boundary.
+```text
+./scripts/agent-context.sh
+        ↓
+tarlink registry candidates --changed
+        ↓
+consult registry-research/candidates.yaml
+        ↓
+inspect/provenance only for candidates requiring review
+        ↓
+manual research only for facts tooling cannot establish
+```
+
+The ledger is the durable record of previous decisions. Do not repeat
+artifact/provenance investigation for an unchanged immutable release. A
+`RECHECK` result requires investigation; it is not approval. Inspection and
+provenance output are advisory evidence only; the official registry remains
+the trust boundary. See `docs/registry-research.md` for mechanics.
+
+Before implementing a security or artifact capability primarily to unblock
+candidates, run `tarlink registry blockers --capability <capability>` and
+report the affected candidates, blockers removed, blockers remaining, and
+number fully unlocked. If it fully unlocks zero known candidates, do not begin
+implementation unless the task independently requires it or another concrete
+product requirement justifies it.
