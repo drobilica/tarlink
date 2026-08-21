@@ -59,11 +59,10 @@ type Capability struct {
 }
 
 var capabilities = map[string]Capability{
-	"nested-archive":    {ID: "nested-archive", Blockers: map[string]bool{"NESTED_ARCHIVE_UNSUPPORTED": true}},
 	"appimage-metadata": {ID: "appimage-metadata", Blockers: map[string]bool{"APPIMAGE_METADATA_UNSUPPORTED": true}},
 }
 var knownBlockers = map[string]bool{
-	"NESTED_ARCHIVE_UNSUPPORTED": true, "NO_AUTHORITATIVE_DIGEST": true, "UNSUPPORTED_ARTIFACT": true,
+	"NO_AUTHORITATIVE_DIGEST": true, "UNSUPPORTED_ARTIFACT": true,
 	"UNSUPPORTED_ARCH": true, "NO_EXECUTABLE": true, "APPIMAGE_METADATA_UNSUPPORTED": true,
 	"NO_LINUX_ARTIFACT": true, "MUTABLE_ARTIFACT": true, "SYSTEM_INTEGRATION_REQUIRED": true,
 	"SETUP_SCRIPT_REQUIRED": true, "WINDOWS_ONLY": true, "SOURCE_ONLY": true,

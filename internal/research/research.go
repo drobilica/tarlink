@@ -786,9 +786,6 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 	if walkErr != nil {
 		return Inspection{}, walkErr
 	}
-	if len(result.Nested) > 0 {
-		result.Blockers = append(result.Blockers, "NESTED_ARCHIVE_UNSUPPORTED")
-	}
 	if len(result.Executables) == 0 {
 		result.Blockers = append(result.Blockers, "NO_EXECUTABLE")
 	}

@@ -159,7 +159,7 @@ func ExtractNestedPath(ctx context.Context, sourcePath, outerDestination, innerD
 	if err := extractPathWithProgress(ctx, sourcePath, outerDestination, outerFormat, b, progress); err != nil {
 		return err
 	}
-	inner, err := OpenDeclaredFile(outerDestination, innerPath)
+	inner, err := openDeclaredFile(outerDestination, innerPath, b.limits)
 	if err != nil {
 		return fmt.Errorf("archive: declared inner archive: %w", err)
 	}
@@ -187,8 +187,15 @@ func ctxOrBackground(ctx context.Context) context.Context {
 // path must be canonical; every component is checked with Lstat so neither a
 // symlink nor an unexpected filesystem object can redirect the lookup.
 func OpenDeclaredFile(root, relative string) (*os.File, error) {
-	clean, err := validatePath(relative, DefaultLimits())
-	if err != nil || clean != relative || strings.HasSuffix(relative, "/") {
+	return openDeclaredFile(root, relative, DefaultLimits())
+}
+
+func openDeclaredFile(root, relative string, limits Limits) (*os.File, error) {
+	clean, err := validatePath(relative, limits.withDefaults())
+	if err != nil {
+		return nil, fmt.Errorf("archive: declared file path: %w", err)
+	}
+	if clean != relative || strings.HasSuffix(relative, "/") {
 		return nil, fmt.Errorf("archive: declared file path: %w", ErrPath)
 	}
 	root, err = filepathAbsClean(root)

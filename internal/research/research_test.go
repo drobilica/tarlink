@@ -496,7 +496,7 @@ func TestAPIErrorTaxonomyTable(t *testing.T) {
 	}
 }
 
-func TestInspectReportsExecutablesAndNestedBlocker(t *testing.T) {
+func TestInspectReportsExecutablesAndNestedEvidence(t *testing.T) {
 	var buf bytes.Buffer
 	z := zip.NewWriter(&buf)
 	h := &zip.FileHeader{Name: "game", Method: zip.Store}
@@ -520,13 +520,12 @@ func TestInspectReportsExecutablesAndNestedBlocker(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	found := false
 	for _, b := range r.Blockers {
 		if b == "NESTED_ARCHIVE_UNSUPPORTED" {
-			found = true
+			t.Fatal("nested archive evidence must not be an unsupported blocker")
 		}
 	}
-	if len(r.Executables) != 2 || len(r.Nested) != 1 || !found {
+	if len(r.Executables) != 2 || len(r.Nested) != 1 || len(r.Blockers) != 0 {
 		t.Fatalf("%#v", r)
 	}
 }

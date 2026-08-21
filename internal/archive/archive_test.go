@@ -649,6 +649,47 @@ func TestOpenDeclaredFileRejectsRedirectsAndNonCanonicalPaths(t *testing.T) {
 	}
 }
 
+func TestDeclaredInnerFileResolutionHonorsOperationPathLimits(t *testing.T) {
+	root := t.TempDir()
+	relative := "one/two/inner.zip"
+	full := filepath.Join(root, filepath.FromSlash(relative))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("declared path bytes", func(t *testing.T) {
+		if _, err := openDeclaredFile(root, relative, Limits{MaxPathBytes: len(relative) - 1}); !errors.Is(err, ErrLimit) {
+			t.Fatalf("declared path byte limit error = %v, want ErrLimit", err)
+		}
+	})
+	t.Run("declared path depth", func(t *testing.T) {
+		if _, err := openDeclaredFile(root, relative, Limits{MaxDepth: 2}); !errors.Is(err, ErrLimit) {
+			t.Fatalf("declared path depth limit error = %v, want ErrLimit", err)
+		}
+	})
+	t.Run("declared path at configured limits", func(t *testing.T) {
+		f, err := openDeclaredFile(root, relative, Limits{MaxPathBytes: len(relative), MaxDepth: 3})
+		if err != nil {
+			t.Fatalf("configured limits rejected declared path: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("default limits", func(t *testing.T) {
+		f, err := OpenDeclaredFile(root, relative)
+		if err != nil {
+			t.Fatalf("default limits rejected declared path: %v", err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
 func TestTarArchiveByteLimit(t *testing.T) {
 	data := tarFixture(t, []tar.Header{{Name: "app", Mode: 0o644, Size: 1, Typeflag: tar.TypeReg}})
 	if err := Extract(context.Background(), bytes.NewReader(data), t.TempDir(), FormatTarGz, Limits{MaxArchiveBytes: int64(len(data) - 1)}); !errors.Is(err, ErrLimit) {

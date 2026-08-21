@@ -11,7 +11,7 @@ import (
 )
 
 func validLedger() CandidateLedger {
-	return CandidateLedger{Candidates: []Candidate{{ID: "demo", Upstream: "Owner/Repo", Status: "blocked", LastChecked: ReleaseIdentity{ReleaseTag: "v1", ReleaseID: 1}, Blockers: []string{"NESTED_ARCHIVE_UNSUPPORTED"}, ReconsiderWhen: []string{"new-upstream-release", "capability:nested-archive"}}}}
+	return CandidateLedger{Candidates: []Candidate{{ID: "demo", Upstream: "Owner/Repo", Status: "blocked", LastChecked: ReleaseIdentity{ReleaseTag: "v1", ReleaseID: 1}, Blockers: []string{"APPIMAGE_METADATA_UNSUPPORTED"}, ReconsiderWhen: []string{"new-upstream-release", "capability:appimage-metadata"}}}}
 }
 func TestValidateLedger(t *testing.T) {
 	l := validLedger()
@@ -55,13 +55,13 @@ func TestProjectCandidateLedger(t *testing.T) {
 	}
 }
 func TestAnalyzeCapability(t *testing.T) {
-	r, e := AnalyzeCapability(validLedger(), "nested-archive")
+	r, e := AnalyzeCapability(validLedger(), "appimage-metadata")
 	if e != nil || len(r) != 1 || !r[0].FullyUnlocked {
 		t.Fatalf("result=%+v err=%v", r, e)
 	}
 	l := validLedger()
 	l.Candidates[0].Blockers = append(l.Candidates[0].Blockers, "NO_EXECUTABLE")
-	r, e = AnalyzeCapability(l, "nested-archive")
+	r, e = AnalyzeCapability(l, "appimage-metadata")
 	if e != nil || r[0].FullyUnlocked {
 		t.Fatalf("result=%+v err=%v", r, e)
 	}

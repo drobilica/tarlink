@@ -42,6 +42,9 @@ hashed and that same verified object is consumed by the parser.
 with TarLink's current SHA-256/SHA-512 contract. It is evidence for review,
 not a trust or approval decision. Inspection reports mechanical facts and
 blockers such as unsupported artifacts; it never adds installation behavior.
+Nested archive paths are reported as advisory evidence. Their presence alone
+is not a blocker; a manifest/research decision must still select an exact
+declared inner path and format when the bounded nested-archive model applies.
 
 ## Candidate workflow
 
