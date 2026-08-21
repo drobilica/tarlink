@@ -121,3 +121,19 @@ Documentation must describe implemented behavior or clearly marked plans; never 
 * Keep TarLink-specific application state and lifecycle logic custom.
 * Do not introduce another TUI framework without explicit authorization.
 * The TUI remains presentation-only and calls the same `internal/app` service as the CLI.
+
+## Registry candidate research
+
+Before registry or candidate work, run `./scripts/agent-context.sh`, inspect
+`registry-research/candidates.yaml`, and run `tarlink registry candidates
+--changed`. Reuse Task 1 inspection and provenance evidence; do not repeat
+artifact investigation for an unchanged immutable release. Reinvestigate only
+when a recorded reconsideration condition is triggered, using manual web
+research only for facts canonical tooling cannot establish.
+
+Before implementing a security or artifact capability intended to unblock
+applications, run `tarlink registry blockers --capability <capability>` and
+record the affected and fully unlocked candidates. If none would be fully
+unlocked, do not implement it unless explicitly required for another reason.
+The inspector is advisory evidence; official registry manifests remain the
+trust boundary.

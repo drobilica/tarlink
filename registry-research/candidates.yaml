@@ -1,0 +1,81 @@
+candidates:
+  - id: zelda64-recompiled
+    upstream: Zelda64Recomp/Zelda64Recomp
+    last_checked: {release_tag: v1.2.2, release_id: 242740890}
+    status: blocked
+    blockers: [NESTED_ARCHIVE_UNSUPPORTED]
+    reconsider_when: [new-upstream-release, capability:nested-archive]
+  - id: harvest-moon-64-recompiled
+    upstream: HarvestMoon64Recomp/HarvestMoon64Recomp
+    last_checked: {release_tag: v1.2.1, release_id: 349953753}
+    status: blocked
+    blockers: [NESTED_ARCHIVE_UNSUPPORTED]
+    reconsider_when: [new-upstream-release, capability:nested-archive]
+  - id: mega-man-64-recompiled
+    upstream: MegaMan64Recomp/MegaMan64Recompiled
+    last_checked: {release_tag: v0.9.1, release_id: 316082995}
+    status: blocked
+    blockers: [NESTED_ARCHIVE_UNSUPPORTED]
+    reconsider_when: [new-upstream-release, capability:nested-archive]
+  - id: g-diffuser
+    upstream: Zorkats/G-Diffuser
+    last_checked: {release_tag: v1.0.1, release_id: 368329526}
+    status: deferred
+    reconsider_when: [new-upstream-release, manual]
+  - id: eternal-sonata-reprise
+    upstream: birabittoh/EternalSonataReprise
+    last_checked: {release_tag: v1.1.2, release_id: 373929049}
+    status: blocked
+    blockers: [WINDOWS_ONLY]
+    reconsider_when: [new-upstream-release]
+  - id: tip-recomp
+    upstream: SolarCookies/TiP-Recomp
+    last_checked: {release_tag: 1.11.2, release_id: 355875394}
+    status: blocked
+    blockers: [WINDOWS_ONLY]
+    reconsider_when: [new-upstream-release]
+  - id: kameo-repowered
+    upstream: birabittoh/KameoRePowered
+    last_checked: {release_tag: v0.2.1, release_id: 343758237}
+    status: deferred
+    reconsider_when: [new-upstream-release, manual]
+  - id: protonup-qt
+    upstream: DavidoTek/ProtonUp-Qt
+    last_checked: {release_tag: v2.15.1, release_id: 343936493}
+    status: rejected
+    blockers: [SYSTEM_INTEGRATION_REQUIRED]
+    reconsider_when: [manual]
+  - id: moonlight
+    upstream: moonlight-stream/moonlight-qt
+    last_checked: {release_tag: v6.1.0, release_id: 175337682}
+    status: blocked
+    blockers: [NO_AUTHORITATIVE_DIGEST]
+    reconsider_when: [new-upstream-release, provenance-policy-change]
+  - id: antimicrox
+    upstream: AntiMicroX/antimicrox
+    last_checked: {release_tag: 3.6.1, release_id: 328173210}
+    status: deferred
+    reconsider_when: [new-upstream-release, manual]
+  - id: sunshine
+    upstream: LizardByte/Sunshine
+    last_checked: {release_tag: v2026.516.143833, release_id: 323751514}
+    status: rejected
+    blockers: [SYSTEM_INTEGRATION_REQUIRED]
+    reconsider_when: [manual]
+  - id: cemu
+    upstream: cemu-project/Cemu
+    last_checked: {release_tag: v2.6, release_id: 198812625}
+    status: deferred
+    reconsider_when: [new-upstream-release, manual]
+  - id: pokemon-stadium-recomp
+    upstream: mstan/PokemonStadiumRecomp
+    last_checked: {release_tag: v0.4.7-beta, release_id: 371163673}
+    status: blocked
+    blockers: [WINDOWS_ONLY]
+    reconsider_when: [new-upstream-release]
+  - id: chameleon-twist-1-jp-recomp
+    upstream: Rainchus/ChameleonTwist1-JP-Recomp
+    last_checked: {release_tag: v0.1, release_id: 190757282}
+    status: blocked
+    blockers: [NO_AUTHORITATIVE_DIGEST]
+    reconsider_when: [new-upstream-release, provenance-policy-change]

@@ -42,3 +42,48 @@ hashed and that same verified object is consumed by the parser.
 with TarLink's current SHA-256/SHA-512 contract. It is evidence for review,
 not a trust or approval decision. Inspection reports mechanical facts and
 blockers such as unsupported artifacts; it never adds installation behavior.
+
+## Candidate workflow
+
+The durable maintainer ledger is
+[`registry-research/candidates.yaml`](../registry-research/candidates.yaml).
+It is not registry data and is never read by installation or runtime registry
+sync. Each entry has a deterministic `id`, canonical `upstream` repository,
+the last checked release identity (`release_tag` and numeric `release_id`), a
+small status (`blocked`, `deferred`, or `rejected`), durable blocker codes, and
+explicit reconsideration conditions. The ledger intentionally excludes raw
+GitHub payloads, checksums, archive listings, downloaded paths, and credentials.
+
+Use this sequence at the start of a fresh registry task:
+
+```text
+./scripts/agent-context.sh
+tarlink registry candidates --changed
+tarlink registry inspect OWNER/REPO --json
+tarlink registry provenance OWNER/REPO --release TAG --asset NAME --json
+```
+
+`candidates --changed` performs lightweight release discovery and compares the
+immutable GitHub release ID as well as its tag. A recreated release with the
+same tag is therefore `RECHECK`; an unchanged identity is `UNCHANGED`, and a
+discovery failure is `ERROR`. It does not download assets or edit the ledger.
+`capability:<id>`, `new-upstream-release`, `provenance-policy-change`, and
+`manual` are the supported reconsideration conditions. Conditions make an
+entry eligible for review; they never approve it automatically.
+
+`tarlink registry blockers` summarizes recurring blockers from the ledger.
+`tarlink registry blockers --capability <id>` is an advisory preflight: it
+shows which selected capability blockers would be removed, what blockers would
+remain, and whether each candidate would be fully unlocked. Run this before
+implementing a security or artifact capability whose justification is
+onboarding candidates. A zero fully-unlocked result requires an independent
+explicit reason to proceed.
+
+For several repositories, use the batch form of `registry inspect` documented
+by `tarlink registry inspect --help`; it invokes the same Task 1 inspection per
+repository and reports independent results. Batch input is ephemeral and is
+not a second ledger format.
+
+The ledger is updated explicitly by maintainers after reviewing fresh
+evidence. New upstream releases only produce `RECHECK`; they never cause
+automatic approval, manifest generation, commits, or registry changes.

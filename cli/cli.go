@@ -7,12 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/drobilica/tarlink/internal/app"
 	"github.com/drobilica/tarlink/internal/freshness"
+	"github.com/drobilica/tarlink/internal/research"
 	"github.com/drobilica/tarlink/internal/version"
+	"go.yaml.in/yaml/v3"
 )
 
 const help = `TarLink turns portable Linux application archives into managed applications.
@@ -22,7 +25,10 @@ Usage:
   tarlink registry validate <path>
   tarlink registry freshness <app> [--json]
   tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
-  tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
+	  tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
+	  tarlink registry inspect --file <repositories.yaml> [--json]
+  tarlink registry candidates [--changed] [--json]
+  tarlink registry blockers [--capability <capability>] [--json]
   tarlink search <query> [--json]
   tarlink install <app> [--force-path]
   tarlink update <app>
@@ -105,6 +111,68 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			break
 		}
 		if len(arguments) >= 3 && (arguments[1] == "provenance" || arguments[1] == "inspect") {
+			if arguments[1] == "inspect" && len(arguments) >= 4 && arguments[2] == "--file" {
+				path, jsonOutput, parseErr := batchInspectArguments(arguments[3:])
+				if parseErr != nil {
+					return r.invalid("usage: tarlink registry inspect --file <path> [--json]")
+				}
+				b, readErr := os.ReadFile(path)
+				if readErr != nil {
+					return r.fail(readErr)
+				}
+				var input struct {
+					Repositories []string `yaml:"repositories"`
+				}
+				if readErr = yaml.Unmarshal(b, &input); readErr != nil || len(input.Repositories) == 0 {
+					if readErr == nil {
+						readErr = errors.New("batch input requires repositories")
+					}
+					return r.fail(readErr)
+				}
+				service, ok := r.Service.(interface {
+					Research(context.Context, app.ResearchOptions) (app.ResearchResult, error)
+				})
+				if !ok {
+					return r.fail(errors.New("registry research is unavailable"))
+				}
+				results := make([]app.ResearchResult, 0, len(input.Repositories))
+				for _, repo := range input.Repositories {
+					v, researchErr := service.Research(ctx, app.ResearchOptions{Repository: repo, Inspect: true})
+					if researchErr != nil && v.Status == "" {
+						v = app.ResearchResult{Repository: research.Repository(repo), Status: "ERROR", Error: &app.ResearchError{ReasonCode: "INSPECTION_ERROR", Message: researchErr.Error()}}
+					}
+					results = append(results, v)
+				}
+				if jsonOutput {
+					if e := writeJSON(r.Stdout, map[string]any{"results": results}); e != nil {
+						return r.fail(e)
+					}
+					break
+				}
+				counts := map[string]int{}
+				for _, v := range results {
+					status := v.Status
+					if status == "" {
+						status = "ERROR"
+					}
+					counts[status]++
+				}
+				if _, err = fmt.Fprintf(r.Stdout, "READY_FOR_REVIEW %d\nBLOCKED %d\nERROR %d\n", counts["READY_FOR_REVIEW"], counts["BLOCKED"], counts["ERROR"]); err != nil {
+					break
+				}
+				for _, v := range results {
+					_, err = fmt.Fprintf(r.Stdout, "%-20s %-10s %s\n", v.Repository, v.Status, strings.Join(func() []string {
+						if v.Inspection != nil {
+							return v.Inspection.Blockers
+						}
+						return nil
+					}(), ", "))
+					if err != nil {
+						return r.fail(err)
+					}
+				}
+				break
+			}
 			opts, jsonOutput, parseErr := researchArguments(arguments[2:])
 			if parseErr != nil {
 				return r.invalid("usage: tarlink registry " + arguments[1] + " <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]")
@@ -145,6 +213,86 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				return r.fail(researchErr)
 			}
 			err = r.printResearch(value, jsonOutput)
+			break
+		}
+		if arguments[1] == "candidates" {
+			changed, jsonOutput, parseErr := candidateArguments(arguments[2:])
+			if parseErr != nil {
+				return r.invalid("usage: tarlink registry candidates [--changed] [--json]")
+			}
+			service, ok := r.Service.(interface {
+				CandidateLedger() (research.CandidateLedger, error)
+				CandidateChanges(context.Context) (research.CandidateChanges, error)
+			})
+			if !ok {
+				return r.fail(errors.New("candidate ledger is unavailable"))
+			}
+			if changed {
+				var v research.CandidateChanges
+				v, err = service.CandidateChanges(ctx)
+				if err == nil {
+					if jsonOutput {
+						err = writeJSON(r.Stdout, v)
+					} else {
+						err = printChanges(r.Stdout, v)
+					}
+				}
+			} else {
+				var v research.CandidateLedger
+				v, err = service.CandidateLedger()
+				if err == nil {
+					if jsonOutput {
+						err = writeJSON(r.Stdout, v)
+					} else {
+						for _, c := range v.Candidates {
+							_, err = fmt.Fprintf(r.Stdout, "%-24s %-10s %s\n", c.ID, c.Status, c.Upstream)
+							if err != nil {
+								break
+							}
+						}
+					}
+				}
+			}
+			break
+		}
+		if arguments[1] == "blockers" {
+			capability, jsonOutput, parseErr := blockerArguments(arguments[2:])
+			if parseErr != nil {
+				return r.invalid("usage: tarlink registry blockers [--capability <capability>] [--json]")
+			}
+			service, ok := r.Service.(interface {
+				Blockers(string) ([]research.BlockerSummary, error)
+				CapabilityPreflight(string) ([]research.CapabilityResult, error)
+			})
+			if !ok {
+				return r.fail(errors.New("blocker analysis is unavailable"))
+			}
+			if capability == "" {
+				var v []research.BlockerSummary
+				v, err = service.Blockers("")
+				if err == nil {
+					if jsonOutput {
+						err = writeJSON(r.Stdout, v)
+					} else {
+						for _, x := range v {
+							_, err = fmt.Fprintf(r.Stdout, "%-32s %d\n", x.Blocker, x.Count)
+							if err != nil {
+								break
+							}
+						}
+					}
+				}
+			} else {
+				var v []research.CapabilityResult
+				v, err = service.CapabilityPreflight(capability)
+				if err == nil {
+					if jsonOutput {
+						err = writeJSON(r.Stdout, v)
+					} else {
+						err = printCapability(r.Stdout, v)
+					}
+				}
+			}
 			break
 		}
 		return r.invalid("usage: tarlink registry sync | tarlink registry validate <path> | tarlink registry freshness <app> [--json] | tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]")
@@ -449,6 +597,78 @@ func researchArguments(arguments []string) (app.ResearchOptions, bool, error) {
 		}
 	}
 	return opts, jsonOutput, nil
+}
+
+func candidateArguments(a []string) (bool, bool, error) {
+	changed, jsonOut := false, false
+	for _, v := range a {
+		switch v {
+		case "--changed":
+			changed = true
+		case "--json":
+			jsonOut = true
+		default:
+			return false, false, errors.New("unknown option")
+		}
+	}
+	return changed, jsonOut, nil
+}
+func blockerArguments(a []string) (string, bool, error) {
+	capability, jsonOut := "", false
+	for i := 0; i < len(a); i++ {
+		switch a[i] {
+		case "--json":
+			jsonOut = true
+		case "--capability":
+			if i+1 >= len(a) {
+				return "", false, errors.New("capability required")
+			}
+			capability = a[i+1]
+			i++
+		default:
+			return "", false, errors.New("unknown option")
+		}
+	}
+	return capability, jsonOut, nil
+}
+func batchInspectArguments(a []string) (string, bool, error) {
+	if len(a) == 0 {
+		return "", false, errors.New("path required")
+	}
+	if len(a) == 1 {
+		return a[0], false, nil
+	}
+	if len(a) == 2 && a[1] == "--json" {
+		return a[0], true, nil
+	}
+	return "", false, errors.New("invalid batch options")
+}
+func printChanges(w io.Writer, v research.CandidateChanges) error {
+	_, e := fmt.Fprintf(w, "RECHECK %d\nUNCHANGED %d\nERROR %d\n", v.Summary["RECHECK"], v.Summary["UNCHANGED"], v.Summary["ERROR"])
+	if e != nil {
+		return e
+	}
+	for _, x := range v.Results {
+		if x.Decision == "RECHECK" || x.Decision == "ERROR" {
+			old := fmt.Sprintf("%s (%d)", x.Old.ReleaseTag, x.Old.ReleaseID)
+			current := ""
+			if x.Current != nil {
+				current = fmt.Sprintf(" -> %s (%d)", x.Current.ReleaseTag, x.Current.ReleaseID)
+			}
+			if _, e = fmt.Fprintf(w, "%-10s %s %s%s %s\n", x.Decision, x.ID, old, current, x.Reason); e != nil {
+				return e
+			}
+		}
+	}
+	return nil
+}
+func printCapability(w io.Writer, v []research.CapabilityResult) error {
+	for _, x := range v {
+		if _, e := fmt.Fprintf(w, "%s\n  removed: %s\n  remaining: %s\n  fully unlocked: %t\n", x.ID, strings.Join(x.Removed, ", "), strings.Join(x.Remaining, ", "), x.FullyUnlocked); e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 func (r Runner) printResearch(value app.ResearchResult, jsonOutput bool) error {
