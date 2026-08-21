@@ -3,12 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"testing"
 
 	"github.com/drobilica/tarlink/internal/app"
 	"github.com/drobilica/tarlink/internal/freshness"
+	"github.com/drobilica/tarlink/internal/research"
 )
 
 type fakeService struct {
@@ -83,6 +85,104 @@ func (f *fakeService) Doctor(context.Context) (app.DoctorReport, error) {
 type freshnessService struct {
 	fakeService
 	report freshness.Report
+}
+
+type researchService struct {
+	fakeService
+	result  app.ResearchResult
+	err     error
+	options app.ResearchOptions
+}
+
+func (f *researchService) Research(_ context.Context, options app.ResearchOptions) (app.ResearchResult, error) {
+	f.options = options
+	return f.result, f.err
+}
+
+func TestRegistryProvenanceJSONSelectors(t *testing.T) {
+	var out bytes.Buffer
+	service := &researchService{result: app.ResearchResult{Repository: "owner/repo", Release: research.Release{ID: 10, Tag: "v1"}, Asset: research.Asset{ID: 20, Name: "linux.zip", Digest: "sha256:abc"}, Provenance: research.Provenance{Verdict: research.Acceptable, Algorithm: "sha256", Digest: "sha256:abc", Message: "ok"}}}
+	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo", "--release", "v1", "--asset", "linux.zip", "--refresh", "--json"})
+	if code != 0 {
+		t.Fatalf("code=%d output=%q", code, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"release"`)) || service.options.Release != "v1" || !service.options.Refresh {
+		t.Fatalf("output=%q options=%+v", out.String(), service.options)
+	}
+}
+
+func TestRegistryResearchJSONErrorIsJSONOnly(t *testing.T) {
+	var out bytes.Buffer
+	service := &researchService{err: &app.ResearchFailure{ReasonCode: "ASSET_NOT_FOUND", Err: errors.New("asset not found")}}
+	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
+	if code == 0 || !bytes.Contains(out.Bytes(), []byte(`"reason_code":"ASSET_NOT_FOUND"`)) || !bytes.Contains(out.Bytes(), []byte(`"error"`)) {
+		t.Fatalf("code=%d output=%q", code, out.String())
+	}
+}
+
+func TestRegistryResearchProviderFailureIsStructuredErrorResult(t *testing.T) {
+	var out bytes.Buffer
+	service := &researchService{
+		result: app.ResearchResult{
+			Repository: "owner/repo",
+			Provenance: research.Provenance{Verdict: research.Error, ReasonCode: "RATE_LIMITED", Message: "GitHub API rate limit exceeded"},
+			Status:     "ERROR",
+			Error:      &app.ResearchError{Kind: research.APIErrorRateLimited, HTTPStatus: 429, ReasonCode: "RATE_LIMITED", Message: "GitHub API rate limit exceeded"},
+		},
+		err: &app.ResearchFailure{ReasonCode: "RATE_LIMITED", Kind: research.APIErrorRateLimited, HTTPStatus: 429, Err: errors.New("GitHub API rate limit exceeded")},
+	}
+	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo", "--json"})
+	if code == 0 {
+		t.Fatal("provider failure returned success")
+	}
+	var got app.ResearchResult
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("invalid JSON: %v (%s)", err, out.String())
+	}
+	if got.Provenance.Verdict != research.Error || got.Status != "ERROR" || got.Error == nil || got.Error.Kind != research.APIErrorRateLimited {
+		t.Fatalf("unexpected structured failure: %+v", got)
+	}
+}
+
+func TestRegistryResearchJSONHasStableResultShape(t *testing.T) {
+	for _, verdict := range []research.Verdict{research.Acceptable, research.Rejected, research.Error} {
+		var out bytes.Buffer
+		service := &researchService{result: app.ResearchResult{
+			Repository: "owner/repo", Release: research.Release{ID: 10, Tag: "v1"},
+			Asset:      research.Asset{ID: 20, Name: "linux.zip", Size: 42},
+			Provenance: research.Provenance{Verdict: verdict, ReasonCode: "TEST", Message: "fixture"},
+			Status:     map[research.Verdict]string{research.Acceptable: "READY_FOR_REVIEW", research.Rejected: "BLOCKED", research.Error: "ERROR"}[verdict],
+		}}
+		if code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo", "--json"}); code != 0 {
+			t.Fatalf("verdict %s code=%d", verdict, code)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+			t.Fatalf("verdict %s invalid JSON: %v", verdict, err)
+		}
+		for _, field := range []string{"repository", "release", "asset", "provenance", "status"} {
+			if _, ok := got[field]; !ok {
+				t.Fatalf("verdict %s missing %q: %s", verdict, field, out.String())
+			}
+		}
+	}
+}
+
+func TestRegistryInspectHumanOutputIncludesArchiveFacts(t *testing.T) {
+	var out bytes.Buffer
+	service := &researchService{result: app.ResearchResult{
+		Repository: "owner/repo", Release: research.Release{ID: 10, Tag: "v1"}, Asset: research.Asset{ID: 20, Name: "linux.tar.gz"},
+		Provenance: research.Provenance{Verdict: research.Acceptable, Algorithm: "sha256", Digest: "abc", Message: "ok"}, Status: "READY_FOR_REVIEW",
+		Inspection: &research.Inspection{ArtifactType: "tar.gz", Executables: []string{"app"}, Nested: []string{"data.zip"}},
+	}}
+	if code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo"}); code != 0 {
+		t.Fatalf("inspect code=%d output=%q", code, out.String())
+	}
+	for _, field := range []string{"Executables: app", "Nested archives: data.zip"} {
+		if !bytes.Contains(out.Bytes(), []byte(field)) {
+			t.Fatalf("missing %q in output %q", field, out.String())
+		}
+	}
 }
 
 func (f *freshnessService) Freshness(context.Context, string) (freshness.Report, error) {

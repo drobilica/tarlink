@@ -21,6 +21,8 @@ Usage:
   tarlink registry sync
   tarlink registry validate <path>
   tarlink registry freshness <app> [--json]
+  tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
+  tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
   tarlink search <query> [--json]
   tarlink install <app> [--force-path]
   tarlink update <app>
@@ -102,7 +104,50 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			}
 			break
 		}
-		return r.invalid("usage: tarlink registry sync | tarlink registry validate <path> | tarlink registry freshness <app> [--json]")
+		if len(arguments) >= 3 && (arguments[1] == "provenance" || arguments[1] == "inspect") {
+			opts, jsonOutput, parseErr := researchArguments(arguments[2:])
+			if parseErr != nil {
+				return r.invalid("usage: tarlink registry " + arguments[1] + " <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]")
+			}
+			opts.Inspect = arguments[1] == "inspect"
+			service, ok := r.Service.(interface {
+				Research(context.Context, app.ResearchOptions) (app.ResearchResult, error)
+			})
+			if !ok {
+				return r.fail(errors.New("registry research is unavailable"))
+			}
+			value, researchErr := service.Research(ctx, opts)
+			if researchErr != nil {
+				if jsonOutput {
+					// The app facade returns a structured ERROR result for provider
+					// failures. Preserve that complete shape (including provider
+					// taxonomy) on stdout while retaining the non-zero exit code.
+					if value.Status == "ERROR" && value.Error != nil {
+						_ = writeJSON(r.Stdout, value)
+						return exitCode(researchErr)
+					}
+					code := string(app.CodeOf(researchErr))
+					errorValue := map[string]any{"message": researchErr.Error(), "reason_code": code}
+					var failure *app.ResearchFailure
+					if errors.As(researchErr, &failure) {
+						code = failure.ReasonCode
+						errorValue["reason_code"] = code
+						if failure.Kind != "" {
+							errorValue["kind"] = failure.Kind
+						}
+						if failure.HTTPStatus != 0 {
+							errorValue["http_status"] = failure.HTTPStatus
+						}
+					}
+					_ = writeJSON(r.Stdout, map[string]any{"error": errorValue})
+					return exitCode(researchErr)
+				}
+				return r.fail(researchErr)
+			}
+			err = r.printResearch(value, jsonOutput)
+			break
+		}
+		return r.invalid("usage: tarlink registry sync | tarlink registry validate <path> | tarlink registry freshness <app> [--json] | tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]")
 	case "search":
 		value, jsonOutput, parseErr := oneValueJSON(arguments[1:])
 		if parseErr != nil {
@@ -375,6 +420,52 @@ func (r Runner) printFreshness(report freshness.Report, jsonOutput bool) error {
 		}
 	}
 	return nil
+}
+
+func researchArguments(arguments []string) (app.ResearchOptions, bool, error) {
+	if len(arguments) == 0 {
+		return app.ResearchOptions{}, false, errors.New("repository is required")
+	}
+	opts := app.ResearchOptions{Repository: arguments[0]}
+	jsonOutput := false
+	for i := 1; i < len(arguments); i++ {
+		switch arguments[i] {
+		case "--json":
+			jsonOutput = true
+		case "--refresh":
+			opts.Refresh = true
+		case "--release", "--asset":
+			if i+1 >= len(arguments) || strings.HasPrefix(arguments[i+1], "--") {
+				return app.ResearchOptions{}, false, errors.New("selector value is required")
+			}
+			if arguments[i] == "--release" {
+				opts.Release = arguments[i+1]
+			} else {
+				opts.Asset = arguments[i+1]
+			}
+			i++
+		default:
+			return app.ResearchOptions{}, false, errors.New("unknown research option")
+		}
+	}
+	return opts, jsonOutput, nil
+}
+
+func (r Runner) printResearch(value app.ResearchResult, jsonOutput bool) error {
+	if jsonOutput {
+		// ResearchResult is the sole JSON model for both commands. In
+		// particular, status is derived by the application facade on every
+		// invocation and is never treated as cached approval.
+		return writeJSON(r.Stdout, value)
+	}
+	_, err := fmt.Fprintf(r.Stdout, "Repository: %s\nRelease tag: %s\nRelease ID: %d\nAsset: %s\nAsset ID: %d\nAsset size: %d\nGitHub digest: %s\nAlgorithm: %s\nVerdict: %s\nReason: %s\n", value.Repository, value.Release.Tag, value.Release.ID, value.Asset.Name, value.Asset.ID, value.Asset.Size, value.Asset.Digest, value.Provenance.Algorithm, value.Provenance.Verdict, value.Provenance.Message)
+	if err != nil || value.Inspection == nil {
+		return err
+	}
+	if _, err = fmt.Fprintf(r.Stdout, "Status: %s\nArtifact type: %s\nExecutables: %s\nNested archives: %s\nBlockers: %s\n", value.Status, value.Inspection.ArtifactType, strings.Join(value.Inspection.Executables, ", "), strings.Join(value.Inspection.Nested, ", "), strings.Join(value.Inspection.Blockers, ", ")); err != nil {
+		return err
+	}
+	return err
 }
 
 func (r Runner) printUpdateAll(result app.UpdateAllResult) error {
