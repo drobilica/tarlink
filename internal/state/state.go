@@ -1,4 +1,4 @@
-// Package state persists TarLink's schema-1 per-application state record.
+// Package state persists TarLink's schema-2 per-application state record.
 package state
 
 import (
@@ -17,7 +17,7 @@ import (
 	"github.com/drobilica/tarlink/internal/filesystem"
 )
 
-const Schema = 1
+const Schema = 2
 
 type Integration struct {
 	Executables        []ExecutableIntegration `json:"executables,omitempty"`
@@ -39,14 +39,21 @@ type ExecutableIntegration struct {
 }
 
 type State struct {
-	Schema         int          `json:"schema"`
-	App            string       `json:"app"`
-	Current        string       `json:"current"`
-	Previous       string       `json:"previous,omitempty"`
-	Artifact       string       `json:"artifact"`
-	Executables    []Executable `json:"executables"`
-	DesktopEnabled bool         `json:"desktop_enabled"`
-	Integration    Integration  `json:"integration"`
+	Schema           int    `json:"schema"`
+	App              string `json:"app"`
+	Current          string `json:"current"`
+	Previous         string `json:"previous,omitempty"`
+	PreviousArtifact string `json:"previous_artifact,omitempty"`
+	// Channel is the channel used to resolve the current installation. It is
+	// deliberately persisted as an opaque registry identifier; channels are
+	// not a global enum and must not be inferred from version syntax.
+	Channel         string       `json:"channel,omitempty"`
+	PreviousChannel string       `json:"previous_channel,omitempty"`
+	Pinned          bool         `json:"pinned"`
+	Artifact        string       `json:"artifact"`
+	Executables     []Executable `json:"executables"`
+	DesktopEnabled  bool         `json:"desktop_enabled"`
+	Integration     Integration  `json:"integration"`
 }
 
 type Executable struct {
@@ -73,6 +80,26 @@ func (s State) Validate() error {
 		if s.Previous == s.Current {
 			return fmt.Errorf("%w: current and previous versions must differ", ErrCorrupt)
 		}
+	}
+	if err := ValidateChannel(s.Channel); err != nil {
+		return fmt.Errorf("%w: channel: %v", ErrCorrupt, err)
+	}
+	for name, channel := range map[string]string{"previous channel": s.PreviousChannel} {
+		if channel == "" {
+			continue
+		}
+		if err := ValidateChannel(channel); err != nil {
+			return fmt.Errorf("%w: %s: %v", ErrCorrupt, name, err)
+		}
+	}
+	if s.Previous == "" && s.PreviousChannel != "" {
+		return fmt.Errorf("%w: previous channel requires previous version", ErrCorrupt)
+	}
+	if s.Previous == "" && s.PreviousArtifact != "" {
+		return fmt.Errorf("%w: previous artifact requires previous version", ErrCorrupt)
+	}
+	if s.Previous != "" && !validArtifact(s.PreviousArtifact) {
+		return fmt.Errorf("%w: previous artifact is invalid", ErrCorrupt)
 	}
 	if s.Artifact != "tar.gz" && s.Artifact != "tar.xz" && s.Artifact != "zip" && s.Artifact != "appimage" {
 		return fmt.Errorf("%w: unsupported artifact kind", ErrCorrupt)
@@ -164,6 +191,25 @@ func (s State) Validate() error {
 	return nil
 }
 
+func validArtifact(value string) bool {
+	return value == "tar.gz" || value == "tar.xz" || value == "zip" || value == "appimage"
+}
+
+// ValidateChannel validates a registry-provided channel identifier. Channel
+// names are intentionally opaque, but constrained to a portable, deterministic
+// identifier so they are safe in selectors and state files.
+func ValidateChannel(value string) error {
+	if value == "" || len(value) > 64 || strings.TrimSpace(value) != value {
+		return errors.New("must be a non-empty trimmed identifier")
+	}
+	for index, r := range value {
+		if !(r == '-' || r == '_' || r == '.' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9') || index == 0 && r == '-' {
+			return errors.New("must contain only lowercase letters, digits, '.', '_' or '-'")
+		}
+	}
+	return nil
+}
+
 func (s State) ValidateForLayout(l filesystem.Layout) error {
 	if err := s.Validate(); err != nil {
 		return err
@@ -232,7 +278,7 @@ func Decode(data []byte) (State, error) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return State{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	for _, required := range []string{"schema", "app", "current", "artifact", "desktop_enabled", "integration"} {
+	for _, required := range []string{"schema", "app", "current", "channel", "pinned", "artifact", "desktop_enabled", "integration"} {
 		if _, ok := fields[required]; !ok {
 			return State{}, fmt.Errorf("%w: missing %s", ErrCorrupt, required)
 		}

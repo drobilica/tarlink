@@ -1,6 +1,6 @@
 # TarLink architecture
 
-TarLink is a rootless, single-user application manager for Linux amd64 and arm64. Application manifests describe one exact platform each and are stored as `apps/<id>/linux-amd64.yaml` or `apps/<id>/linux-arm64.yaml`. The client resolves its exact `runtime.GOOS`/`runtime.GOARCH` pair and refuses a missing or mismatched variant; there is no compatibility filename and no cross-platform fallback.
+TarLink is a rootless, single-user application manager for Linux amd64 and arm64. Version-2 application manifests describe one exact platform each and retain an explicitly reviewed release history, channel heads, and default channel. They are stored as `apps/<id>/linux-amd64.yaml` or `apps/<id>/linux-arm64.yaml`. The client resolves its exact `runtime.GOOS`/`runtime.GOARCH` pair and refuses a missing or mismatched variant; there is no compatibility filename and no cross-platform fallback.
 
 ## Interface boundaries
 
@@ -18,8 +18,8 @@ itself.
 compiled official registry URL
         │ HTTPS, bounded archive, validated apps/ tree
         ▼
-strict manifest
-        │ exact HTTPS artifact URL + SHA-256 or SHA-512 digest
+strict v2 manifest and explicit channel/version resolution
+        │ exact approved HTTPS artifact URL + SHA-256 or SHA-512 digest
         │ + authoritative checksum-source provenance
         ▼
 bounded download ── digest verification ── staging directory
@@ -31,7 +31,7 @@ bounded download ── digest verification ── staging directory
                                            active version
 ```
 
-The official registry is the only catalog authority. TarLink directly enumerates the strict platform files below `apps/<id>/`; there is no generated index, compatibility filename fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves only its normalized `apps/` data into a private generation, validates that generation again, flushes it, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations.
+The official registry is the only catalog authority. TarLink directly enumerates the strict platform files below `apps/<id>/`; there is no generated index, compatibility filename fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves only its normalized `apps/` data into a private generation, validates that generation again, flushes it, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations. Historical releases remain registry-approved metadata; they do not imply local retention, and channel heads are never inferred by version sorting.
 
 Normal registry-dependent commands bootstrap a missing cache automatically. Valid caches remain local-only for 24 hours. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache. `registry sync` always attempts a refresh, while local operations such as rollback and uninstall do not require networking.
 

@@ -11,11 +11,11 @@ import (
 )
 
 func testState() State {
-	return State{Schema: Schema, App: "demo", Current: "1.2.3", Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}}, Integration: Integration{Executables: []ExecutableIntegration{{Name: "demo", Path: "bin/demo", Link: "/tmp/bin/demo", Target: "/tmp/apps/demo/current/bin/demo"}}}}
+	return State{Schema: Schema, App: "demo", Current: "1.2.3", Channel: "stable", Pinned: false, Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}}, Integration: Integration{Executables: []ExecutableIntegration{{Name: "demo", Path: "bin/demo", Link: "/tmp/bin/demo", Target: "/tmp/apps/demo/current/bin/demo"}}}}
 }
 
 func TestDecodeStrictAndTrailing(t *testing.T) {
-	b := []byte(`{"schema":1,"app":"demo","current":"1.2.3","artifact":"tar.gz","executables":[{"name":"demo","path":"bin/demo"}],"desktop_enabled":false,"integration":{"executables":[{"name":"demo","path":"bin/demo","link":"/tmp/bin/demo","target":"/tmp/apps/demo/current/bin/demo"}],"desktop_entry":"","desktop_sha256":""}}`)
+	b := []byte(`{"schema":2,"app":"demo","current":"1.2.3","channel":"stable","pinned":false,"artifact":"tar.gz","executables":[{"name":"demo","path":"bin/demo"}],"desktop_enabled":false,"integration":{"executables":[{"name":"demo","path":"bin/demo","link":"/tmp/bin/demo","target":"/tmp/apps/demo/current/bin/demo"}],"desktop_entry":"","desktop_sha256":""}}`)
 	if _, err := Decode(b); err != nil {
 		t.Fatal(err)
 	}
@@ -41,13 +41,13 @@ func TestWriteLoadAndCorruptPreserved(t *testing.T) {
 	if err != nil || got.App != "demo" {
 		t.Fatalf("state=%+v err=%v", got, err)
 	}
-	if err := os.WriteFile(p, []byte(`{"schema":1,"app":"demo","current":""}`), 0600); err != nil {
+	if err := os.WriteFile(p, []byte(`{"schema":2,"app":"demo","current":""}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(p); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("err=%v", err)
 	}
-	if b, _ := os.ReadFile(p); string(b) != `{"schema":1,"app":"demo","current":""}` {
+	if b, _ := os.ReadFile(p); string(b) != `{"schema":2,"app":"demo","current":""}` {
 		t.Fatal("corrupt file changed")
 	}
 }
@@ -83,7 +83,7 @@ func TestValidateForLayoutRequiresCanonicalOwnedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := State{
-		Schema: Schema, App: "demo", Current: "1.2.3", Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}},
+		Schema: Schema, App: "demo", Current: "1.2.3", Channel: "stable", Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}},
 		Integration: Integration{
 			Executables: []ExecutableIntegration{{Name: "demo", Path: "bin/demo", Link: filepath.Join(layout.Bin, "demo"), Target: filepath.Join(layout.Apps, "demo", "current", "bin", "demo")}},
 		},
@@ -134,7 +134,7 @@ func TestValidateRejectsMalformedPreviousIconPath(t *testing.T) {
 }
 
 func FuzzDecode(f *testing.F) {
-	f.Add([]byte(`{"schema":1,"app":"demo","current":"1","executable":"x","desktop_enabled":false,"integration":{"executable_link":"/tmp/x","executable_target":"/tmp/y","desktop_entry":"","desktop_sha256":""}}`))
+	f.Add([]byte(`{"schema":2,"app":"demo","current":"1","channel":"stable","pinned":false,"executable":"x","desktop_enabled":false,"integration":{"executable_link":"/tmp/x","executable_target":"/tmp/y","desktop_entry":"","desktop_sha256":""}}`))
 	f.Add([]byte("not json"))
 	f.Fuzz(func(t *testing.T, data []byte) { _, _ = Decode(data) })
 }

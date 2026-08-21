@@ -58,7 +58,7 @@ func registryRuntimeArchivePlatforms(t *testing.T, version string, arm64 bool) [
 
 func registryRuntimeArchivePlatformVersions(t *testing.T, amd64Version, arm64Version string, arm64 bool) []byte {
 	t.Helper()
-	manifest := `schema: 1
+	manifest := `schema: 2
 id: fixture
 name: Fixture
 summary: Registry fixture
@@ -66,13 +66,18 @@ homepage: https://example.com/
 categories: [utilities]
 platform: {os: linux, arch: amd64}
 release:
-  version: "` + amd64Version + `"
-  url: https://example.com/fixture.tar.gz
-  archive: tar.gz
-  verification:
-    algorithm: sha256
-    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    source: https://example.com/SHA256SUMS
+  default-channel: stable
+  channels:
+    stable: {current: "` + amd64Version + `"}
+  releases:
+    - channel: stable
+      version: "` + amd64Version + `"
+      url: https://example.com/fixture.tar.gz
+      archive: tar.gz
+      verification:
+        algorithm: sha256
+        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        source: https://example.com/SHA256SUMS
 application: {executables: [{name: fixture, path: fixture}]}
 desktop: {enabled: false, categories: []}
 `
@@ -90,7 +95,11 @@ desktop: {enabled: false, categories: []}
 		{name: "tarlink-registry-main/apps/fixture/linux-amd64.yaml", mode: 0o644, body: []byte(manifest)},
 	}
 	if arm64 {
-		armManifest := strings.Replace(manifest, `version: "`+amd64Version+`"`, `version: "`+arm64Version+`"`, 1)
+		// The channel head and release entry must describe the same
+		// platform-specific release. Replacing every occurrence also updates
+		// the channel's current pointer; leaving the amd64 head here makes the
+		// fixture invalid under the v2 duplicate/current-head checks.
+		armManifest := strings.ReplaceAll(manifest, `"`+amd64Version+`"`, `"`+arm64Version+`"`)
 		armManifest = strings.Replace(armManifest, "arch: amd64", "arch: arm64", 1)
 		armManifest = strings.Replace(armManifest, "name: fixture, path: fixture", "name: fixture-arm64, path: fixture", 1)
 		entries = append(entries, struct {
@@ -365,7 +374,7 @@ func TestListDoesNotClaimRegistryDataWithoutRuntimeVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
-		Schema: state.Schema, App: "fixture", Current: "0.9", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
+		Schema: state.Schema, App: "fixture", Current: "0.9", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
 		Integration: state.Integration{
 			Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}},
 		},
@@ -385,7 +394,7 @@ func TestListPrefersExactRuntimeVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
-		Schema: state.Schema, App: "fixture", Current: "1.5", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
+		Schema: state.Schema, App: "fixture", Current: "1.5", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
 		Integration: state.Integration{
 			Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}},
 		},
@@ -416,7 +425,7 @@ func TestListUsesSharedRegistryFreshnessPolicy(t *testing.T) {
 	if err := os.Chtimes(generation, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{Schema: state.Schema, App: "fixture", Current: "0.9", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}}, Integration: state.Integration{Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}}}}); err != nil {
+	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{Schema: state.Schema, App: "fixture", Current: "0.9", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}}, Integration: state.Integration{Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}}}}); err != nil {
 		t.Fatal(err)
 	}
 	version = "2.0"

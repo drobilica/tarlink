@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-const testManifest = `schema: 1
+const testManifest = `schema: 2
 id: blender
 name: Blender
 summary: 3D creation suite
@@ -17,13 +17,19 @@ homepage: https://www.blender.org/
 categories: [game-development, graphics]
 platform: {os: linux, arch: amd64}
 release:
-  version: "5.2.0"
-  url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz
-  archive: tar.xz
-  verification:
-    algorithm: sha256
-    digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
-    source: https://download.blender.org/release/Blender5.2/blender-5.2.0.sha256
+  default-channel: stable
+  channels:
+    stable:
+      current: "5.2.0"
+  releases:
+    - channel: stable
+      version: "5.2.0"
+      url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz
+      archive: tar.xz
+      verification:
+        algorithm: sha256
+        digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
+        source: https://example.com/blender-checksums
 application: {executables: [{name: blender, path: blender}]}
 desktop: {enabled: true, categories: [Graphics]}
 `
@@ -87,7 +93,7 @@ func TestValidateTreeRejectsInvalidApplicationData(t *testing.T) {
 func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
 	root := createRegistry(t)
 	arm64 := strings.Replace(testManifest, "arch: amd64", "arch: arm64", 1)
-	arm64 = strings.Replace(arm64, `version: "5.2.0"`, `version: "5.2.0-arm64"`, 1)
+	arm64 = strings.ReplaceAll(arm64, `"5.2.0"`, `"5.2.0-arm64"`)
 	arm64 = strings.Replace(arm64, "name: blender, path: blender", "name: blender-arm64, path: blender", 1)
 	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-arm64.yaml"), []byte(arm64), 0o644); err != nil {
 		t.Fatal(err)
@@ -112,6 +118,34 @@ func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
 	}
 	if got := catalog.SearchForPlatform("3d", "linux", "arm64"); len(got) != 1 || got[0].ID != "blender" || got[0].Release.Version != "5.2.0-arm64" || got[0].Application.Executables[0].Name != "blender-arm64" {
 		t.Fatalf("arm64 SearchForPlatform() = %#v", got)
+	}
+}
+
+func TestReleaseForPlatformResolvesChannelAndOpaqueVersion(t *testing.T) {
+	root := createRegistry(t)
+	content, err := os.ReadFile(filepath.Join(root, "apps", "blender", "linux-amd64.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := strings.Replace(string(content), "  channels:\n    stable:\n      current: \"5.2.0\"", "  channels:\n    stable:\n      current: \"5.2.0\"\n    preview:\n      current: \"2.7.513\"", 1)
+	mutated = strings.Replace(mutated, "application: {executables:", "    - channel: preview\n      version: \"2.7.513\"\n      url: https://download.blender.org/release/Blender5.2/preview.tar.xz\n      archive: tar.xz\n      verification:\n        algorithm: sha256\n        digest: abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n        source: https://download.blender.org/release/Blender5.2/preview.sha256\napplication: {executables:", 1)
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-amd64.yaml"), []byte(mutated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, selector := range []string{"preview", "2.7.513"} {
+		item, err := catalog.ReleaseForPlatform("blender", "linux", "amd64", selector)
+		if err != nil || item.Release.Version != "2.7.513" || item.Release.Channel != "preview" {
+			t.Fatalf("selector %q = %#v, error = %v", selector, item, err)
+		}
+	}
+	for _, selector := range []string{"missing", "stable@preview"} {
+		if _, err := catalog.ReleaseForPlatform("blender", "linux", "amd64", selector); err == nil {
+			t.Fatalf("unknown selector %q unexpectedly resolved", selector)
+		}
 	}
 }
 

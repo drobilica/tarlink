@@ -69,7 +69,7 @@ func writeDoctorState(t *testing.T, layout filesystem.Layout, id, artifact strin
 	if desktop {
 		desktopEntry = paths.DesktopEntry
 	}
-	value := state.State{Schema: state.Schema, App: id, Current: "1.0", Artifact: artifact, Executables: executables, DesktopEnabled: desktop, Integration: state.Integration{DesktopEntry: desktopEntry, DesktopSHA256: spec.DesktopSHA256}}
+	value := state.State{Schema: state.Schema, App: id, Current: "1.0", Channel: "stable", Artifact: artifact, Executables: executables, DesktopEnabled: desktop, Integration: state.Integration{DesktopEntry: desktopEntry, DesktopSHA256: spec.DesktopSHA256}}
 	for _, executable := range executables {
 		value.Integration.Executables = append(value.Integration.Executables, state.ExecutableIntegration{Name: executable.Name, Path: executable.Path, Link: filepath.Join(layout.Bin, executable.Name), Target: filepath.Join(root, "current", filepath.FromSlash(executable.Path))})
 	}

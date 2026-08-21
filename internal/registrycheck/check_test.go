@@ -19,7 +19,7 @@ import (
 	"github.com/drobilica/tarlink/internal/manifest"
 )
 
-const checkerManifest = `schema: 1
+const checkerManifest = `schema: 2
 id: fixture
 name: Fixture
 summary: Fixture application
@@ -27,13 +27,19 @@ homepage: https://example.com/
 categories: [utilities]
 platform: {os: linux, arch: amd64}
 release:
-  version: "1.0"
-  url: https://example.com/fixture.tar.gz
-  verification:
-    algorithm: sha256
-    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    source: https://example.com/SHA256SUMS
-  archive: tar.gz
+  default-channel: stable
+  channels:
+    stable:
+      current: "1.0"
+  releases:
+    - channel: stable
+      version: "1.0"
+      url: https://example.com/fixture.tar.gz
+      verification:
+        algorithm: sha256
+        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        source: https://example.com/SHA256SUMS
+      archive: tar.gz
 application: {executables: [{name: fixture, path: fixture}]}
 desktop: {enabled: false, categories: []}
 `
@@ -102,6 +108,29 @@ func TestAppSelectsSingleArchitectureAndRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestAppProjectsEveryApprovedHistoricalRelease(t *testing.T) {
+	body := strings.Replace(checkerManifest, `application:`, `    - channel: stable
+      version: "0.9"
+      url: https://example.com/fixture-0.9.tar.gz
+      verification:
+        algorithm: sha256
+        digest: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+        source: https://example.com/SHA256SUMS-0.9
+      archive: tar.gz
+application:`, 1)
+	root := writeCheckerRegistry(t, body)
+	selection, err := App(root, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selection.Items) != 2 {
+		t.Fatalf("selected %d historical releases, want 2", len(selection.Items))
+	}
+	if selection.Items[0].Release.Version != "0.9" || selection.Items[1].Release.Version != "1.0" {
+		t.Fatalf("release projections = %q, %q", selection.Items[0].Release.Version, selection.Items[1].Release.Version)
+	}
+}
+
 func checkerArchive(t *testing.T, executable, body string) []byte {
 	t.Helper()
 	var output bytes.Buffer
@@ -134,12 +163,13 @@ func checkerArchive(t *testing.T, executable, body string) []byte {
 
 func checkerMaterializeManifest(server *httptest.Server, data []byte, executableName, executablePath string) *manifest.Manifest {
 	digest := sha256.Sum256(data)
+	release := manifest.Release{Channel: "stable", Version: "1.0", URL: server.URL, Verification: manifest.Verification{
+		Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.URL + "/SHA256SUMS",
+	}, Archive: "tar.gz"}
 	return &manifest.Manifest{
-		Schema: 1, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: 2, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
-		Release: manifest.Release{Version: "1.0", URL: server.URL, Verification: manifest.Verification{
-			Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.URL + "/SHA256SUMS",
-		}, Archive: "tar.gz"},
+		Release: release, ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: "1.0"}}, Releases: []manifest.Release{release}},
 		Application: manifest.Application{Executables: []manifest.Executable{{Name: executableName, Path: executablePath}}},
 		Desktop:     manifest.Desktop{Enabled: false, Categories: []string{}},
 	}
@@ -202,12 +232,25 @@ func TestChangedClassifiesMaterializationAndCatalogChanges(t *testing.T) {
 		t.Fatalf("metadata-only change selected %#v", selection.Items)
 	}
 
-	newRoot = writeCheckerRegistry(t, strings.Replace(checkerManifest, "version: \"1.0\"", "version: \"2.0\"", 1))
+	// A release change is represented by appending a new immutable approved
+	// release and advancing the channel head; the existing 1.0 entry remains
+	// in history.
+	changed := strings.Replace(checkerManifest, "      current: \"1.0\"", "      current: \"2.0\"", 1)
+	changed = strings.Replace(changed, "application:", `    - channel: stable
+      version: "2.0"
+      url: https://example.com/fixture-2.0.tar.gz
+      verification:
+        algorithm: sha256
+        digest: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+        source: https://example.com/SHA256SUMS-2.0
+      archive: tar.gz
+application:`, 1)
+	newRoot = writeCheckerRegistry(t, changed)
 	selection, err = Changed(newRoot, oldRoot)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(selection.Items) != 1 || selection.Items[0].ID != "fixture" {
+	if len(selection.Items) != 1 || selection.Items[0].ID != "fixture" || selection.Items[0].Release.Version != "2.0" {
 		t.Fatalf("artifact change selection = %#v", selection.Items)
 	}
 }
@@ -228,5 +271,82 @@ func TestChangedNewAndDeletedManifests(t *testing.T) {
 	selection, err = Changed(emptyRoot, oldRoot)
 	if err == nil {
 		t.Fatal("empty current registry unexpectedly accepted")
+	}
+}
+
+func TestChangedRejectsRemovedV2Manifest(t *testing.T) {
+	oldRoot := t.TempDir()
+	writeCheckerManifest(t, oldRoot, "fixture", "amd64")
+	writeCheckerManifest(t, oldRoot, "fixture", "arm64")
+	currentRoot := writeCheckerRegistry(t, checkerManifest)
+
+	if _, err := Changed(currentRoot, oldRoot); err == nil {
+		t.Fatal("removed v2 platform manifest unexpectedly accepted")
+	}
+}
+
+func TestChangedIgnoresRemovedUnreadableV1ManifestDuringMigration(t *testing.T) {
+	oldRoot := t.TempDir()
+	writeCheckerManifest(t, oldRoot, "fixture", "amd64")
+	v1Path := filepath.Join(oldRoot, "apps", "fixture", "linux-amd64.yaml")
+	v1, err := os.ReadFile(v1Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(v1Path, []byte(strings.Replace(string(v1), "schema: 2", "schema: 1", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	currentRoot := t.TempDir()
+	writeCheckerManifest(t, currentRoot, "other", "amd64")
+	if _, err := Changed(currentRoot, oldRoot); err != nil {
+		t.Fatalf("retired v1 manifest removal rejected: %v", err)
+	}
+}
+
+func TestChangedDoesNotMaterializeUnchangedArtifactForRetiredSchema(t *testing.T) {
+	current := writeCheckerRegistry(t, checkerManifest)
+	retired := writeCheckerRegistry(t, strings.Replace(checkerManifest, "schema: 2", "schema: 1", 1))
+	selection, err := Changed(current, retired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selection.Items) != 0 {
+		t.Fatalf("retired-schema unchanged artifact selected for materialization: %#v", selection.Items)
+	}
+}
+
+func TestChangedSelectsHistoryArtifactChanges(t *testing.T) {
+	oldRoot := writeCheckerRegistry(t, checkerManifest)
+	// A new approved release is appended to history. The existing 1.0
+	// release remains immutable and retained while the channel head advances.
+	changed := strings.Replace(checkerManifest, "      current: \"1.0\"", "      current: \"2.0\"", 1)
+	changed = strings.Replace(changed, "application:", `    - channel: stable
+      version: "2.0"
+      url: https://example.com/fixture-2.0.tar.gz
+      verification:
+        algorithm: sha256
+        digest: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef
+        source: https://example.com/SHA256SUMS-2.0
+      archive: tar.gz
+application:`, 1)
+	newRoot := writeCheckerRegistry(t, changed)
+	selection, err := Changed(newRoot, oldRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selection.Items) != 1 || selection.Items[0].Release.Version != "2.0" {
+		t.Fatalf("history artifact change selection = %#v", selection.Items)
+	}
+}
+
+func TestChangedRejectsHistoricalReleaseMutationOrRemoval(t *testing.T) {
+	oldRoot := writeCheckerRegistry(t, checkerManifest)
+	mutated := strings.Replace(checkerManifest, "https://example.com/fixture.tar.gz", "https://example.com/other.tar.gz", 1)
+	if _, err := Changed(writeCheckerRegistry(t, mutated), oldRoot); err == nil {
+		t.Fatal("mutated approved release unexpectedly accepted")
+	}
+	removed := strings.Replace(checkerManifest, "    - channel: stable\n      version: \"1.0\"\n      url: https://example.com/fixture.tar.gz\n      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://example.com/SHA256SUMS\n      archive: tar.gz\n", "", 1)
+	if _, err := Changed(writeCheckerRegistry(t, removed), oldRoot); err == nil {
+		t.Fatal("removed approved release unexpectedly accepted")
 	}
 }

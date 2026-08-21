@@ -332,6 +332,12 @@ func (m model) View() tea.View {
 			if m.detail.InstalledVersion != "" {
 				line("Installed version: " + m.detail.InstalledVersion)
 			}
+			if m.detail.InstalledChannel != "" {
+				line("Channel: " + m.detail.InstalledChannel)
+			}
+			if m.detail.Pinned {
+				line("Pinned: yes")
+			}
 			line("Available version: " + m.detail.RegistryVersion)
 			line("Categories: " + strings.Join(m.detail.Categories, ", "))
 			if hasGameData(*m.detail) {
@@ -341,6 +347,9 @@ func (m model) View() tea.View {
 			if m.detail.InstalledVersion == "" {
 				body.WriteByte('\n')
 				line("Enter Install   Esc Back   q Quit")
+			} else if m.detail.Pinned {
+				body.WriteByte('\n')
+				line("Pinned — v Versions   r Rollback   x Uninstall   Esc Back   q Quit")
 			} else if m.detail.UpdateAvailable {
 				body.WriteByte('\n')
 				line("Enter Update   v Versions   r Rollback   x Uninstall")
@@ -708,6 +717,10 @@ func (m model) activateSelected() (tea.Model, tea.Cmd) {
 		cmd, cancel := m.pathCheckCmd(id)
 		m.opCancel = cancel
 		return m, cmd
+	case m.detail.Pinned:
+		m.clearFeedback()
+		m.status = id + " is pinned at " + m.detail.InstalledVersion
+		return m, nil
 	case m.detail.UpdateAvailable:
 		m.busy = "Updating " + id
 		m.startOperation()
@@ -1131,7 +1144,7 @@ func (m model) footer() string {
 func updates(values []app.Application) []app.Application {
 	result := make([]app.Application, 0, len(values))
 	for _, value := range values {
-		if value.UpdateAvailable {
+		if value.UpdateAvailable && !value.Pinned {
 			result = append(result, value)
 		}
 	}
@@ -1176,6 +1189,12 @@ func writeApplications(destination *strings.Builder, values []app.Application, s
 
 func installedLabel(value app.Application) string {
 	label := applicationStatus(value)
+	if value.InstalledChannel != "" {
+		label += " · " + value.InstalledChannel
+	}
+	if value.Pinned && label != "Pinned" {
+		label += " · Pinned"
+	}
 	if hasGameData(value) {
 		label += " · Game data required"
 	}
@@ -1185,6 +1204,9 @@ func installedLabel(value app.Application) string {
 func applicationStatus(value app.Application) string {
 	if value.InstalledVersion == "" {
 		return "Not installed"
+	}
+	if value.Pinned {
+		return "Pinned"
 	}
 	if value.UpdateAvailable {
 		return "Update available"

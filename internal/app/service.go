@@ -110,7 +110,7 @@ func (core *Core) CheckInstallPath(appID string) ([]integration.PathConflict, er
 }
 
 func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
-	item, _, err := core.resolve(ctx, appID, sink)
+	selector, item, _, err := core.resolveSelector(ctx, appID, sink)
 	if err != nil {
 		return Result{}, err
 	}
@@ -118,15 +118,28 @@ func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) 
 		return Result{}, err
 	}
 	core.emit(sink, ProgressResolving, appID, 0, 0)
-	outcome, err := core.installer.Install(ctx, item, core.progress(sink, appID))
+	outcome, err := core.installer.InstallWithOptions(ctx, item, install.Options{Channel: item.Release.Channel, Explicit: selector.Target != ""}, core.progress(sink, item.ID))
 	if err != nil {
 		return Result{}, classify("install "+appID, err)
 	}
-	return Result{AppID: appID, Version: outcome.State.Current, Previous: outcome.State.Previous, Warnings: outcome.Warnings}, nil
+	return Result{AppID: item.ID, Version: outcome.State.Current, Previous: outcome.State.Previous, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
 }
 
 func (core *Core) Update(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
-	item, _, err := core.resolve(ctx, appID, sink)
+	selector, item, _, err := core.resolveSelector(ctx, appID, sink)
+	if err == nil && selector.Target == "" {
+		if installed, stateErr := state.LoadForApp(core.layout, item.ID); stateErr == nil && installed.Channel != "" {
+			catalog, catErr := core.catalog(ctx, sink)
+			if catErr != nil {
+				err = catErr
+			} else {
+				item, catErr = catalog.ReleaseForPlatform(item.ID, item.Platform.OS, item.Platform.Arch, installed.Channel)
+				if catErr != nil {
+					err = catErr
+				}
+			}
+		}
+	}
 	if err != nil {
 		return Result{}, err
 	}
@@ -134,11 +147,28 @@ func (core *Core) Update(ctx context.Context, appID string, sink ProgressSink) (
 		return Result{}, err
 	}
 	core.emit(sink, ProgressResolving, appID, 0, 0)
-	outcome, err := core.installer.Update(ctx, item, core.progress(sink, appID))
+	outcome, err := core.installer.UpdateWithOptions(ctx, item, install.Options{Channel: item.Release.Channel, Explicit: selector.Target != ""}, core.progress(sink, item.ID))
 	if err != nil {
 		return Result{}, classify("update "+appID, err)
 	}
-	return Result{AppID: appID, Version: outcome.State.Current, Previous: outcome.State.Previous, Warnings: outcome.Warnings}, nil
+	return Result{AppID: item.ID, Version: outcome.State.Current, Previous: outcome.State.Previous, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
+}
+
+func (core *Core) Pin(ctx context.Context, appID string) error {
+	return core.setPinned(ctx, appID, true)
+}
+func (core *Core) Unpin(ctx context.Context, appID string) error {
+	return core.setPinned(ctx, appID, false)
+}
+
+func (core *Core) setPinned(ctx context.Context, appID string, pinned bool) error {
+	if err := filesystem.ValidateID(appID); err != nil {
+		return &Error{Code: CodeInvalidArguments, Op: "pin", Err: err}
+	}
+	if err := core.installer.SetPinned(ctx, appID, pinned); err != nil {
+		return classify("pin "+appID, err)
+	}
+	return nil
 }
 
 func (core *Core) UpdateAll(ctx context.Context, sink ProgressSink) (UpdateAllResult, error) {
@@ -150,6 +180,11 @@ func (core *Core) UpdateAll(ctx context.Context, sink ProgressSink) (UpdateAllRe
 	for _, installedState := range installed {
 		if err := ctx.Err(); err != nil {
 			return result, err
+		}
+		if installedState.Pinned {
+			result.Skipped = append(result.Skipped, installedState.App)
+			result.Pinned = append(result.Pinned, installedState.App)
+			continue
 		}
 		updated, updateErr := core.Update(ctx, installedState.App, sink)
 		if updateErr == nil {
@@ -174,7 +209,7 @@ func (core *Core) Rollback(ctx context.Context, appID string, sink ProgressSink)
 	if err != nil {
 		return Result{}, classify("rollback "+appID, err)
 	}
-	return Result{AppID: appID, Version: outcome.State.Current, Previous: outcome.State.Previous, Warnings: outcome.Warnings}, nil
+	return Result{AppID: appID, Version: outcome.State.Current, Previous: outcome.State.Previous, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
 }
 
 func (core *Core) List(ctx context.Context) ([]Application, error) {
@@ -188,10 +223,11 @@ func (core *Core) List(ctx context.Context) ([]Application, error) {
 	for _, installed := range states {
 		value := Application{
 			ID: installed.App, Name: installed.App, InstalledVersion: installed.Current,
-			PreviousVersion: installed.Previous,
+			PreviousVersion: installed.Previous, InstalledChannel: installed.Channel, Pinned: installed.Pinned,
 		}
 		if catalogErr == nil {
 			if item := catalog.Variants[installed.App][manifest.Platform{OS: goos, Arch: goarch}]; item != nil {
+				item = core.itemForInstalledChannel(catalog, item, installed.Channel)
 				value = applicationFrom(item, &installed)
 			}
 		}
@@ -201,7 +237,7 @@ func (core *Core) List(ctx context.Context) ([]Application, error) {
 }
 
 func (core *Core) Info(ctx context.Context, appID string) (Application, error) {
-	item, _, err := core.resolve(ctx, appID, nil)
+	item, catalog, err := core.resolve(ctx, appID, nil)
 	if err != nil {
 		return Application{}, err
 	}
@@ -212,6 +248,7 @@ func (core *Core) Info(ctx context.Context, appID string) (Application, error) {
 	if stateErr != nil {
 		return Application{}, classify("read state", stateErr)
 	}
+	item = core.itemForInstalledChannel(catalog, item, installed.Channel)
 	return applicationFrom(item, &installed), nil
 }
 
@@ -232,12 +269,13 @@ func (core *Core) Search(ctx context.Context, query string) ([]Application, erro
 		if stateErr != nil {
 			return nil, classify("read state", stateErr)
 		}
+		item = core.itemForInstalledChannel(catalog, item, installed.Channel)
 		result = append(result, applicationFrom(item, &installed))
 	}
 	return result, nil
 }
 
-func (core *Core) Versions(_ context.Context, appID string) ([]Version, error) {
+func (core *Core) Versions(ctx context.Context, appID string) ([]Version, error) {
 	if err := filesystem.ValidateID(appID); err != nil {
 		return nil, &Error{Code: CodeInvalidArguments, Op: "versions", Err: err}
 	}
@@ -248,9 +286,23 @@ func (core *Core) Versions(_ context.Context, appID string) ([]Version, error) {
 	if err != nil {
 		return nil, classify("versions "+appID, err)
 	}
-	result := []Version{{Version: installed.Current, Status: "current"}}
+	result := []Version{{Version: installed.Current, Status: "current", Channel: installed.Channel, Pinned: installed.Pinned}}
 	if installed.Previous != "" {
-		result = append(result, Version{Version: installed.Previous, Status: "previous"})
+		result = append(result, Version{Version: installed.Previous, Status: "previous", Channel: installed.PreviousChannel})
+	}
+	if catalog, catErr := core.catalog(ctx, nil); catErr == nil {
+		goos, goarch := core.platform()
+		if item, itemErr := catalog.ManifestForPlatform(appID, goos, goarch); itemErr == nil {
+			seen := map[string]bool{installed.Current: true, installed.Previous: true}
+			for _, release := range item.ReleaseHistory.Releases {
+				if seen[release.Version] {
+					continue
+				}
+				current := item.ReleaseHistory.Channels[release.Channel].Current == release.Version
+				result = append(result, Version{Version: release.Version, Status: "approved", Channel: release.Channel, Current: current, Default: item.ReleaseHistory.DefaultChannel == release.Channel})
+				seen[release.Version] = true
+			}
+		}
 	}
 	return result, nil
 }
@@ -324,22 +376,33 @@ func (core *Core) catalog(ctx context.Context, sink ProgressSink) (*registry.Cat
 }
 
 func (core *Core) resolve(ctx context.Context, appID string, sink ProgressSink) (*manifest.Manifest, *registry.Catalog, error) {
-	if err := filesystem.ValidateID(appID); err != nil {
-		return nil, nil, &Error{Code: CodeInvalidArguments, Op: "resolve application", Err: err}
+	_, item, catalog, err := core.resolveSelector(ctx, appID, sink)
+	return item, catalog, err
+}
+
+func (core *Core) resolveSelector(ctx context.Context, value string, sink ProgressSink) (Selector, *manifest.Manifest, *registry.Catalog, error) {
+	selector, err := ParseSelector(value)
+	if err != nil {
+		return Selector{}, nil, nil, &Error{Code: CodeInvalidArguments, Op: "resolve application", Err: err}
 	}
 	catalog, err := core.catalog(ctx, sink)
 	if err != nil {
-		return nil, nil, err
+		return selector, nil, nil, err
 	}
 	goos, goarch := core.platform()
-	item, err := catalog.ManifestForPlatform(appID, goos, goarch)
+	var item *manifest.Manifest
+	if selector.Target == "" {
+		item, err = catalog.ManifestForPlatform(selector.App, goos, goarch)
+	} else {
+		item, err = catalog.ReleaseForPlatform(selector.App, goos, goarch, selector.Target)
+	}
 	if err != nil {
 		if errors.Is(err, registry.ErrUnavailableForPlatform) {
-			return nil, nil, &Error{Code: CodeUnsupportedPlatform, Op: "resolve application", Err: err}
+			return selector, nil, catalog, &Error{Code: CodeUnsupportedPlatform, Op: "resolve application", Err: err}
 		}
-		return nil, nil, &Error{Code: CodeNotFound, Op: "resolve application", Err: err}
+		return selector, nil, catalog, &Error{Code: CodeNotFound, Op: "resolve application", Err: err}
 	}
-	return item, catalog, nil
+	return selector, item, catalog, nil
 }
 
 func (core *Core) checkManifestPlatform(item *manifest.Manifest) error {
@@ -396,13 +459,44 @@ func applicationFrom(item *manifest.Manifest, installed *state.State) Applicatio
 	value := Application{
 		ID: item.ID, Name: item.Name, Summary: item.Summary, Homepage: item.Homepage,
 		Categories: append([]string(nil), item.Categories...), Requirements: append([]string(nil), item.Requirements...), RegistryVersion: item.Release.Version,
+		DefaultChannel: item.ReleaseHistory.DefaultChannel,
+		ChannelHeads:   make(map[string]string, len(item.ReleaseHistory.Channels)),
+	}
+	for channel, head := range item.ReleaseHistory.Channels {
+		value.ChannelHeads[channel] = head.Current
+	}
+	value.ApprovedReleases = make([]Version, 0, len(item.ReleaseHistory.Releases))
+	for _, release := range item.ReleaseHistory.Releases {
+		value.ApprovedReleases = append(value.ApprovedReleases, Version{
+			Version: release.Version, Status: "approved", Channel: release.Channel,
+			Current: item.ReleaseHistory.Channels[release.Channel].Current == release.Version,
+			Default: item.ReleaseHistory.DefaultChannel == release.Channel,
+		})
 	}
 	if installed != nil {
 		value.InstalledVersion = installed.Current
 		value.PreviousVersion = installed.Previous
+		value.InstalledChannel = installed.Channel
+		value.Pinned = installed.Pinned
 		value.UpdateAvailable = installed.Current != item.Release.Version
 	}
 	return value
+}
+
+// itemForInstalledChannel changes only the selected release view. The
+// manifest metadata and history remain those of the same approved platform
+// variant, while update availability follows the channel retained in state.
+func (core *Core) itemForInstalledChannel(catalog *registry.Catalog, item *manifest.Manifest, channel string) *manifest.Manifest {
+	if channel == "" || catalog == nil {
+		return item
+	}
+	selected, err := catalog.ReleaseForPlatform(item.ID, item.Platform.OS, item.Platform.Arch, channel)
+	if err != nil {
+		// A corrupt/retired tracking channel must not silently switch to the
+		// default channel. Keep the approved manifest view for diagnostics.
+		return item
+	}
+	return selected
 }
 
 func (core *Core) progress(sink ProgressSink, appID string) install.Progress {
@@ -433,6 +527,8 @@ func classify(operation string, err error) error {
 		code = CodeNotInstalled
 	case errors.Is(err, install.ErrNoUpdate):
 		code = CodeNoUpdate
+	case errors.Is(err, install.ErrPinned):
+		code = CodePinned
 	case errors.Is(err, install.ErrNoPrevious):
 		code = CodeNoUpdate
 	case errors.Is(err, locking.ErrConflict):

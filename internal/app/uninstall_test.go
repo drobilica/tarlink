@@ -63,7 +63,7 @@ func TestUninstallAllRejectsCorruptStateBeforeCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(layout.States, "demo.json")
-	if err := os.WriteFile(statePath, []byte(`{"schema":1,"app":"demo"}`), 0o600); err != nil {
+	if err := os.WriteFile(statePath, []byte(`{"schema":2,"app":"demo","channel":"stable","pinned":false}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	core := &Core{layout: layout, installer: install.New(layout, nil)}
@@ -103,7 +103,7 @@ func writeInstalledUninstallFixture(t *testing.T, layout filesystem.Layout, appI
 		t.Fatal(err)
 	}
 	value := state.State{
-		Schema: state.Schema, App: appID, Current: "v1", Artifact: "tar.gz", Executables: []state.Executable{{Name: appID, Path: "bin/run"}}, DesktopEnabled: true,
+		Schema: state.Schema, App: appID, Current: "v1", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: appID, Path: "bin/run"}}, DesktopEnabled: true,
 		Integration: state.Integration{
 			Executables:  []state.ExecutableIntegration{{Name: appID, Path: "bin/run", Link: paths.Executables[0].Link, Target: filepath.Join(appRoot, "current", "bin", "run")}},
 			DesktopEntry: paths.DesktopEntry, DesktopSHA256: spec.DesktopSHA256,

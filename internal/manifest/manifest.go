@@ -1,4 +1,4 @@
-// Package manifest implements TarLink's deliberately small, declarative v1
+// Package manifest implements TarLink's deliberately small, declarative v2
 // application manifest. A manifest can describe data only; it cannot request
 // process execution, hooks, arbitrary destinations, or command arguments.
 package manifest
@@ -20,24 +20,30 @@ import (
 )
 
 const (
-	SchemaV1         = 1
+	SchemaV1         = 1 // retired; retained as a name for callers describing old data.
+	SchemaV2         = 2
 	MaxManifestBytes = 1 << 20
 )
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 type Manifest struct {
-	Schema       int         `yaml:"schema" json:"schema"`
-	ID           string      `yaml:"id" json:"id"`
-	Name         string      `yaml:"name" json:"name"`
-	Summary      string      `yaml:"summary" json:"summary"`
-	Homepage     string      `yaml:"homepage" json:"homepage"`
-	Categories   []string    `yaml:"categories" json:"categories"`
-	Requirements []string    `yaml:"requirements,omitempty" json:"requirements,omitempty"`
-	Platform     Platform    `yaml:"platform" json:"platform"`
-	Release      Release     `yaml:"release" json:"release"`
-	Application  Application `yaml:"application" json:"application"`
-	Desktop      Desktop     `yaml:"desktop" json:"desktop"`
+	Schema       int      `yaml:"schema" json:"schema"`
+	ID           string   `yaml:"id" json:"id"`
+	Name         string   `yaml:"name" json:"name"`
+	Summary      string   `yaml:"summary" json:"summary"`
+	Homepage     string   `yaml:"homepage" json:"homepage"`
+	Categories   []string `yaml:"categories" json:"categories"`
+	Requirements []string `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	Platform     Platform `yaml:"platform" json:"platform"`
+	// Release is the selected default-channel head. It is populated from
+	// ReleaseHistory by Parse and by registry resolution; it is not itself a
+	// YAML field. Keeping this convenience view avoids making consumers parse
+	// registry history when they only need the artifact to install.
+	Release        Release        `yaml:"-" json:"release"`
+	ReleaseHistory ReleaseHistory `yaml:"release" json:"release_history"`
+	Application    Application    `yaml:"application" json:"application"`
+	Desktop        Desktop        `yaml:"desktop" json:"desktop"`
 }
 
 type Platform struct {
@@ -46,10 +52,23 @@ type Platform struct {
 }
 
 type Release struct {
+	Channel      string       `yaml:"channel" json:"channel"`
 	Version      string       `yaml:"version" json:"version"`
 	URL          string       `yaml:"url" json:"url"`
 	Verification Verification `yaml:"verification" json:"verification"`
 	Archive      string       `yaml:"archive" json:"archive"`
+}
+
+// ReleaseHistory stores all releases explicitly approved for one platform.
+// Channel heads are opaque version identifiers, never inferred by sorting.
+type ReleaseHistory struct {
+	DefaultChannel string                 `yaml:"default-channel" json:"default_channel"`
+	Channels       map[string]ChannelHead `yaml:"channels" json:"channels"`
+	Releases       []Release              `yaml:"releases" json:"releases"`
+}
+
+type ChannelHead struct {
+	Current string `yaml:"current" json:"current"`
 }
 
 type Verification struct {
@@ -112,6 +131,13 @@ func Parse(r io.Reader) (*Manifest, error) {
 	if err := result.Validate(); err != nil {
 		return nil, err
 	}
+	if err := result.ValidateHistory(); err != nil {
+		return nil, err
+	}
+	result.Release, err = result.ReleaseHistory.ResolveDefault()
+	if err != nil {
+		return nil, err
+	}
 	return &result, nil
 }
 
@@ -155,12 +181,33 @@ func validateManifestShape(document *yaml.Node) error {
 	if _, err := requiredMapping(root["platform"], "platform", []string{"os", "arch"}, nil); err != nil {
 		return err
 	}
-	release, err := requiredMapping(root["release"], "release", []string{"version", "url", "verification", "archive"}, nil)
+	release, err := requiredMapping(root["release"], "release", []string{"default-channel", "channels", "releases"}, nil)
 	if err != nil {
 		return err
 	}
-	if _, err := requiredMapping(release["verification"], "release.verification", []string{"algorithm", "digest", "source"}, nil); err != nil {
-		return err
+	if release["channels"].Kind != yaml.MappingNode || len(release["channels"].Content) == 0 {
+		return errors.New("release.channels must be a non-empty mapping")
+	}
+	for i := 0; i < len(release["channels"].Content); i += 2 {
+		name := release["channels"].Content[i]
+		if name.Kind != yaml.ScalarNode || name.Tag != "!!str" {
+			return errors.New("release channel names must be strings")
+		}
+		if _, err := requiredMapping(release["channels"].Content[i+1], "release.channels."+name.Value, []string{"current"}, nil); err != nil {
+			return err
+		}
+	}
+	if release["releases"].Kind != yaml.SequenceNode || len(release["releases"].Content) == 0 {
+		return errors.New("release.releases must be a non-empty sequence")
+	}
+	for index, value := range release["releases"].Content {
+		entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"channel", "version", "url", "verification", "archive"}, nil)
+		if err != nil {
+			return err
+		}
+		if _, err := requiredMapping(entry["verification"], "release.releases.verification", []string{"algorithm", "digest", "source"}, nil); err != nil {
+			return err
+		}
 	}
 	application, err := requiredMapping(root["application"], "application", []string{"executables"}, nil)
 	if err != nil {
@@ -222,7 +269,7 @@ func requiredMapping(node *yaml.Node, label string, required, optional []string)
 }
 
 func (m Manifest) Validate() error {
-	if m.Schema != SchemaV1 {
+	if m.Schema != SchemaV2 {
 		return fmt.Errorf("unsupported manifest schema %d", m.Schema)
 	}
 	if !ValidID(m.ID) {
@@ -242,7 +289,7 @@ func (m Manifest) Validate() error {
 	}
 	if err := validateEnumList("category", m.Categories, map[string]bool{
 		"game-development": true, "emulation": true, "graphics": true,
-		"development": true, "utilities": true, "games": true,
+		"development": true, "utilities": true, "games": true, "recompilation": true,
 	}); err != nil {
 		return err
 	}
@@ -255,29 +302,42 @@ func (m Manifest) Validate() error {
 	if m.Platform.Arch != "amd64" && m.Platform.Arch != "arm64" {
 		return fmt.Errorf("unsupported architecture %q", m.Platform.Arch)
 	}
-	if err := constrainedText("release version", m.Release.Version, 1, 128); err != nil {
+	if m.Release.Version != "" {
+		if err := validateRelease(m.Release); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRelease(m Release) error {
+	if err := constrainedText("release version", m.Version, 1, 128); err != nil {
 		return err
 	}
-	if strings.ContainsAny(m.Release.Version, `/\\`) || m.Release.Version == "." || m.Release.Version == ".." {
+	if strings.ContainsAny(m.Version, `/\\`) || m.Version == "." || m.Version == ".." {
 		return errors.New("release version is not filesystem-safe")
 	}
-	if err := validateHTTPSURL("release URL", m.Release.URL); err != nil {
+	if err := validateHTTPSURL("release URL", m.URL); err != nil {
 		return err
 	}
-	if err := validateHTTPSURL("release verification source", m.Release.Verification.Source); err != nil {
+	if err := validateHTTPSURL("release verification source", m.Verification.Source); err != nil {
 		return err
 	}
-	if m.Release.Verification.Source == m.Release.URL {
+	if m.Verification.Source == m.URL {
 		return errors.New("release verification source must be a separate checksum metadata URL")
 	}
-	if err := ValidateDigest(m.Release.Verification.Algorithm, m.Release.Verification.Digest); err != nil {
+	if err := ValidateDigest(m.Verification.Algorithm, m.Verification.Digest); err != nil {
 		return err
 	}
-	switch m.Release.Archive {
+	switch m.Archive {
 	case "tar.gz", "tar.xz", "zip", "appimage":
 	default:
-		return fmt.Errorf("unsupported archive format %q", m.Release.Archive)
+		return fmt.Errorf("unsupported archive format %q", m.Archive)
 	}
+	return nil
+}
+
+func validateApplicationRelease(m Manifest, release Release) error {
 	if len(m.Application.Executables) == 0 {
 		return errors.New("application.executables must not be empty")
 	}
@@ -293,11 +353,11 @@ func (m Manifest) Validate() error {
 		if err := ValidateRelativePath(executable.Path); err != nil {
 			return fmt.Errorf("invalid executable path for %q: %w", executable.Name, err)
 		}
-		if m.Release.Archive == "appimage" && executable.Path != "appimage" {
+		if release.Archive == "appimage" && executable.Path != "appimage" {
 			return fmt.Errorf("AppImage executable %q must target appimage", executable.Name)
 		}
 	}
-	if m.Release.Archive == "appimage" && m.Desktop.Icon != "" {
+	if release.Archive == "appimage" && m.Desktop.Icon != "" {
 		return errors.New("AppImage releases cannot declare desktop icons")
 	}
 	if m.Desktop.Enabled && len(m.Desktop.Categories) == 0 {
@@ -319,6 +379,81 @@ func (m Manifest) Validate() error {
 	}
 	return nil
 }
+
+func (m Manifest) ValidateHistory() error {
+	if m.ReleaseHistory.DefaultChannel == "" || !ValidChannel(m.ReleaseHistory.DefaultChannel) {
+		return fmt.Errorf("invalid default channel %q", m.ReleaseHistory.DefaultChannel)
+	}
+	if len(m.ReleaseHistory.Channels) == 0 {
+		return errors.New("at least one release channel is required")
+	}
+	// Selectors use the same app@value syntax for channels and exact
+	// versions.  A version that is also a channel name would therefore be
+	// impossible to address unambiguously (the registry resolver must prefer
+	// the channel interpretation). Reject that ambiguity at the manifest
+	// boundary rather than relying on resolver ordering.
+	for _, release := range m.ReleaseHistory.Releases {
+		if _, ok := m.ReleaseHistory.Channels[release.Version]; ok {
+			return fmt.Errorf("release version %q conflicts with channel name", release.Version)
+		}
+	}
+	seen := make(map[string]bool, len(m.ReleaseHistory.Releases))
+	versions := make(map[string]string, len(m.ReleaseHistory.Releases))
+	for _, release := range m.ReleaseHistory.Releases {
+		if !ValidChannel(release.Channel) {
+			return fmt.Errorf("invalid release channel %q", release.Channel)
+		}
+		if seen[release.Channel+"\x00"+release.Version] {
+			return fmt.Errorf("duplicate release %q in channel %q", release.Version, release.Channel)
+		}
+		seen[release.Channel+"\x00"+release.Version] = true
+		if previous, ok := versions[release.Version]; ok && previous != release.Channel {
+			return fmt.Errorf("version %q is ambiguous across channels %q and %q", release.Version, previous, release.Channel)
+		}
+		versions[release.Version] = release.Channel
+		if err := validateRelease(release); err != nil {
+			return err
+		}
+		if err := validateApplicationRelease(m, release); err != nil {
+			return err
+		}
+	}
+	if _, ok := m.ReleaseHistory.Channels[m.ReleaseHistory.DefaultChannel]; !ok {
+		return fmt.Errorf("default channel %q is not defined", m.ReleaseHistory.DefaultChannel)
+	}
+	for channel, head := range m.ReleaseHistory.Channels {
+		if !ValidChannel(channel) || head.Current == "" {
+			return fmt.Errorf("invalid channel head %q", channel)
+		}
+		count := 0
+		for _, release := range m.ReleaseHistory.Releases {
+			if release.Channel == channel && release.Version == head.Current {
+				count++
+			}
+		}
+		if count != 1 {
+			return fmt.Errorf("channel %q current release %q is not unique", channel, head.Current)
+		}
+	}
+	return nil
+}
+
+func (h ReleaseHistory) ResolveDefault() (Release, error) {
+	head, ok := h.Channels[h.DefaultChannel]
+	if !ok {
+		return Release{}, fmt.Errorf("default channel %q is not defined", h.DefaultChannel)
+	}
+	for _, release := range h.Releases {
+		if release.Channel == h.DefaultChannel && release.Version == head.Current {
+			return release, nil
+		}
+	}
+	return Release{}, fmt.Errorf("default channel %q current release %q is unavailable", h.DefaultChannel, head.Current)
+}
+
+var channelPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+func ValidChannel(value string) bool { return channelPattern.MatchString(value) }
 
 func ValidID(id string) bool {
 	return len(id) <= 80 && idPattern.MatchString(id)

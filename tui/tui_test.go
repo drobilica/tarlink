@@ -747,6 +747,7 @@ func TestApplicationStatusUsesUserTerminology(t *testing.T) {
 		{app.Application{}, "Not installed"},
 		{app.Application{InstalledVersion: "1.0"}, "Installed"},
 		{app.Application{InstalledVersion: "1.0", UpdateAvailable: true}, "Update available"},
+		{app.Application{InstalledVersion: "1.0", UpdateAvailable: true, Pinned: true}, "Pinned"},
 	} {
 		if got := applicationStatus(tc.value); got != tc.want {
 			t.Errorf("status = %q, want %q", got, tc.want)
@@ -754,6 +755,37 @@ func TestApplicationStatusUsesUserTerminology(t *testing.T) {
 	}
 	if strings.Contains(installedLabel(app.Application{}), "Install") || strings.Contains(installedLabel(app.Application{InstalledVersion: "1.0"}), "current") {
 		t.Fatal("action-oriented state label regressed")
+	}
+}
+
+func TestInstalledLabelShowsTrackingChannelAndPin(t *testing.T) {
+	value := app.Application{InstalledVersion: "2.7.513", InstalledChannel: "nightly", Pinned: true}
+	label := installedLabel(value)
+	if !strings.Contains(label, "nightly") || !strings.Contains(label, "Pinned") {
+		t.Fatalf("installed label = %q, want channel and pin state", label)
+	}
+}
+
+func TestUpdatesOmitsPinnedApplications(t *testing.T) {
+	values := []app.Application{
+		{ID: "pinned", InstalledVersion: "1.0", UpdateAvailable: true, Pinned: true},
+		{ID: "tracked", InstalledVersion: "1.0", UpdateAvailable: true},
+	}
+	got := updates(values)
+	if len(got) != 1 || got[0].ID != "tracked" {
+		t.Fatalf("updates() = %#v, want only unpinned update", got)
+	}
+}
+
+func TestPinnedApplicationDoesNotStartTUIUpdate(t *testing.T) {
+	value := app.Application{ID: "pcsx2", Name: "PCSX2", InstalledVersion: "2.7.513", UpdateAvailable: true, Pinned: true}
+	m := model{screen: screenDetails, detail: &value, width: 100, height: 20}
+	updated, command := m.activateSelected()
+	if command != nil {
+		t.Fatal("pinned application started an update command")
+	}
+	if !strings.Contains(updated.(model).status, "pinned") {
+		t.Fatalf("status = %q, want pinned message", updated.(model).status)
 	}
 }
 

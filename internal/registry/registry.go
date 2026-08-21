@@ -118,8 +118,38 @@ func (c *Catalog) ManifestForPlatform(id, goos, goarch string) (*manifest.Manife
 	}
 	copy := *item
 	copy.Categories = append([]string(nil), item.Categories...)
+	copy.Requirements = append([]string(nil), item.Requirements...)
 	copy.Desktop.Categories = append([]string(nil), item.Desktop.Categories...)
+	copy.ReleaseHistory.Releases = append([]manifest.Release(nil), item.ReleaseHistory.Releases...)
+	copy.ReleaseHistory.Channels = make(map[string]manifest.ChannelHead, len(item.ReleaseHistory.Channels))
+	for channel, head := range item.ReleaseHistory.Channels {
+		copy.ReleaseHistory.Channels[channel] = head
+	}
 	return &copy, nil
+}
+
+// ReleaseForPlatform resolves an explicitly requested approved channel head
+// or opaque version. It never consults upstream metadata or sorts versions.
+func (c *Catalog) ReleaseForPlatform(id, goos, goarch, selector string) (*manifest.Manifest, error) {
+	item, err := c.ManifestForPlatform(id, goos, goarch)
+	if err != nil {
+		return nil, err
+	}
+	channel := selector
+	version := ""
+	if head, ok := item.ReleaseHistory.Channels[selector]; ok {
+		version = head.Current
+	} else {
+		version = selector
+		channel = ""
+	}
+	for _, release := range item.ReleaseHistory.Releases {
+		if release.Version == version && (channel == "" || release.Channel == channel) {
+			item.Release = release
+			return item, nil
+		}
+	}
+	return nil, fmt.Errorf("approved release %q for %s is not available", selector, id)
 }
 
 func (c *Catalog) SearchForPlatform(query, goos, goarch string) []*manifest.Manifest {

@@ -9,6 +9,7 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 - Connect, TLS handshake, response-header, and overall timeouts bound waits.
 - Registry responses are limited to 64 MiB. Application downloads are limited to 8 GiB.
 - Each application release declares an exact lowercase SHA-256 or SHA-512 digest and an authoritative upstream HTTPS checksum source. Verification completes before extraction or activation. Other algorithms, missing verification, and malformed digests are rejected.
+- Version-2 manifests may retain multiple approved releases, but every historical release has the same exact URL, digest, archive, and provenance checks. Explicit channel heads and opaque exact versions are resolved only from the validated official registry; freshness candidates cannot alter trusted release metadata.
 - AppImage releases are accepted only as verified, little-endian 64-bit ELF Type 2 artifacts matching the target architecture. TarLink stores them as opaque regular files, never executes, mounts, or extracts them, and rejects Type 1 markers and malformed headers.
 - Registry generations contain only a revalidated `apps/` tree. The active pointer must be relative and remain below `generations/`.
 - A missing registry is fetched automatically. Failed stale refreshes cannot replace or invalidate the last successfully validated cache.

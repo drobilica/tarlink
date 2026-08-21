@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/drobilica/tarlink/internal/app"
+	"github.com/drobilica/tarlink/internal/freshness"
 	"github.com/drobilica/tarlink/internal/version"
 )
 
@@ -19,10 +20,13 @@ const help = `TarLink turns portable Linux application archives into managed app
 Usage:
   tarlink registry sync
   tarlink registry validate <path>
+  tarlink registry freshness <app> [--json]
   tarlink search <query> [--json]
   tarlink install <app> [--force-path]
   tarlink update <app>
   tarlink update --all
+  tarlink pin <app>
+  tarlink unpin <app>
   tarlink list [--json]
   tarlink info <app> [--json]
   tarlink versions <app> [--json]
@@ -80,7 +84,25 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			}
 			break
 		}
-		return r.invalid("usage: tarlink registry sync | tarlink registry validate <path>")
+		if len(arguments) >= 3 && arguments[1] == "freshness" {
+			value, jsonOutput, parseErr := oneValueJSON(arguments[2:])
+			if parseErr != nil {
+				return r.invalid("usage: tarlink registry freshness <app> [--json]")
+			}
+			service, ok := r.Service.(interface {
+				Freshness(context.Context, string) (freshness.Report, error)
+			})
+			if !ok {
+				return r.fail(errors.New("registry freshness is unavailable"))
+			}
+			var report freshness.Report
+			report, err = service.Freshness(ctx, value)
+			if err == nil {
+				err = r.printFreshness(report, jsonOutput)
+			}
+			break
+		}
+		return r.invalid("usage: tarlink registry sync | tarlink registry validate <path> | tarlink registry freshness <app> [--json]")
 	case "search":
 		value, jsonOutput, parseErr := oneValueJSON(arguments[1:])
 		if parseErr != nil {
@@ -96,7 +118,13 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		if parseErr != nil {
 			return r.invalid("usage: tarlink install <app> [--force-path]")
 		}
-		conflicts, checkErr := r.Service.CheckInstallPath(value)
+		// PATH preflight concerns the application identity, not the requested
+		// release/channel. Keep the original selector for Install below.
+		selector, selectorErr := app.ParseSelector(value)
+		if selectorErr != nil {
+			return r.invalid("usage: tarlink install <app> [--force-path]")
+		}
+		conflicts, checkErr := r.Service.CheckInstallPath(selector.App)
 		if checkErr != nil {
 			err = checkErr
 			break
@@ -130,6 +158,26 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		result, err = r.Service.Update(ctx, value, r.progress())
 		if err == nil {
 			err = r.printResult("Updated", result)
+		}
+	case "pin", "unpin":
+		value, parseErr := oneValue(arguments[1:])
+		if parseErr != nil {
+			return r.invalid("usage: tarlink " + arguments[0] + " <app>")
+		}
+		service, ok := r.Service.(interface {
+			Pin(context.Context, string) error
+			Unpin(context.Context, string) error
+		})
+		if !ok {
+			return r.fail(errors.New("pinning is unavailable"))
+		}
+		if arguments[0] == "pin" {
+			err = service.Pin(ctx, value)
+		} else {
+			err = service.Unpin(ctx, value)
+		}
+		if err == nil {
+			_, err = fmt.Fprintf(r.Stdout, "%s %s\n", strings.Title(arguments[0]), value)
 		}
 	case "upgrade":
 		if len(arguments) != 1 {
@@ -313,6 +361,22 @@ func (r Runner) printVersions(id string, values []app.Version, jsonOutput bool) 
 	return nil
 }
 
+func (r Runner) printFreshness(report freshness.Report, jsonOutput bool) error {
+	if jsonOutput {
+		return writeJSON(r.Stdout, report)
+	}
+	if len(report.Candidates) == 0 {
+		_, err := io.WriteString(r.Stdout, "No upstream release candidates found.\n")
+		return err
+	}
+	for _, candidate := range report.Candidates {
+		if _, err := fmt.Fprintf(r.Stdout, "%s@%s %s (%s)\n", candidate.App, candidate.Channel, candidate.Version, candidate.UpstreamURL); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r Runner) printUpdateAll(result app.UpdateAllResult) error {
 	for _, value := range result.Updated {
 		if _, err := fmt.Fprintf(r.Stdout, "Updated %s to %s\n", value.AppID, value.Version); err != nil {
@@ -325,7 +389,14 @@ func (r Runner) printUpdateAll(result app.UpdateAllResult) error {
 		}
 	}
 	for _, id := range result.Skipped {
-		if _, err := fmt.Fprintf(r.Stdout, "No update for %s\n", id); err != nil {
+		label := "No update for"
+		for _, pinned := range result.Pinned {
+			if pinned == id {
+				label = "Skipped pinned"
+				break
+			}
+		}
+		if _, err := fmt.Fprintf(r.Stdout, "%s %s\n", label, id); err != nil {
 			return err
 		}
 	}

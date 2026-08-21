@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/drobilica/tarlink/internal/app"
+	"github.com/drobilica/tarlink/internal/freshness"
 )
 
 type fakeService struct {
@@ -18,10 +19,13 @@ type fakeService struct {
 	tarlinkVersion app.TarLinkVersion
 	upgradeValue   app.TarLinkVersion
 	pathConflicts  []app.PathConflict
+	pathChecked    string
+	installed      []string
 	doctorReport   app.DoctorReport
 }
 
-func (f *fakeService) Install(context.Context, string, app.ProgressSink) (app.Result, error) {
+func (f *fakeService) Install(_ context.Context, appID string, _ app.ProgressSink) (app.Result, error) {
+	f.installed = append(f.installed, appID)
 	return app.Result{AppID: "blender", Version: "5.2.0"}, nil
 }
 func (f *fakeService) Update(context.Context, string, app.ProgressSink) (app.Result, error) {
@@ -68,11 +72,32 @@ func (f *fakeService) UpgradeTarLink(context.Context, app.ProgressSink) (app.Tar
 	}
 	return app.TarLinkVersion{}, errors.New("unused")
 }
-func (f *fakeService) CheckInstallPath(string) ([]app.PathConflict, error) {
+func (f *fakeService) CheckInstallPath(appID string) ([]app.PathConflict, error) {
+	f.pathChecked = appID
 	return f.pathConflicts, nil
 }
 func (f *fakeService) Doctor(context.Context) (app.DoctorReport, error) {
 	return f.doctorReport, nil
+}
+
+type freshnessService struct {
+	fakeService
+	report freshness.Report
+}
+
+func (f *freshnessService) Freshness(context.Context, string) (freshness.Report, error) {
+	return f.report, nil
+}
+
+func TestRegistryFreshnessIsReadOnlyAndSupportsJSON(t *testing.T) {
+	var out bytes.Buffer
+	service := &freshnessService{report: freshness.Report{Candidates: []freshness.Candidate{{App: "pcsx2", Repository: "PCSX2/pcsx2", Channel: "nightly", Version: "2.7.519"}}}}
+	if code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "freshness", "pcsx2", "--json"}); code != 0 {
+		t.Fatalf("freshness code=%d output=%q", code, out.String())
+	}
+	if !bytes.Contains(out.Bytes(), []byte(`"version":"2.7.519"`)) {
+		t.Fatalf("freshness JSON=%q", out.String())
+	}
 }
 
 func TestDoctorExitStatusDistinguishesWarningsAndErrors(t *testing.T) {
@@ -116,7 +141,7 @@ func TestJSONOutputContainsJSONOnly(t *testing.T) {
 	var out, errOut bytes.Buffer
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", RegistryVersion: "5.2.0"}}}
 	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list", "--json"})
-	if code != 0 || out.String() != "[{\"id\":\"blender\",\"name\":\"Blender\",\"summary\":\"\",\"homepage\":\"\",\"categories\":null,\"registry_version\":\"5.2.0\",\"update_available\":false}]\n" {
+	if code != 0 || out.String() != "[{\"id\":\"blender\",\"name\":\"Blender\",\"summary\":\"\",\"homepage\":\"\",\"categories\":null,\"registry_version\":\"5.2.0\",\"pinned\":false,\"update_available\":false}]\n" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
@@ -213,6 +238,21 @@ func TestInstallPathConflictsRequireAcknowledgement(t *testing.T) {
 	errOut.Reset()
 	if code := runner.Run(context.Background(), []string{"install", "blender"}); code != 0 {
 		t.Fatalf("clean install code=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestInstallSelectorPreflightUsesApplicationID(t *testing.T) {
+	service := &fakeService{}
+	var out, errOut bytes.Buffer
+	runner := Runner{Service: service, Stdout: &out, Stderr: &errOut}
+	if code := runner.Run(context.Background(), []string{"install", "blender@nightly", "--force-path"}); code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+	if service.pathChecked != "blender" {
+		t.Fatalf("PATH preflight checked %q", service.pathChecked)
+	}
+	if len(service.installed) != 1 || service.installed[0] != "blender@nightly" {
+		t.Fatalf("install selectors=%v", service.installed)
 	}
 }
 

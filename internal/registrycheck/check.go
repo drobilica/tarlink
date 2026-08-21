@@ -38,14 +38,20 @@ func All(root string) (Selection, error) {
 	var items []*manifest.Manifest
 	for _, variants := range catalog.Variants {
 		for _, item := range variants {
-			items = append(items, item)
+			items = append(items, releaseProjections(item)...)
 		}
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].ID != items[j].ID {
 			return items[i].ID < items[j].ID
 		}
-		return items[i].Platform.Arch < items[j].Platform.Arch
+		if items[i].Platform.Arch != items[j].Platform.Arch {
+			return items[i].Platform.Arch < items[j].Platform.Arch
+		}
+		if items[i].Release.Channel != items[j].Release.Channel {
+			return items[i].Release.Channel < items[j].Release.Channel
+		}
+		return items[i].Release.Version < items[j].Release.Version
 	})
 	return Selection{Items: items}, nil
 }
@@ -81,11 +87,25 @@ func Changed(root, oldRoot string) (Selection, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Selection{}, err
 	}
+	// An approved v2 manifest must not disappear in a later registry
+	// generation.  Keep the migration behavior for retired v1 manifests:
+	// those cannot be parsed by the v2 parser and are intentionally ignored.
+	for path, oldPath := range old {
+		if _, exists := current[path]; exists {
+			continue
+		}
+		previous, parseErr := parseManifest(oldPath)
+		if parseErr == nil && previous.Schema == 2 {
+			return Selection{}, fmt.Errorf("approved manifest %s was removed", path)
+		}
+	}
 	selected := make(map[string]struct{})
 	for path, currentPath := range current {
 		oldPath, exists := old[path]
 		if !exists {
-			selected[currentPath] = struct{}{}
+			for _, item := range mustParseProjections(currentPath) {
+				selected[projectionKeyForPath(currentPath, item)] = struct{}{}
+			}
 			continue
 		}
 		before, beforeErr := parseManifest(oldPath)
@@ -95,25 +115,119 @@ func Changed(root, oldRoot string) (Selection, error) {
 		// already validated the current tree; without a comparable old manifest,
 		// a schema-only migration must not turn every unchanged artifact into an
 		// audit target.
-		if afterErr != nil || (beforeErr == nil && affectsMaterialization(before, after)) {
+		if afterErr != nil {
 			selected[currentPath] = struct{}{}
+			continue
+		}
+		if beforeErr == nil {
+			added, err := historyChanges(before, after)
+			if err != nil {
+				return Selection{}, fmt.Errorf("compare %s: %w", path, err)
+			}
+			if affectsMaterialization(before, after) {
+				for _, item := range releaseProjections(after) {
+					selected[projectionKeyForPath(currentPath, item)] = struct{}{}
+				}
+			} else {
+				for _, item := range added {
+					selected[projectionKeyForPath(currentPath, item)] = struct{}{}
+				}
+			}
 		}
 	}
 	var items []*manifest.Manifest
-	for path := range selected {
+	for key := range selected {
+		path, releaseKey := splitProjectionKey(key)
 		item, err := parseManifest(path)
 		if err != nil {
 			return Selection{}, fmt.Errorf("parse changed manifest %s: %w", path, err)
 		}
-		items = append(items, item)
+		for _, projected := range releaseProjections(item) {
+			if projected.Release.Channel+"\x00"+projected.Release.Version == releaseKey {
+				items = append(items, projected)
+				break
+			}
+		}
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].ID != items[j].ID {
 			return items[i].ID < items[j].ID
 		}
-		return items[i].Platform.Arch < items[j].Platform.Arch
+		if items[i].Platform.Arch != items[j].Platform.Arch {
+			return items[i].Platform.Arch < items[j].Platform.Arch
+		}
+		if items[i].Release.Channel != items[j].Release.Channel {
+			return items[i].Release.Channel < items[j].Release.Channel
+		}
+		return items[i].Release.Version < items[j].Release.Version
 	})
 	return Selection{Items: items}, nil
+}
+
+func releaseProjections(item *manifest.Manifest) []*manifest.Manifest {
+	if item == nil {
+		return nil
+	}
+	result := make([]*manifest.Manifest, 0, len(item.ReleaseHistory.Releases))
+	for _, release := range item.ReleaseHistory.Releases {
+		copy := *item
+		copy.Release = release
+		result = append(result, &copy)
+	}
+	return result
+}
+
+func projectionKeyForPath(path string, item *manifest.Manifest) string {
+	return projectionKeyParts(path, item)
+}
+
+func projectionKeyParts(path string, item *manifest.Manifest) string {
+	return path + "\x00" + item.Release.Channel + "\x00" + item.Release.Version
+}
+
+func splitProjectionKey(key string) (string, string) {
+	parts := strings.SplitN(key, "\x00", 2)
+	if len(parts) != 2 {
+		return key, ""
+	}
+	return parts[0], parts[1]
+}
+
+func mustParseProjections(path string) []*manifest.Manifest {
+	item, err := parseManifest(path)
+	if err != nil {
+		return nil
+	}
+	return releaseProjections(item)
+}
+
+func historyChanges(before, after *manifest.Manifest) ([]*manifest.Manifest, error) {
+	oldReleases := make(map[string]manifest.Release, len(before.ReleaseHistory.Releases))
+	for _, release := range before.ReleaseHistory.Releases {
+		oldReleases[release.Channel+"\x00"+release.Version] = release
+	}
+	newReleases := make(map[string]manifest.Release, len(after.ReleaseHistory.Releases))
+	for _, release := range after.ReleaseHistory.Releases {
+		key := release.Channel + "\x00" + release.Version
+		newReleases[key] = release
+		if old, ok := oldReleases[key]; ok && old != release {
+			return nil, fmt.Errorf("approved release %q in channel %q was mutated", release.Version, release.Channel)
+		}
+	}
+	for key, old := range oldReleases {
+		if _, ok := newReleases[key]; !ok {
+			return nil, fmt.Errorf("approved release %q in channel %q was removed", old.Version, old.Channel)
+		}
+	}
+	var added []*manifest.Manifest
+	for _, release := range after.ReleaseHistory.Releases {
+		if _, ok := oldReleases[release.Channel+"\x00"+release.Version]; !ok {
+			copy := *after
+			copy.Release = release
+			added = append(added, &copy)
+		}
+	}
+	return added, nil
 }
 
 func Materialize(ctx context.Context, item *manifest.Manifest) error {
@@ -145,7 +259,10 @@ func MaterializeWithClient(ctx context.Context, item *manifest.Manifest, client 
 		return err
 	}
 	manager := install.New(layout, client)
-	if _, err := manager.Install(ctx, item, nil); err != nil {
+	// Materialization operates on a release projection. Preserve its
+	// registry-approved channel in the state record so the lifecycle check
+	// exercises the same tracking metadata as a real install.
+	if _, err := manager.InstallWithOptions(ctx, item, install.Options{Channel: item.Release.Channel}, nil); err != nil {
 		return fmt.Errorf("materialize %s %s/%s: %w", item.ID, item.Platform.OS, item.Platform.Arch, err)
 	}
 	if _, err := state.LoadForApp(layout, item.ID); err != nil {
@@ -165,7 +282,6 @@ func affectsMaterialization(before, after *manifest.Manifest) bool {
 		return true
 	}
 	return before.Platform != after.Platform ||
-		before.Release != after.Release ||
 		!reflect.DeepEqual(before.Application, after.Application) ||
 		before.Desktop.Enabled != after.Desktop.Enabled ||
 		before.Desktop.Icon != after.Desktop.Icon

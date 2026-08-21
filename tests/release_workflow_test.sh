@@ -4,7 +4,12 @@ set -euo pipefail
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 release_workflow=$script_dir/.github/workflows/release.yml
+registry_commit=$script_dir/.github/registry-commit
 test -f "$release_workflow"
+test -f "$registry_commit"
+
+registry_sha=$(tr -d '[:space:]' < "$registry_commit")
+[[ "$registry_sha" =~ ^[0-9a-f]{40}$ ]]
 
 grep -E '^  push:$' "$release_workflow" >/dev/null
 grep -F 'tags:' "$release_workflow" >/dev/null
@@ -27,6 +32,15 @@ if grep -F 'ref: ${{ github.ref }}' "$release_workflow" >/dev/null; then
 	printf '%s\n' 'release workflow checks out a mutable ref' >&2
 	exit 1
 fi
+if grep -E '^[[:space:]]+ref: main$' "$release_workflow" >/dev/null; then
+	printf '%s\n' 'release workflow checks out mutable registry main' >&2
+	exit 1
+fi
+grep -F 'REGISTRY_SHA=$(tr -d '\''[:space:]'\'' < .github/registry-commit)' "$release_workflow" >/dev/null
+grep -F '[[ ! "$REGISTRY_SHA" =~ ^[0-9a-f]{40}$ ]]' "$release_workflow" >/dev/null
+grep -F 'ref: ${{ steps.registry_ref.outputs.sha }}' "$release_workflow" >/dev/null
+grep -F 'prepared registry checkout differs from expected commit' "$release_workflow" >/dev/null
+test "$(grep -Fc 'ref: ${{ needs.registry-snapshot.outputs.sha }}' "$release_workflow")" -ge 2
 grep -F 'stable vMAJOR.MINOR.PATCH' "$release_workflow" >/dev/null
 if grep -F 'PRERELEASE' "$release_workflow" >/dev/null; then
 	printf '%s\n' 'release workflow permits prerelease tags' >&2

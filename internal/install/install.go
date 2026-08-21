@@ -25,6 +25,7 @@ var (
 	ErrAlreadyInstalled = errors.New("application is already installed")
 	ErrNotInstalled     = errors.New("application is not installed")
 	ErrNoUpdate         = errors.New("no update is available")
+	ErrPinned           = errors.New("application is pinned")
 	ErrNoPrevious       = errors.New("no previous version is retained")
 	ErrConflict         = errors.New("unexpected filesystem conflict")
 )
@@ -34,6 +35,20 @@ type Progress func(stage string, current, total int64)
 type Outcome struct {
 	State    state.State
 	Warnings []string
+}
+
+// Options carries lifecycle metadata selected by the application service. The
+// installer does not resolve channels or versions; it only persists the
+// already-validated choice alongside the installation transaction.
+type Options struct {
+	Channel string
+	// Explicit permits a deliberate target change while pinned. It is set by
+	// the service only for an explicit channel/version selector.
+	Explicit bool
+	// Pinned is only meaningful for an existing installation. A fresh install
+	// starts unpinned, while updates preserve the existing pin unless callers
+	// explicitly change it through state management.
+	Pinned *bool
 }
 
 type Manager struct {
@@ -53,16 +68,20 @@ func New(layout filesystem.Layout, client *download.Client) *Manager {
 }
 
 func (manager *Manager) Install(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
+	return manager.InstallWithOptions(ctx, item, Options{}, progress)
+}
+
+func (manager *Manager) InstallWithOptions(ctx context.Context, item *manifest.Manifest, options Options, progress Progress) (Outcome, error) {
 	var outcome Outcome
 	err := manager.WithLifecycle(ctx, func() error {
 		var err error
-		outcome, err = manager.installUnlocked(ctx, item, progress)
+		outcome, err = manager.installUnlocked(ctx, item, nil, options, progress)
 		return err
 	})
 	return outcome, err
 }
 
-func (manager *Manager) installUnlocked(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
+func (manager *Manager) installUnlocked(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress Progress) (Outcome, error) {
 	if item == nil {
 		return Outcome{}, errors.New("manifest is nil")
 	}
@@ -92,20 +111,24 @@ func (manager *Manager) installUnlocked(ctx context.Context, item *manifest.Mani
 	} else if !os.IsNotExist(err) {
 		return Outcome{}, err
 	}
-	return manager.installVersion(ctx, item, nil, progress)
+	return manager.installVersion(ctx, item, installed, options, progress)
 }
 
 func (manager *Manager) Update(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
+	return manager.UpdateWithOptions(ctx, item, Options{}, progress)
+}
+
+func (manager *Manager) UpdateWithOptions(ctx context.Context, item *manifest.Manifest, options Options, progress Progress) (Outcome, error) {
 	var outcome Outcome
 	err := manager.WithLifecycle(ctx, func() error {
 		var err error
-		outcome, err = manager.updateUnlocked(ctx, item, progress)
+		outcome, err = manager.updateUnlocked(ctx, item, options, progress)
 		return err
 	})
 	return outcome, err
 }
 
-func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
+func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manifest, options Options, progress Progress) (Outcome, error) {
 	if item == nil {
 		return Outcome{}, errors.New("manifest is nil")
 	}
@@ -127,6 +150,9 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	if err != nil {
 		return Outcome{}, err
 	}
+	if installed.Pinned && !options.Explicit {
+		return Outcome{}, ErrPinned
+	}
 	if err := manager.validateManagedApp(item.ID); err != nil {
 		return Outcome{}, err
 	}
@@ -142,7 +168,7 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	if installed.Previous == item.Release.Version {
 		return manager.activateRetained(item.ID, installed, progress)
 	}
-	return manager.installVersion(ctx, item, &installed, progress)
+	return manager.installVersion(ctx, item, &installed, options, progress)
 }
 
 func (manager *Manager) Rollback(ctx context.Context, appID string, progress Progress) (Outcome, error) {
@@ -238,6 +264,31 @@ func (manager *Manager) UninstallLocked(ctx context.Context, appID string, progr
 	return manager.uninstallUnlocked(ctx, appID, progress)
 }
 
+// SetPinned updates only the pin bit under the same lifecycle and per-app
+// locks used by install/update, after validating the complete managed state.
+func (manager *Manager) SetPinned(ctx context.Context, appID string, pinned bool) error {
+	return manager.WithLifecycle(ctx, func() error {
+		lock, err := manager.lock(ctx, appID)
+		if err != nil {
+			return err
+		}
+		defer lock.Release()
+		installed, err := state.LoadForApp(manager.Layout, appID)
+		if err != nil {
+			return err
+		}
+		if err := installed.ValidateForLayout(manager.Layout); err != nil {
+			return err
+		}
+		if err := manager.validateManagedApp(appID, installed.Current, installed.Previous); err != nil {
+			return err
+		}
+		installed.Pinned = pinned
+		_, err = manager.persistState(installed)
+		return err
+	})
+}
+
 func (manager *Manager) WithLifecycle(ctx context.Context, operation func() error) error {
 	if operation == nil {
 		return errors.New("lifecycle operation is nil")
@@ -270,7 +321,7 @@ func removeStateFile(path string) error {
 	return nil
 }
 
-func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, progress Progress) (outcome Outcome, returnErr error) {
+func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress Progress) (outcome Outcome, returnErr error) {
 	manager.report(progress, "downloading", 0, 0)
 	artifacts := filepath.Join(manager.Layout.Cache, "artifacts")
 	if err := filesystem.SecureMkdirAll(artifacts, 0o700); err != nil {
@@ -495,8 +546,31 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 	if desktopEnabled {
 		desktopPath = paths.DesktopEntry
 	}
+	channel := options.Channel
+	if channel == "" && installed != nil {
+		channel = installed.Channel
+	}
+	pinned := false
+	if installed != nil {
+		pinned = installed.Pinned
+	}
+	if options.Pinned != nil {
+		pinned = *options.Pinned
+	}
 	newState := state.State{
 		Schema: state.Schema, App: item.ID, Current: item.Release.Version, Previous: oldVersion,
+		PreviousArtifact: func() string {
+			if installed != nil {
+				return installed.Artifact
+			}
+			return ""
+		}(),
+		Channel: channel, PreviousChannel: func() string {
+			if installed != nil {
+				return installed.Channel
+			}
+			return ""
+		}(), Pinned: pinned,
 		Executables: manifestExecutables(item.Application.Executables), Artifact: item.Release.Archive, DesktopEnabled: desktopEnabled,
 		Integration: state.Integration{
 			DesktopEntry:  desktopPath,
@@ -590,6 +664,8 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 		}
 	}()
 	installed.Current, installed.Previous = installed.Previous, installed.Current
+	installed.Artifact, installed.PreviousArtifact = installed.PreviousArtifact, installed.Artifact
+	installed.Channel, installed.PreviousChannel = installed.PreviousChannel, installed.Channel
 	installed.Integration.IconFile, installed.Integration.PreviousIconFile = installed.Integration.PreviousIconFile, installed.Integration.IconFile
 	installed.Integration.IconSHA256, installed.Integration.PreviousIconSHA256 = installed.Integration.PreviousIconSHA256, installed.Integration.IconSHA256
 	installed.Integration.IconSource, installed.Integration.PreviousIconSource = installed.Integration.PreviousIconSource, installed.Integration.IconSource

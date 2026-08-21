@@ -92,15 +92,21 @@ func newArtifactServer(t *testing.T, data []byte) artifactServer {
 }
 
 func (server artifactServer) manifest(version string) *manifest.Manifest {
+	return server.manifestChannel(version, "stable")
+}
+
+func (server artifactServer) manifestChannel(version, channel string) *manifest.Manifest {
 	digest := sha256.Sum256(server.data)
+	release := manifest.Release{Channel: channel, Version: version, URL: server.server.URL, Verification: manifest.Verification{
+		Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.server.URL + "/SHA256SUMS",
+	}, Archive: "tar.gz"}
 	return &manifest.Manifest{
-		Schema: 1, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: 2, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
-		Release: manifest.Release{Version: version, URL: server.server.URL, Verification: manifest.Verification{
-			Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.server.URL + "/SHA256SUMS",
-		}, Archive: "tar.gz"},
-		Application: manifest.Application{Executables: []manifest.Executable{{Name: "run", Path: "bin/run"}}},
-		Desktop:     manifest.Desktop{Enabled: true, Categories: []string{"Utility"}},
+		Release:        release,
+		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: channel, Channels: map[string]manifest.ChannelHead{channel: {Current: version}}, Releases: []manifest.Release{release}},
+		Application:    manifest.Application{Executables: []manifest.Executable{{Name: "run", Path: "bin/run"}}},
+		Desktop:        manifest.Desktop{Enabled: true, Categories: []string{"Utility"}},
 	}
 }
 
@@ -113,7 +119,7 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	layout := testLayout(t)
 	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, v1Server)
-	installed, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil)
+	installed, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil)
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}
@@ -124,7 +130,7 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 
 	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
 	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
-	updated, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil)
+	updated, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil)
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
@@ -160,12 +166,84 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 }
 
+func TestLifecycleTracksChannelPinAndRollback(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifestChannel("v1", "nightly"), Options{Channel: "nightly"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.SetPinned(context.Background(), "fixture", true); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := state.LoadForApp(layout, "fixture")
+	if err != nil || installed.Channel != "nightly" || !installed.Pinned {
+		t.Fatalf("initial state = %#v, %v", installed, err)
+	}
+
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	// An explicit target is allowed to change a pinned installation and keeps
+	// the pin bit intact.
+	updated, err := manager.UpdateWithOptions(context.Background(), v2Server.manifestChannel("v2", "nightly"), Options{Channel: "nightly", Explicit: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State.Channel != "nightly" || !updated.State.Pinned || updated.State.Previous != "v1" {
+		t.Fatalf("updated state = %#v", updated.State)
+	}
+	if _, err := manager.UpdateWithOptions(context.Background(), v1Server.manifestChannel("v1", "nightly"), Options{Channel: "nightly"}, nil); !errors.Is(err, ErrPinned) {
+		t.Fatalf("implicit pinned update error = %v, want ErrPinned", err)
+	}
+
+	rolledBack, err := manager.Rollback(context.Background(), "fixture", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.State.Current != "v1" || rolledBack.State.Previous != "v2" || rolledBack.State.Channel != "nightly" || rolledBack.State.PreviousChannel != "nightly" || !rolledBack.State.Pinned {
+		t.Fatalf("rollback state = %#v", rolledBack.State)
+	}
+	assertCurrent(t, layout, "fixture", "v1")
+	if err := manager.SetPinned(context.Background(), "fixture", false); err != nil {
+		t.Fatal(err)
+	}
+	installed, err = state.LoadForApp(layout, "fixture")
+	if err != nil || installed.Pinned {
+		t.Fatalf("unpinned state = %#v, %v", installed, err)
+	}
+}
+
+func TestLifecycleChannelSwitchPreservesPreviousChannel(t *testing.T) {
+	layout := testLayout(t)
+	stableServer := newArtifactServer(t, fixtureArchive(t, "stable-1"))
+	manager := managerFor(t, layout, stableServer)
+	if _, err := manager.InstallWithOptions(context.Background(), stableServer.manifest("stable-1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	nightlyServer := newArtifactServer(t, fixtureArchive(t, "nightly-1"))
+	manager.Client = &download.Client{HTTP: nightlyServer.server.Client(), RedirectLimit: 2}
+	updated, err := manager.UpdateWithOptions(context.Background(), nightlyServer.manifestChannel("nightly-1", "nightly"), Options{Channel: "nightly", Explicit: true}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State.Channel != "nightly" || updated.State.PreviousChannel != "stable" {
+		t.Fatalf("channel switch state = %#v", updated.State)
+	}
+	rolledBack, err := manager.Rollback(context.Background(), "fixture", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rolledBack.State.Current != "stable-1" || rolledBack.State.Channel != "stable" || rolledBack.State.PreviousChannel != "nightly" {
+		t.Fatalf("switched rollback state = %#v", rolledBack.State)
+	}
+}
+
 func TestInstallReportsArchiveExtractionProgress(t *testing.T) {
 	layout := testLayout(t)
 	server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, server)
 	var stages []string
-	if _, err := manager.Install(context.Background(), server.manifest("v1"), func(stage string, _, _ int64) {
+	if _, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, func(stage string, _, _ int64) {
 		stages = append(stages, stage)
 	}); err != nil {
 		t.Fatal(err)
@@ -186,7 +264,7 @@ func TestInstallVerificationFailurePrecedesExtraction(t *testing.T) {
 	item := server.manifest("v1")
 	item.Release.Verification.Digest = strings.Repeat("0", 64)
 	manager := managerFor(t, layout, server)
-	if _, err := manager.Install(context.Background(), item, nil); !errors.Is(err, download.ErrChecksumMismatch) {
+	if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); !errors.Is(err, download.ErrChecksumMismatch) {
 		t.Fatalf("Install() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(err) {
@@ -201,7 +279,7 @@ func TestUpdateStateFailureRestoresCurrentAndCleansNewVersion(t *testing.T) {
 	layout := testLayout(t)
 	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, v1Server)
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
@@ -212,7 +290,7 @@ func TestUpdateStateFailureRestoresCurrentAndCleansNewVersion(t *testing.T) {
 		}
 		return nil
 	}
-	if _, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil); err == nil {
+	if _, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil); err == nil {
 		t.Fatal("Update() unexpectedly succeeded")
 	}
 	assertCurrent(t, layout, "fixture", "v1")
@@ -229,7 +307,7 @@ func TestUpdatePostCommitStateSyncFailureKeepsConsistentVersion(t *testing.T) {
 	layout := testLayout(t)
 	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, v1Server)
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
@@ -242,7 +320,7 @@ func TestUpdatePostCommitStateSyncFailureKeepsConsistentVersion(t *testing.T) {
 		}
 		return true, injected
 	}
-	if outcome, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil); !errors.Is(err, injected) || outcome.State.Current != "v2" {
+	if outcome, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil); !errors.Is(err, injected) || outcome.State.Current != "v2" {
 		t.Fatalf("Update() outcome=%#v error=%v", outcome, err)
 	}
 	assertCurrent(t, layout, "fixture", "v2")
@@ -259,7 +337,7 @@ func TestUpdateRejectsSymlinkedApplicationRoot(t *testing.T) {
 	layout := testLayout(t)
 	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, v1Server)
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	appRoot := filepath.Join(layout.Apps, "fixture")
@@ -276,7 +354,7 @@ func TestUpdateRejectsSymlinkedApplicationRoot(t *testing.T) {
 	}
 	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
 	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
-	if _, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil); !errors.Is(err, filesystem.ErrSymlink) {
+	if _, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil); !errors.Is(err, filesystem.ErrSymlink) {
 		t.Fatalf("Update() error = %v", err)
 	}
 	if content, err := os.ReadFile(sentinel); err != nil || string(content) != "user owned" {
@@ -288,12 +366,12 @@ func TestRollbackRejectsSymlinkedAppsRoot(t *testing.T) {
 	layout := testLayout(t)
 	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, v1Server)
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
 	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
-	if _, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil); err != nil {
+	if _, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Rename(layout.Apps, layout.Apps+"-saved"); err != nil {
@@ -323,7 +401,7 @@ func TestInstallRefusesIntegrationConflict(t *testing.T) {
 	}
 	server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, server)
-	if _, err := manager.Install(context.Background(), server.manifest("v1"), nil); !errors.Is(err, integration.ErrConflict) {
+	if _, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, nil); !errors.Is(err, integration.ErrConflict) {
 		t.Fatalf("Install() error = %v", err)
 	}
 	content, _ := os.ReadFile(conflict)
@@ -345,13 +423,13 @@ func TestMutationsReportPerApplicationLockConflict(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); !errors.Is(err, locking.ErrConflict) {
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); !errors.Is(err, locking.ErrConflict) {
 		t.Fatalf("conflicting install error = %v", err)
 	}
 	if err := held.Release(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Install(context.Background(), v1Server.manifest("v1"), nil); err != nil {
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,7 +445,7 @@ func TestMutationsReportPerApplicationLockConflict(t *testing.T) {
 		run  func() error
 	}{
 		{"update", func() error {
-			_, err := manager.Update(context.Background(), v2Server.manifest("v2"), nil)
+			_, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil)
 			return err
 		}},
 		{"uninstall", func() error { return manager.Uninstall(context.Background(), "fixture", nil) }},

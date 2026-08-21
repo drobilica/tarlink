@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const validManifest = `schema: 1
+const validManifest = `schema: 2
 id: blender
 name: Blender
 summary: 3D creation suite
@@ -17,13 +17,19 @@ platform:
   os: linux
   arch: amd64
 release:
-  version: "5.2.0"
-  url: https://download.blender.org/release/Blender5.2/blender.tar.xz
-  verification:
-    algorithm: sha256
-    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256
-  archive: tar.xz
+  default-channel: stable
+  channels:
+    stable:
+      current: "5.2.0"
+  releases:
+    - channel: stable
+      version: "5.2.0"
+      url: https://download.blender.org/release/Blender5.2/blender.tar.xz
+      verification:
+        algorithm: sha256
+        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256
+      archive: tar.xz
 application:
   executables:
     - name: blender
@@ -87,13 +93,46 @@ func TestRequirements(t *testing.T) {
 }
 
 func TestParseApplicationCategories(t *testing.T) {
-	for _, category := range []string{"game-development", "emulation", "graphics", "development", "utilities", "games"} {
+	for _, category := range []string{"game-development", "emulation", "graphics", "development", "utilities", "games", "recompilation"} {
 		t.Run(category, func(t *testing.T) {
 			value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", "categories:\n  - "+category, 1)
 			if _, err := Parse(strings.NewReader(value)); err != nil {
 				t.Fatalf("Parse() category %q error = %v", category, err)
 			}
 		})
+	}
+}
+
+func TestValidateHistoryRejectsAmbiguousAndUnreviewedTargets(t *testing.T) {
+	tests := map[string]string{
+		"unknown default channel":             strings.Replace(validManifest, "default-channel: stable", "default-channel: nightly", 1),
+		"unknown channel head":                strings.Replace(validManifest, "  channels:\n    stable:\n      current: \"5.2.0\"", "  channels:\n    stable:\n      current: \"missing\"", 1),
+		"duplicate release":                   strings.Replace(validManifest, "      archive: tar.xz\napplication:", "      archive: tar.xz\n    - channel: stable\n      version: \"5.2.0\"\n      url: https://download.blender.org/release/Blender5.2/blender.tar.xz\n      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n      archive: tar.xz\napplication:", 1),
+		"same version across channels":        strings.Replace(validManifest, "    - channel: stable\n      version: \"5.2.0\"", "    - channel: nightly\n      version: \"5.2.0\"\n      url: https://download.blender.org/release/Blender5.2/blender.tar.xz\n      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n      archive: tar.xz\n    - channel: stable\n      version: \"5.2.0\"", 1),
+		"version conflicts with channel name": strings.Replace(validManifest, "version: \"5.2.0\"", "version: stable", 1),
+		"malformed channel":                   strings.Replace(validManifest, "stable:\n      current", "Stable:\n      current", 1),
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse(strings.NewReader(value)); err == nil {
+				t.Fatal("invalid history unexpectedly accepted")
+			}
+		})
+	}
+}
+
+func TestResolveDefaultUsesExplicitChannelHead(t *testing.T) {
+	manifest, err := Parse(strings.NewReader(validManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.ReleaseHistory.Releases = append(manifest.ReleaseHistory.Releases, Release{
+		Channel: "stable", Version: "1.0", URL: "https://download.blender.org/release/Blender5.2/old.tar.xz",
+		Verification: Verification{Algorithm: "sha256", Digest: strings.Repeat("1", 64), Source: "https://download.blender.org/release/Blender5.2/old.tar.xz.sha256"}, Archive: "tar.xz",
+	})
+	got, err := manifest.ReleaseHistory.ResolveDefault()
+	if err != nil || got.Version != "5.2.0" {
+		t.Fatalf("ResolveDefault() = %#v, error = %v", got, err)
 	}
 }
 
@@ -119,7 +158,7 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 			return strings.Replace(s, "      path: blender", "      path: blender\n      command: ./blender", 1)
 		},
 		"missing verification": func(s string) string {
-			return strings.Replace(s, "  verification:\n    algorithm: sha256\n    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n    source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
+			return strings.Replace(s, "      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
 		},
 		"malformed digest": func(s string) string {
 			return strings.Replace(s, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "xyz", 1)
@@ -157,7 +196,7 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 		},
 		"unsupported archive": func(s string) string { return strings.Replace(s, "archive: tar.xz", "archive: 7z", 1) },
 		"unsupported OS":      func(s string) string { return strings.Replace(s, "os: linux", "os: windows", 1) },
-		"second document":     func(s string) string { return s + "---\nschema: 1\n" },
+		"second document":     func(s string) string { return s + "---\nschema: 2\n" },
 		"YAML alias":          func(s string) string { return strings.Replace(s, "name: Blender", "name: &n Blender", 1) },
 		"missing desktop enabled": func(s string) string {
 			return strings.Replace(s, "  enabled: true\n", "", 1)
@@ -190,7 +229,7 @@ func TestValidateRelativePath(t *testing.T) {
 
 func FuzzParse(f *testing.F) {
 	f.Add([]byte(validManifest))
-	f.Add([]byte("schema: 1\nid: ../x\n"))
+	f.Add([]byte("schema: 2\nid: ../x\n"))
 	f.Fuzz(func(t *testing.T, input []byte) {
 		_, _ = ParseBytes(input)
 	})

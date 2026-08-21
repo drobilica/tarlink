@@ -3,9 +3,35 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 
+	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/integration"
 )
+
+// Selector is the presentation-independent form of app, app@channel and
+// app@version. Resolution of whether Target names a channel or an exact
+// version belongs to the registry catalog.
+type Selector struct{ App, Target string }
+
+func ParseSelector(value string) (Selector, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.HasPrefix(value, "@") || strings.Count(value, "@") > 1 {
+		return Selector{}, errors.New("invalid application selector")
+	}
+	parts := strings.SplitN(value, "@", 2)
+	if err := filesystem.ValidateID(parts[0]); err != nil {
+		return Selector{}, err
+	}
+	selector := Selector{App: parts[0]}
+	if len(parts) == 2 {
+		if parts[1] == "" || strings.ContainsAny(parts[1], "/\\") {
+			return Selector{}, errors.New("invalid selector target")
+		}
+		selector.Target = parts[1]
+	}
+	return selector, nil
+}
 
 // ProgressStage is a stable, renderer-independent lifecycle stage.
 type ProgressStage string
@@ -33,28 +59,36 @@ type Progress struct {
 type ProgressSink func(Progress)
 
 type Application struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	Summary          string   `json:"summary"`
-	Homepage         string   `json:"homepage"`
-	Categories       []string `json:"categories"`
-	Requirements     []string `json:"requirements,omitempty"`
-	RegistryVersion  string   `json:"registry_version"`
-	InstalledVersion string   `json:"installed_version,omitempty"`
-	PreviousVersion  string   `json:"previous_version,omitempty"`
-	UpdateAvailable  bool     `json:"update_available"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Summary          string            `json:"summary"`
+	Homepage         string            `json:"homepage"`
+	Categories       []string          `json:"categories"`
+	Requirements     []string          `json:"requirements,omitempty"`
+	RegistryVersion  string            `json:"registry_version"`
+	InstalledVersion string            `json:"installed_version,omitempty"`
+	PreviousVersion  string            `json:"previous_version,omitempty"`
+	InstalledChannel string            `json:"installed_channel,omitempty"`
+	Pinned           bool              `json:"pinned"`
+	UpdateAvailable  bool              `json:"update_available"`
+	DefaultChannel   string            `json:"default_channel,omitempty"`
+	ChannelHeads     map[string]string `json:"channel_heads,omitempty"`
+	ApprovedReleases []Version         `json:"approved_releases,omitempty"`
 }
 
 type Result struct {
 	AppID    string   `json:"app_id"`
 	Version  string   `json:"version,omitempty"`
 	Previous string   `json:"previous,omitempty"`
+	Channel  string   `json:"channel,omitempty"`
+	Pinned   bool     `json:"pinned"`
 	Warnings []string `json:"warnings,omitempty"`
 }
 
 type UpdateAllResult struct {
 	Updated      []Result             `json:"updated"`
 	Skipped      []string             `json:"skipped"`
+	Pinned       []string             `json:"pinned,omitempty"`
 	Failed       map[string]string    `json:"failed"`
 	FailureCodes map[string]ErrorCode `json:"failure_codes,omitempty"`
 }
@@ -62,6 +96,10 @@ type UpdateAllResult struct {
 type Version struct {
 	Version string `json:"version"`
 	Status  string `json:"status"`
+	Channel string `json:"channel,omitempty"`
+	Pinned  bool   `json:"pinned,omitempty"`
+	Current bool   `json:"current,omitempty"`
+	Default bool   `json:"default,omitempty"`
 }
 
 type TarLinkVersion struct {
@@ -108,6 +146,7 @@ const (
 	CodeAlreadyInstalled    ErrorCode = "already_installed"
 	CodeNotInstalled        ErrorCode = "not_installed"
 	CodeNoUpdate            ErrorCode = "no_update_available"
+	CodePinned              ErrorCode = "application_pinned"
 	CodeLockConflict        ErrorCode = "lock_conflict"
 	CodeStateCorrupt        ErrorCode = "state_corruption"
 	CodePermission          ErrorCode = "filesystem_permission"
