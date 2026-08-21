@@ -1,4 +1,4 @@
-// Package manifest implements TarLink's deliberately small, declarative v2
+// Package manifest implements TarLink's deliberately small, declarative v3
 // application manifest. A manifest can describe data only; it cannot request
 // process execution, hooks, arbitrary destinations, or command arguments.
 package manifest
@@ -22,6 +22,7 @@ import (
 const (
 	SchemaV1         = 1 // retired; retained as a name for callers describing old data.
 	SchemaV2         = 2
+	SchemaV3         = 3
 	MaxManifestBytes = 1 << 20
 )
 
@@ -52,12 +53,20 @@ type Platform struct {
 }
 
 type Release struct {
-	Channel      string       `yaml:"channel" json:"channel"`
-	Version      string       `yaml:"version" json:"version"`
-	URL          string       `yaml:"url" json:"url"`
-	Verification Verification `yaml:"verification" json:"verification"`
-	Archive      string       `yaml:"archive" json:"archive"`
+	Channel       string        `yaml:"channel" json:"channel"`
+	Version       string        `yaml:"version" json:"version"`
+	URL           string        `yaml:"url" json:"url"`
+	Verification  Verification  `yaml:"verification" json:"verification"`
+	Archive       string        `yaml:"archive" json:"archive"`
+	NestedArchive NestedArchive `yaml:"nested-archive,omitempty" json:"nested_archive,omitempty"`
 }
+
+type NestedArchive struct {
+	Path    string `yaml:"path" json:"path"`
+	Archive string `yaml:"archive" json:"archive"`
+}
+
+func (n NestedArchive) IsZero() bool { return n.Path == "" && n.Archive == "" }
 
 // ReleaseHistory stores all releases explicitly approved for one platform.
 // Channel heads are opaque version identifiers, never inferred by sorting.
@@ -201,12 +210,21 @@ func validateManifestShape(document *yaml.Node) error {
 		return errors.New("release.releases must be a non-empty sequence")
 	}
 	for index, value := range release["releases"].Content {
-		entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"channel", "version", "url", "verification", "archive"}, nil)
+		entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"channel", "version", "url", "verification", "archive"}, []string{"nested-archive"})
 		if err != nil {
 			return err
 		}
 		if _, err := requiredMapping(entry["verification"], "release.releases.verification", []string{"algorithm", "digest", "source"}, nil); err != nil {
 			return err
+		}
+		if nested, ok := entry["nested-archive"]; ok {
+			nm, err := requiredMapping(nested, "release.releases.nested", []string{"path", "archive"}, nil)
+			if err != nil {
+				return err
+			}
+			if nm["path"].Value == "" || nm["archive"].Value == "" {
+				return errors.New("release.releases.nested-archive fields must not be empty")
+			}
 		}
 	}
 	application, err := requiredMapping(root["application"], "application", []string{"executables"}, nil)
@@ -269,7 +287,7 @@ func requiredMapping(node *yaml.Node, label string, required, optional []string)
 }
 
 func (m Manifest) Validate() error {
-	if m.Schema != SchemaV2 {
+	if m.Schema != SchemaV3 {
 		return fmt.Errorf("unsupported manifest schema %d", m.Schema)
 	}
 	if !ValidID(m.ID) {
@@ -333,6 +351,19 @@ func validateRelease(m Release) error {
 	case "tar.gz", "tar.xz", "zip", "appimage":
 	default:
 		return fmt.Errorf("unsupported archive format %q", m.Archive)
+	}
+	if !m.NestedArchive.IsZero() {
+		if m.Archive == "appimage" {
+			return errors.New("AppImage releases cannot contain nested archives")
+		}
+		if err := ValidateRelativePath(m.NestedArchive.Path); err != nil {
+			return fmt.Errorf("invalid nested archive path: %w", err)
+		}
+		switch m.NestedArchive.Archive {
+		case "tar.gz", "tar.xz", "zip":
+		default:
+			return fmt.Errorf("unsupported nested archive format %q", m.NestedArchive.Archive)
+		}
 	}
 	return nil
 }

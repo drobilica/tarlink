@@ -1,6 +1,6 @@
 # TarLink architecture
 
-TarLink is a rootless, single-user application manager for Linux amd64 and arm64. Version-2 application manifests describe one exact platform each and retain an explicitly reviewed release history, channel heads, and default channel. They are stored as `apps/<id>/linux-amd64.yaml` or `apps/<id>/linux-arm64.yaml`. The client resolves its exact `runtime.GOOS`/`runtime.GOARCH` pair and refuses a missing or mismatched variant; there is no compatibility filename and no cross-platform fallback.
+TarLink is a rootless, single-user application manager for Linux amd64 and arm64. Version-3 application manifests describe one exact platform each and retain an explicitly reviewed release history, channel heads, and default channel. Release entries may explicitly declare one inner archive extraction layer. They are stored as `apps/<id>/linux-amd64.yaml` or `apps/<id>/linux-arm64.yaml`. The client resolves its exact `runtime.GOOS`/`runtime.GOARCH` pair and refuses a missing or mismatched variant; there is no compatibility filename and no cross-platform fallback.
 
 ## Interface boundaries
 
@@ -18,7 +18,7 @@ itself.
 compiled official registry URL
         │ HTTPS, bounded archive, validated apps/ tree
         ▼
-strict v2 manifest and explicit channel/version resolution
+strict v3 manifest and explicit channel/version resolution
         │ exact approved HTTPS artifact URL + SHA-256 or SHA-512 digest
         │ + authoritative checksum-source provenance
         ▼

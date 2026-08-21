@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const validManifest = `schema: 2
+const validManifest = `schema: 3
 id: blender
 name: Blender
 summary: 3D creation suite
@@ -136,6 +136,24 @@ func TestResolveDefaultUsesExplicitChannelHead(t *testing.T) {
 	}
 }
 
+func TestReleaseNestedArchiveIsReleaseScoped(t *testing.T) {
+	data := strings.Replace(validManifest, "      archive: tar.xz\napplication:", "      archive: tar.xz\n      nested-archive:\n        path: packages/payload.zip\n        archive: zip\napplication:", 1)
+	parsed, err := ParseBytes([]byte(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Release.NestedArchive.Path != "packages/payload.zip" || parsed.Release.NestedArchive.Archive != "zip" {
+		t.Fatalf("nested recipe = %#v", parsed.Release.NestedArchive)
+	}
+}
+
+func TestRejectsEmptyNestedArchiveDeclaration(t *testing.T) {
+	data := strings.Replace(validManifest, "      archive: tar.xz\napplication:", "      archive: tar.xz\n      nested-archive: {}\napplication:", 1)
+	if _, err := ParseBytes([]byte(data)); err == nil {
+		t.Fatal("empty nested archive declaration unexpectedly accepted")
+	}
+}
+
 func TestParseRejectsUnknownAndDuplicateApplicationCategories(t *testing.T) {
 	tests := map[string]string{
 		"unknown category":   "categories:\n  - games\n  - unknown",
@@ -196,7 +214,7 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 		},
 		"unsupported archive": func(s string) string { return strings.Replace(s, "archive: tar.xz", "archive: 7z", 1) },
 		"unsupported OS":      func(s string) string { return strings.Replace(s, "os: linux", "os: windows", 1) },
-		"second document":     func(s string) string { return s + "---\nschema: 2\n" },
+		"second document":     func(s string) string { return s + "---\nschema: 3\n" },
 		"YAML alias":          func(s string) string { return strings.Replace(s, "name: Blender", "name: &n Blender", 1) },
 		"missing desktop enabled": func(s string) string {
 			return strings.Replace(s, "  enabled: true\n", "", 1)
@@ -229,7 +247,7 @@ func TestValidateRelativePath(t *testing.T) {
 
 func FuzzParse(f *testing.F) {
 	f.Add([]byte(validManifest))
-	f.Add([]byte("schema: 2\nid: ../x\n"))
+	f.Add([]byte("schema: 3\nid: ../x\n"))
 	f.Fuzz(func(t *testing.T, input []byte) {
 		_, _ = ParseBytes(input)
 	})

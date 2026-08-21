@@ -17,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode"
 	"unicode/utf8"
 
@@ -43,6 +44,18 @@ type Limits struct {
 	MaxPathBytes    int
 	MaxDepth        int
 }
+
+// budget is the cumulative accounting context for one extraction operation.
+// It may be shared by a bounded outer and inner extraction; callers should
+// create it once and pass it to every layer.
+type budget struct {
+	limits       Limits
+	total        int64
+	entries      int
+	archiveBytes int64
+}
+
+func newBudget(limits Limits) *budget { return &budget{limits: limits.withDefaults()} }
 
 // Progress reports archive preparation or extraction. A total of -1 means
 // that the total is not known without another archive pass.
@@ -121,7 +134,7 @@ func ExtractWithProgress(ctx context.Context, r io.Reader, destination string, d
 	if r == nil {
 		return fmt.Errorf("archive: nil source: %w", ErrInvalidFormat)
 	}
-	return extract(ctx, &contextReader{ctx: ctx, r: r}, destination, declared, limits, progress)
+	return extract(ctx, &contextReader{ctx: ctx, r: r}, destination, declared, newBudget(limits), progress)
 }
 
 // ExtractPath extracts an archive from sourcePath into destination.
@@ -137,6 +150,105 @@ func ExtractPathWithProgress(ctx context.Context, sourcePath, destination string
 	}
 	defer f.Close()
 	return ExtractWithProgress(ctx, f, destination, declared, limits, progress)
+}
+
+// ExtractNestedPath performs exactly two declared extraction layers under one
+// cumulative budget. It does not inspect or recurse into any other archive.
+func ExtractNestedPath(ctx context.Context, sourcePath, outerDestination, innerDestination string, outerFormat Format, innerPath string, innerFormat Format, limits Limits, progress Progress) error {
+	b := newBudget(limits)
+	if err := extractPathWithProgress(ctx, sourcePath, outerDestination, outerFormat, b, progress); err != nil {
+		return err
+	}
+	inner, err := OpenDeclaredFile(outerDestination, innerPath)
+	if err != nil {
+		return fmt.Errorf("archive: declared inner archive: %w", err)
+	}
+	defer inner.Close()
+	return extract(ctxOrBackground(ctx), &contextReader{ctx: ctxOrBackground(ctx), r: inner}, innerDestination, innerFormat, b, progress)
+}
+
+func extractPathWithProgress(ctx context.Context, sourcePath, destination string, declared Format, b *budget, progress Progress) error {
+	f, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("archive: open source: %w", err)
+	}
+	defer f.Close()
+	return extract(ctxOrBackground(ctx), &contextReader{ctx: ctxOrBackground(ctx), r: f}, destination, declared, b, progress)
+}
+
+func ctxOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
+// OpenDeclaredFile opens exactly one regular file below root. The relative
+// path must be canonical; every component is checked with Lstat so neither a
+// symlink nor an unexpected filesystem object can redirect the lookup.
+func OpenDeclaredFile(root, relative string) (*os.File, error) {
+	clean, err := validatePath(relative, DefaultLimits())
+	if err != nil || clean != relative || strings.HasSuffix(relative, "/") {
+		return nil, fmt.Errorf("archive: declared file path: %w", ErrPath)
+	}
+	root, err = filepathAbsClean(root)
+	if err != nil {
+		return nil, err
+	}
+	parts := strings.Split(clean, "/")
+	current := root
+	for _, part := range parts {
+		current = filepath.Join(current, part)
+		st, statErr := os.Lstat(current)
+		if statErr != nil {
+			return nil, statErr
+		}
+		if st.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("archive: declared file is symlink: %w", ErrPath)
+		}
+		if part != parts[len(parts)-1] && !st.IsDir() {
+			return nil, fmt.Errorf("archive: declared file parent is not directory: %w", ErrPath)
+		}
+	}
+	st, err := os.Lstat(current)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("archive: declared inner archive is not regular: %w", ErrEntryType)
+	}
+	if stat, ok := st.Sys().(*syscall.Stat_t); ok && stat.Nlink != 1 {
+		return nil, fmt.Errorf("archive: declared inner archive is hardlinked: %w", ErrEntryType)
+	}
+	f, err := os.OpenFile(current, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	fdst, err := f.Stat()
+	if err != nil || !fdst.Mode().IsRegular() {
+		_ = f.Close()
+		if err == nil {
+			err = ErrEntryType
+		}
+		return nil, err
+	}
+	if stat, ok := fdst.Sys().(*syscall.Stat_t); ok && stat.Nlink != 1 {
+		_ = f.Close()
+		return nil, fmt.Errorf("archive: declared inner archive is hardlinked: %w", ErrEntryType)
+	}
+	if !os.SameFile(st, fdst) {
+		_ = f.Close()
+		return nil, fmt.Errorf("archive: declared inner archive changed during open: %w", ErrPath)
+	}
+	post, err := os.Lstat(current)
+	if err != nil || !os.SameFile(post, fdst) {
+		_ = f.Close()
+		if err != nil {
+			return nil, fmt.Errorf("archive: declared inner archive changed after open: %w", err)
+		}
+		return nil, fmt.Errorf("archive: declared inner archive changed after open: %w", ErrPath)
+	}
+	return f, nil
 }
 
 type contextReader struct {
@@ -170,6 +282,7 @@ type extractor struct {
 	progressTotal    int64
 	progressCurrent  int64
 	progressReported int64
+	budget           *budget
 }
 
 type entryKind uint8
@@ -180,9 +293,9 @@ const (
 	kindSymlink
 )
 
-func extract(ctx context.Context, source io.Reader, destination string, declared Format, limits Limits, progress Progress) error {
-	limits = limits.withDefaults()
-	source = &boundedArchiveReader{source: source, remaining: limits.MaxArchiveBytes}
+func extract(ctx context.Context, source io.Reader, destination string, declared Format, budget *budget, progress Progress) error {
+	limits := budget.limits
+	source = &boundedArchiveReader{source: source, remaining: limits.MaxArchiveBytes, budget: budget}
 	if declared != FormatTarGz && declared != FormatTarXZ && declared != FormatZip {
 		return fmt.Errorf("archive: %w: %q", ErrInvalidFormat, declared)
 	}
@@ -194,6 +307,7 @@ func extract(ctx context.Context, source io.Reader, destination string, declared
 		ctx: ctx, root: root, limits: limits,
 		paths: make(map[string]entryKind), symlinks: make(map[string]string),
 		progress: progress, progressTotal: -1,
+		budget: budget,
 	}
 	if err := x.prepareRoot(); err != nil {
 		return fmt.Errorf("archive: destination: %w", err)
@@ -256,6 +370,7 @@ func (x *extractor) reportExtractionProgress() {
 type boundedArchiveReader struct {
 	source    io.Reader
 	remaining int64
+	budget    *budget
 }
 
 func (reader *boundedArchiveReader) Read(buffer []byte) (int, error) {
@@ -275,6 +390,12 @@ func (reader *boundedArchiveReader) Read(buffer []byte) (int, error) {
 		return 0, ErrLimit
 	}
 	reader.remaining -= int64(count)
+	if count > 0 {
+		if reader.budget.archiveBytes > reader.budget.limits.MaxArchiveBytes-int64(count) {
+			return 0, ErrLimit
+		}
+		reader.budget.archiveBytes += int64(count)
+	}
 	return count, err
 }
 
@@ -442,7 +563,7 @@ func (x *extractor) extractTar(r io.Reader) error {
 			if strings.HasSuffix(h.Name, "/") {
 				return fmt.Errorf("%w: regular file has directory name", ErrEntryType)
 			}
-			if h.Size < 0 || h.Size > x.limits.MaxFileBytes || h.Size > x.limits.MaxTotalBytes-x.total {
+			if h.Size < 0 || h.Size > x.limits.MaxFileBytes || h.Size > x.budget.limits.MaxTotalBytes-x.budget.total {
 				return ErrLimit
 			}
 			exec := h.Mode&0111 != 0
@@ -496,7 +617,7 @@ func (x *extractor) extractZip(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	if len(zr.File) > x.limits.MaxEntries {
+	if len(zr.File) > x.budget.limits.MaxEntries-x.budget.entries {
 		return ErrLimit
 	}
 	var total int64
@@ -564,7 +685,7 @@ func (x *extractor) extractZip(r io.Reader) error {
 			}
 			continue
 		}
-		if f.UncompressedSize64 > uint64(x.limits.MaxFileBytes) || f.UncompressedSize64 > uint64(x.limits.MaxTotalBytes-x.total) {
+		if f.UncompressedSize64 > uint64(x.limits.MaxFileBytes) || f.UncompressedSize64 > uint64(x.budget.limits.MaxTotalBytes-x.budget.total) {
 			return ErrLimit
 		}
 		body, err := f.Open()
@@ -584,9 +705,10 @@ func (x *extractor) extractZip(r io.Reader) error {
 }
 
 func (x *extractor) countEntry() error {
-	if x.entries >= x.limits.MaxEntries {
+	if x.budget.entries >= x.limits.MaxEntries {
 		return ErrLimit
 	}
+	x.budget.entries++
 	x.entries++
 	return nil
 }
@@ -682,7 +804,7 @@ func (x *extractor) makeFile(name string, src io.Reader, expected int64, executa
 	if expected >= 0 && expected < copyLimit {
 		copyLimit = expected + 1
 	}
-	if remaining := x.limits.MaxTotalBytes - x.total; remaining < copyLimit {
+	if remaining := x.budget.limits.MaxTotalBytes - x.budget.total; remaining < copyLimit {
 		copyLimit = remaining
 	}
 	fileBytes, copyErr := copyContextProgress(x.ctx, f, src, copyLimit, func(n int64) {
@@ -699,9 +821,10 @@ func (x *extractor) makeFile(name string, src io.Reader, expected int64, executa
 	if expected >= 0 && fileBytes != expected {
 		return io.ErrUnexpectedEOF
 	}
-	if fileBytes > x.limits.MaxFileBytes || fileBytes > x.limits.MaxTotalBytes-x.total {
+	if fileBytes > x.limits.MaxFileBytes || fileBytes > x.budget.limits.MaxTotalBytes-x.budget.total {
 		return ErrLimit
 	}
+	x.budget.total += fileBytes
 	x.total += fileBytes
 	x.paths[name] = kindFile
 	return nil

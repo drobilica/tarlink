@@ -1,7 +1,7 @@
-# Canonical manifest v2 example. Values are intentionally the reviewed
+# Canonical manifest v3 example. Values are intentionally the reviewed
 # Blender 5.2.0 Linux amd64 release; this file is documentation, not a
 # second registry source.
-schema: 2
+schema: 3
 id: blender
 name: Blender
 summary: 3D creation suite

@@ -69,6 +69,25 @@ func zipFixture(t *testing.T, names ...string) []byte {
 	return out.Bytes()
 }
 
+func zipFilesFixture(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	for name, data := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
 func zipSymlinkFixture(t *testing.T) []byte {
 	t.Helper()
 	var out bytes.Buffer
@@ -467,6 +486,166 @@ func TestEntryAndTotalLimits(t *testing.T) {
 	}
 	if err := Extract(context.Background(), bytes.NewReader(data), t.TempDir(), FormatTarGz, Limits{MaxTotalBytes: 1}); !errors.Is(err, ErrLimit) {
 		t.Fatalf("total limit error = %v", err)
+	}
+}
+
+func TestSharedBudgetCumulativeLimits(t *testing.T) {
+	inner := zipFilesFixture(t, map[string][]byte{"payload": []byte("payload")})
+	outer := zipFilesFixture(t, map[string][]byte{"inner.zip": inner})
+
+	t.Run("total bytes include inner archive and output", func(t *testing.T) {
+		source := filepath.Join(t.TempDir(), "outer.zip")
+		if err := os.WriteFile(source, outer, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		outerRoot := t.TempDir()
+		if err := ExtractNestedPath(context.Background(), source, outerRoot, t.TempDir(), FormatZip, "inner.zip", FormatZip, Limits{MaxTotalBytes: int64(len(inner) + len("payload") - 1)}, nil); !errors.Is(err, ErrLimit) {
+			t.Fatalf("inner extraction = %v, want cumulative ErrLimit", err)
+		}
+	})
+
+	t.Run("entry count includes both layers", func(t *testing.T) {
+		source := filepath.Join(t.TempDir(), "outer.zip")
+		if err := os.WriteFile(source, outer, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		outerRoot := t.TempDir()
+		if err := ExtractNestedPath(context.Background(), source, outerRoot, t.TempDir(), FormatZip, "inner.zip", FormatZip, Limits{MaxEntries: 1}, nil); !errors.Is(err, ErrLimit) {
+			t.Fatalf("inner extraction = %v, want cumulative ErrLimit", err)
+		}
+	})
+}
+
+func TestNestedInnerPathLimit(t *testing.T) {
+	inner := zipFilesFixture(t, map[string][]byte{"payload-long": []byte("x")})
+	outer := zipFilesFixture(t, map[string][]byte{"inner.zip": inner})
+	source := filepath.Join(t.TempDir(), "outer.zip")
+	if err := os.WriteFile(source, outer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := ExtractNestedPath(context.Background(), source, t.TempDir(), t.TempDir(), FormatZip, "inner.zip", FormatZip, Limits{MaxPathBytes: 9}, nil)
+	if !errors.Is(err, ErrLimit) {
+		t.Fatalf("nested path limit error = %v", err)
+	}
+}
+
+func TestExtractNestedAdversarialInputs(t *testing.T) {
+	inner := zipFilesFixture(t, map[string][]byte{"app/run": []byte("run")})
+	outer := zipFilesFixture(t, map[string][]byte{"payload/inner.zip": inner})
+	writeArchive := func(t *testing.T, data []byte) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "outer.zip")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	run := func(t *testing.T, outerData []byte, innerPath string, innerFormat Format, limits Limits) error {
+		t.Helper()
+		return ExtractNestedPath(context.Background(), writeArchive(t, outerData), t.TempDir(), t.TempDir(), FormatZip, innerPath, innerFormat, limits, nil)
+	}
+
+	t.Run("declared two-layer archive succeeds", func(t *testing.T) {
+		outerRoot, finalRoot := t.TempDir(), t.TempDir()
+		source := writeArchive(t, outer)
+		if err := ExtractNestedPath(context.Background(), source, outerRoot, finalRoot, FormatZip, "payload/inner.zip", FormatZip, Limits{}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := os.ReadFile(filepath.Join(finalRoot, "app", "run")); err != nil || string(got) != "run" {
+			t.Fatalf("final payload = %q, err = %v", got, err)
+		}
+	})
+
+	t.Run("missing declared inner archive", func(t *testing.T) {
+		if err := run(t, outer, "missing.zip", FormatZip, Limits{}); err == nil {
+			t.Fatal("missing inner archive unexpectedly succeeded")
+		}
+	})
+	t.Run("wrong inner magic", func(t *testing.T) {
+		bad := zipFilesFixture(t, map[string][]byte{"inner.zip": []byte("not a zip")})
+		if err := run(t, bad, "inner.zip", FormatZip, Limits{}); !errors.Is(err, ErrInvalidFormat) {
+			t.Fatalf("wrong magic error = %v, want ErrInvalidFormat", err)
+		}
+	})
+	t.Run("corrupt inner archive", func(t *testing.T) {
+		corrupt := append([]byte(nil), inner[:len(inner)-3]...)
+		bad := zipFilesFixture(t, map[string][]byte{"inner.zip": corrupt})
+		if err := run(t, bad, "inner.zip", FormatZip, Limits{}); err == nil {
+			t.Fatal("corrupt inner archive unexpectedly succeeded")
+		}
+	})
+	t.Run("unsupported inner format", func(t *testing.T) {
+		if err := run(t, outer, "payload/inner.zip", Format("appimage"), Limits{}); !errors.Is(err, ErrInvalidFormat) {
+			t.Fatalf("unsupported format error = %v, want ErrInvalidFormat", err)
+		}
+	})
+	t.Run("inner per-file limit", func(t *testing.T) {
+		large := zipFilesFixture(t, map[string][]byte{"app/run": []byte("1234")})
+		if err := run(t, zipFilesFixture(t, map[string][]byte{"inner.zip": large}), "inner.zip", FormatZip, Limits{MaxFileBytes: 3}); !errors.Is(err, ErrLimit) {
+			t.Fatalf("per-file error = %v, want ErrLimit", err)
+		}
+	})
+	t.Run("inner path and depth limits", func(t *testing.T) {
+		deep := zipFilesFixture(t, map[string][]byte{"a/b/c/run": []byte("x")})
+		if err := run(t, zipFilesFixture(t, map[string][]byte{"inner.zip": deep}), "inner.zip", FormatZip, Limits{MaxDepth: 2}); !errors.Is(err, ErrLimit) {
+			t.Fatalf("depth error = %v, want ErrLimit", err)
+		}
+		unsafe := zipFilesFixture(t, map[string][]byte{"../run": []byte("x")})
+		if err := run(t, zipFilesFixture(t, map[string][]byte{"inner.zip": unsafe}), "inner.zip", FormatZip, Limits{}); !errors.Is(err, ErrPath) {
+			t.Fatalf("path error = %v, want ErrPath", err)
+		}
+	})
+	t.Run("does not recursively extract archive contents", func(t *testing.T) {
+		nested := zipFilesFixture(t, map[string][]byte{"deep.txt": []byte("deep")})
+		second := zipFilesFixture(t, map[string][]byte{"nested.zip": nested})
+		outerRoot, finalRoot := t.TempDir(), t.TempDir()
+		if err := ExtractNestedPath(context.Background(), writeArchive(t, zipFilesFixture(t, map[string][]byte{"inner.zip": second})), outerRoot, finalRoot, FormatZip, "inner.zip", FormatZip, Limits{}, nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(finalRoot, "deep.txt")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("recursive output exists, err = %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(finalRoot, "nested.zip")); err != nil {
+			t.Fatalf("declared inner archive output missing: %v", err)
+		}
+	})
+}
+
+func TestOpenDeclaredFileRejectsRedirectsAndNonCanonicalPaths(t *testing.T) {
+	root := t.TempDir()
+	regular := filepath.Join(root, "inner.zip")
+	if err := os.WriteFile(regular, []byte("archive"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"./inner.zip", "dir/../inner.zip", "../inner.zip", "/inner.zip", "inner.zip/"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := OpenDeclaredFile(root, name); !errors.Is(err, ErrPath) {
+				t.Fatalf("path error = %v, want ErrPath", err)
+			}
+		})
+	}
+
+	if err := os.Symlink("inner.zip", filepath.Join(root, "symlink.zip")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenDeclaredFile(root, "symlink.zip"); !errors.Is(err, ErrPath) {
+		t.Fatalf("symlink error = %v, want ErrPath", err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "directory"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenDeclaredFile(root, "directory"); !errors.Is(err, ErrEntryType) {
+		t.Fatalf("directory error = %v, want ErrEntryType", err)
+	}
+
+	// A hardlink is a second directory entry for the same inode. It must not
+	// be accepted as the declared archive, because the outer archive's object
+	// identity cannot be established from the path alone.
+	if err := os.Link(regular, filepath.Join(root, "hardlink.zip")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenDeclaredFile(root, "hardlink.zip"); !errors.Is(err, ErrEntryType) {
+		t.Fatalf("hardlink error = %v, want ErrEntryType", err)
 	}
 }
 

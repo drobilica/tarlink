@@ -1,22 +1,4 @@
 candidates:
-  - id: zelda64-recompiled
-    upstream: Zelda64Recomp/Zelda64Recomp
-    last_checked: {release_tag: v1.2.2, release_id: 242740890}
-    status: blocked
-    blockers: [NESTED_ARCHIVE_UNSUPPORTED]
-    reconsider_when: [new-upstream-release, capability:nested-archive]
-  - id: harvest-moon-64-recompiled
-    upstream: HarvestMoon64Recomp/HarvestMoon64Recomp
-    last_checked: {release_tag: v1.2.1, release_id: 349953753}
-    status: blocked
-    blockers: [NESTED_ARCHIVE_UNSUPPORTED]
-    reconsider_when: [new-upstream-release, capability:nested-archive]
-  - id: mega-man-64-recompiled
-    upstream: MegaMan64Recomp/MegaMan64Recompiled
-    last_checked: {release_tag: v0.9.1, release_id: 316082995}
-    status: blocked
-    blockers: [NESTED_ARCHIVE_UNSUPPORTED]
-    reconsider_when: [new-upstream-release, capability:nested-archive]
   - id: g-diffuser
     upstream: Zorkats/G-Diffuser
     last_checked: {release_tag: v1.0.1, release_id: 368329526}

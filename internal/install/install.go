@@ -382,12 +382,28 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 			return Outcome{}, fmt.Errorf("set AppImage permission: %w", err)
 		}
 	} else {
-		extracted := filepath.Join(stage, "extracted")
-		if err := os.Mkdir(extracted, 0o700); err != nil {
+		outer := filepath.Join(stage, "outer")
+		if err := os.Mkdir(outer, 0o700); err != nil {
 			return Outcome{}, err
 		}
+		extracted := outer
 		manager.report(progress, "extracting", 0, 0)
-		if err := archive.ExtractPathWithProgress(ctx, artifactPath, extracted, archive.Format(item.Release.Archive), manager.Limits, func(stage string, current, total int64) {
+		if !item.Release.NestedArchive.IsZero() {
+			final := filepath.Join(stage, "final")
+			if err := os.Mkdir(final, 0o700); err != nil {
+				return Outcome{}, err
+			}
+			if err := archive.ExtractNestedPath(ctx, artifactPath, outer, final, archive.Format(item.Release.Archive), item.Release.NestedArchive.Path, archive.Format(item.Release.NestedArchive.Archive), manager.Limits, func(stage string, current, total int64) {
+				progressStage := "extracting"
+				if stage == archive.ProgressPreparing {
+					progressStage = "extracting-preparing"
+				}
+				manager.report(progress, progressStage, current, total)
+			}); err != nil {
+				return Outcome{}, err
+			}
+			extracted = final
+		} else if err := archive.ExtractPathWithProgress(ctx, artifactPath, outer, archive.Format(item.Release.Archive), manager.Limits, func(stage string, current, total int64) {
 			progressStage := "extracting"
 			if stage == archive.ProgressPreparing {
 				progressStage = "extracting-preparing"

@@ -2,6 +2,7 @@ package install
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -48,6 +49,61 @@ func fixtureArchive(t *testing.T, version string) []byte {
 		t.Fatal(err)
 	}
 	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func nestedFixtureArchive(t *testing.T, version string) []byte {
+	t.Helper()
+	var inner bytes.Buffer
+	zw := zip.NewWriter(&inner)
+	w, err := zw.Create("fixture-" + version + "/bin/run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(version)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	gz := gzip.NewWriter(&output)
+	tw := tar.NewWriter(gz)
+	h := tar.Header{Name: "payload.zip", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(inner.Len())}
+	if err := tw.WriteHeader(&h); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(inner.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func corruptNestedFixtureArchive(t *testing.T) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	gz := gzip.NewWriter(&output)
+	tw := tar.NewWriter(gz)
+	payload := []byte("not-an-archive")
+	h := tar.Header{Name: "payload.zip", Typeflag: tar.TypeReg, Mode: 0o600, Size: int64(len(payload))}
+	if err := tw.WriteHeader(&h); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
 		t.Fatal(err)
 	}
 	return output.Bytes()
@@ -101,7 +157,7 @@ func (server artifactServer) manifestChannel(version, channel string) *manifest.
 		Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.server.URL + "/SHA256SUMS",
 	}, Archive: "tar.gz"}
 	return &manifest.Manifest{
-		Schema: 2, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release:        release,
 		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: channel, Channels: map[string]manifest.ChannelHead{channel: {Current: version}}, Releases: []manifest.Release{release}},
@@ -163,6 +219,44 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 	if content, err := os.ReadFile(unrelated); err != nil || string(content) != "keep" {
 		t.Fatalf("unrelated file changed: %q, %v", content, err)
+	}
+}
+
+func TestNestedReleaseInstallAndFailedUpdatePreserveCurrent(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, nestedFixtureArchive(t, "nested-v1"))
+	item := server.manifest("nested-v1")
+	item.Release.NestedArchive = manifest.NestedArchive{Path: "payload.zip", Archive: "zip"}
+	item.ReleaseHistory.Releases[0].NestedArchive = item.Release.NestedArchive
+	manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+	installed, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatalf("nested install = %v", err)
+	}
+	if installed.State.Current != "nested-v1" {
+		t.Fatalf("current = %q", installed.State.Current)
+	}
+
+	bad := newArtifactServer(t, corruptNestedFixtureArchive(t))
+	update := bad.manifest("nested-v2")
+	update.Release.NestedArchive = manifest.NestedArchive{Path: "payload.zip", Archive: "zip"}
+	update.ReleaseHistory.Releases[0].NestedArchive = update.Release.NestedArchive
+	manager = New(layout, &download.Client{HTTP: bad.server.Client(), RedirectLimit: 2})
+	if _, err := manager.UpdateWithOptions(context.Background(), update, Options{Channel: "stable"}, nil); err == nil {
+		t.Fatal("corrupt nested update unexpectedly succeeded")
+	}
+	state, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Current != "nested-v1" {
+		t.Fatalf("current after failed update = %q", state.Current)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture", "nested-v1")); err != nil {
+		t.Fatalf("active version missing after failed update: %v", err)
+	}
+	if stages, err := filepath.Glob(filepath.Join(layout.Apps, ".staging-fixture-*")); err != nil || len(stages) != 0 {
+		t.Fatalf("staging cleanup = %v, err = %v", stages, err)
 	}
 }
 

@@ -19,7 +19,7 @@ import (
 	"github.com/drobilica/tarlink/internal/manifest"
 )
 
-const checkerManifest = `schema: 2
+const checkerManifest = `schema: 3
 id: fixture
 name: Fixture
 summary: Fixture application
@@ -167,7 +167,7 @@ func checkerMaterializeManifest(server *httptest.Server, data []byte, executable
 		Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.URL + "/SHA256SUMS",
 	}, Archive: "tar.gz"}
 	return &manifest.Manifest{
-		Schema: 2, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release: release, ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: "1.0"}}, Releases: []manifest.Release{release}},
 		Application: manifest.Application{Executables: []manifest.Executable{{Name: executableName, Path: executablePath}}},
@@ -281,7 +281,7 @@ func TestChangedRejectsRemovedV2Manifest(t *testing.T) {
 	currentRoot := writeCheckerRegistry(t, checkerManifest)
 
 	if _, err := Changed(currentRoot, oldRoot); err == nil {
-		t.Fatal("removed v2 platform manifest unexpectedly accepted")
+		t.Fatal("removed v3 platform manifest unexpectedly accepted")
 	}
 }
 
@@ -293,7 +293,7 @@ func TestChangedIgnoresRemovedUnreadableV1ManifestDuringMigration(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(v1Path, []byte(strings.Replace(string(v1), "schema: 2", "schema: 1", 1)), 0o644); err != nil {
+	if err := os.WriteFile(v1Path, []byte(strings.Replace(string(v1), "schema: 3", "schema: 1", 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	currentRoot := t.TempDir()
@@ -305,7 +305,7 @@ func TestChangedIgnoresRemovedUnreadableV1ManifestDuringMigration(t *testing.T) 
 
 func TestChangedDoesNotMaterializeUnchangedArtifactForRetiredSchema(t *testing.T) {
 	current := writeCheckerRegistry(t, checkerManifest)
-	retired := writeCheckerRegistry(t, strings.Replace(checkerManifest, "schema: 2", "schema: 1", 1))
+	retired := writeCheckerRegistry(t, strings.Replace(checkerManifest, "schema: 3", "schema: 1", 1))
 	selection, err := Changed(current, retired)
 	if err != nil {
 		t.Fatal(err)
@@ -341,6 +341,10 @@ application:`, 1)
 
 func TestChangedRejectsHistoricalReleaseMutationOrRemoval(t *testing.T) {
 	oldRoot := writeCheckerRegistry(t, checkerManifest)
+	nestedMutation := strings.Replace(checkerManifest, "      archive: tar.gz\n", "      archive: tar.gz\n      nested-archive: {path: payload.zip, archive: zip}\n", 1)
+	if _, err := Changed(writeCheckerRegistry(t, nestedMutation), oldRoot); err == nil {
+		t.Fatal("mutated approved nested recipe unexpectedly accepted")
+	}
 	mutated := strings.Replace(checkerManifest, "https://example.com/fixture.tar.gz", "https://example.com/other.tar.gz", 1)
 	if _, err := Changed(writeCheckerRegistry(t, mutated), oldRoot); err == nil {
 		t.Fatal("mutated approved release unexpectedly accepted")

@@ -58,7 +58,7 @@ func registryRuntimeArchivePlatforms(t *testing.T, version string, arm64 bool) [
 
 func registryRuntimeArchivePlatformVersions(t *testing.T, amd64Version, arm64Version string, arm64 bool) []byte {
 	t.Helper()
-	manifest := `schema: 2
+	manifest := `schema: 3
 id: fixture
 name: Fixture
 summary: Registry fixture

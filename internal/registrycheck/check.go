@@ -87,15 +87,15 @@ func Changed(root, oldRoot string) (Selection, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return Selection{}, err
 	}
-	// An approved v2 manifest must not disappear in a later registry
+	// An approved v3 manifest must not disappear in a later registry
 	// generation.  Keep the migration behavior for retired v1 manifests:
-	// those cannot be parsed by the v2 parser and are intentionally ignored.
+	// those cannot be parsed by the v3 parser and are intentionally ignored.
 	for path, oldPath := range old {
 		if _, exists := current[path]; exists {
 			continue
 		}
 		previous, parseErr := parseManifest(oldPath)
-		if parseErr == nil && previous.Schema == 2 {
+		if parseErr == nil && previous.Schema == manifest.SchemaV3 {
 			return Selection{}, fmt.Errorf("approved manifest %s was removed", path)
 		}
 	}

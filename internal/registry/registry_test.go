@@ -7,9 +7,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/drobilica/tarlink/internal/manifest"
 )
 
-const testManifest = `schema: 2
+const testManifest = `schema: 3
 id: blender
 name: Blender
 summary: 3D creation suite
@@ -145,6 +147,39 @@ func TestReleaseForPlatformResolvesChannelAndOpaqueVersion(t *testing.T) {
 	for _, selector := range []string{"missing", "stable@preview"} {
 		if _, err := catalog.ReleaseForPlatform("blender", "linux", "amd64", selector); err == nil {
 			t.Fatalf("unknown selector %q unexpectedly resolved", selector)
+		}
+	}
+}
+
+func TestReleaseSelectorsPreserveReleaseScopedNestedRecipes(t *testing.T) {
+	root := createRegistry(t)
+	path := filepath.Join(root, "apps", "blender", "linux-amd64.yaml")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := strings.Replace(string(content), "      archive: tar.xz\n      verification:", "      archive: tar.xz\n      nested-archive: {path: stable.zip, archive: zip}\n      verification:", 1)
+	mutated = strings.Replace(mutated, "    - channel: stable", "    - channel: preview\n      version: \"2.0\"\n      url: https://example.com/preview.tar.xz\n      archive: tar.xz\n      nested-archive: {path: preview.zip, archive: zip}\n      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://example.com/preview.sha256\n    - channel: stable", 1)
+	mutated = strings.Replace(mutated, "    stable:\n      current: \"5.2.0\"", "    stable:\n      current: \"5.2.0\"\n    preview:\n      current: \"2.0\"", 1)
+	if err := os.WriteFile(path, []byte(mutated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for selector, want := range map[string]string{"": "stable.zip", "stable": "stable.zip", "preview": "preview.zip", "2.0": "preview.zip"} {
+		var item *manifest.Manifest
+		if selector == "" {
+			item, err = catalog.ManifestForPlatform("blender", "linux", "amd64")
+		} else {
+			item, err = catalog.ReleaseForPlatform("blender", "linux", "amd64", selector)
+		}
+		if err != nil {
+			t.Fatalf("selector %q: %v", selector, err)
+		}
+		if item.Release.NestedArchive.Path != want {
+			t.Fatalf("selector %q nested path = %q, want %q", selector, item.Release.NestedArchive.Path, want)
 		}
 	}
 }
