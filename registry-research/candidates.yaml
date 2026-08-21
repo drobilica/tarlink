@@ -1,4 +1,16 @@
 candidates:
+  - id: starship
+    upstream: HarbourMasters/Starship
+    last_checked: {release_tag: v2.0.0, release_id: 220828885}
+    status: blocked
+    blockers: [NO_AUTHORITATIVE_DIGEST]
+    reconsider_when: [new-upstream-release, provenance-policy-change]
+  - id: quest64-recomp
+    upstream: Rainchus/Quest64-Recomp
+    last_checked: {release_tag: v0.1, release_id: 275862525}
+    status: blocked
+    blockers: [NO_LINUX_ARTIFACT]
+    reconsider_when: [new-upstream-release]
   - id: g-diffuser
     upstream: Zorkats/G-Diffuser
     last_checked: {release_tag: v1.0.1, release_id: 368329526}
