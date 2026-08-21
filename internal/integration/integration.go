@@ -159,17 +159,41 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 		return errors.Join(errs...)
 	}
 	if spec.DesktopEnabled {
+		if previous.DesktopEnabled {
+			old, err := os.ReadFile(previousPaths.DesktopEntry)
+			if err != nil {
+				return Paths{}, nil, err
+			}
+			if string(old) != string(content) {
+				undoFile, err := replaceOwned(previousPaths.DesktopEntry, previous.DesktopSHA256, old, content, 0o644)
+				if err != nil {
+					return Paths{}, nil, err
+				}
+				undo = append(undo, undoFile)
+			}
+		} else {
+			created, err := ensureDesktop(paths.DesktopEntry, spec.ID, content)
+			if err != nil {
+				return Paths{}, nil, err
+			}
+			if created {
+				undo = append(undo, func() error { return os.Remove(paths.DesktopEntry) })
+			}
+		}
+	} else if previous.DesktopEnabled {
 		old, err := os.ReadFile(previousPaths.DesktopEntry)
 		if err != nil {
 			return Paths{}, nil, err
 		}
-		if string(old) != string(content) {
-			undoFile, err := replaceOwned(previousPaths.DesktopEntry, previous.DesktopSHA256, old, content, 0o644)
-			if err != nil {
-				return Paths{}, nil, err
-			}
-			undo = append(undo, undoFile)
+		if err := validateDesktop(previousPaths.DesktopEntry, previous.ID, previous.DesktopSHA256); err != nil {
+			return Paths{}, nil, err
 		}
+		if err := detachOwned(previousPaths.DesktopEntry, func(path string) error {
+			return validateDesktopForRemoval(path, previous.ID, previous.DesktopSHA256)
+		}); err != nil {
+			return Paths{}, nil, err
+		}
+		undo = append(undo, func() error { return atomicCreateExisting(previousPaths.DesktopEntry, old, 0o644) })
 	}
 	if spec.Icon != "" {
 		if err := ensureIconSource(spec); err != nil {

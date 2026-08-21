@@ -222,6 +222,86 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 }
 
+func TestUpdateTogglesDesktopIntegrationAndRollsBackBeforeState(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	desktop := filepath.Join(layout.Desktop, "tarlink-fixture.desktop")
+	if _, err := os.Stat(desktop); err != nil {
+		t.Fatalf("desktop entry after install: %v", err)
+	}
+
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	v2 := v2Server.manifest("v2")
+	v2.Desktop.Enabled = false
+	v2.Desktop.Categories = nil
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	manager.fail = func(stage string) error {
+		if stage == "before_state" {
+			return errors.New("injected state failure")
+		}
+		return nil
+	}
+	if _, err := manager.UpdateWithOptions(context.Background(), v2, Options{Channel: "stable"}, nil); err == nil {
+		t.Fatal("disabled update unexpectedly succeeded with injected state failure")
+	}
+	manager.fail = nil
+	current, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := current.Validate(); err != nil {
+		t.Fatalf("state after rollback: %v", err)
+	}
+	if !current.DesktopEnabled {
+		t.Fatal("desktop integration disabled after failed update")
+	}
+	if _, err := os.Stat(desktop); err != nil {
+		t.Fatalf("desktop entry not restored after failed update: %v", err)
+	}
+
+	updated, err := manager.UpdateWithOptions(context.Background(), v2, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State.DesktopEnabled {
+		t.Fatal("desktop integration remains enabled after disabled update")
+	}
+	if err := updated.State.Validate(); err != nil {
+		t.Fatalf("disabled state: %v", err)
+	}
+	if _, err := os.Lstat(desktop); !os.IsNotExist(err) {
+		t.Fatalf("desktop entry remains after disabled update: %v", err)
+	}
+
+	v3Server := newArtifactServer(t, fixtureArchive(t, "v3"))
+	v3 := v3Server.manifest("v3")
+	manager.Client = &download.Client{HTTP: v3Server.server.Client(), RedirectLimit: 2}
+	enabled, err := manager.UpdateWithOptions(context.Background(), v3, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled.State.DesktopEnabled {
+		t.Fatal("desktop integration remains disabled after enabled update")
+	}
+	if err := enabled.State.Validate(); err != nil {
+		t.Fatalf("enabled state: %v", err)
+	}
+	if _, err := os.Stat(desktop); err != nil {
+		t.Fatalf("desktop entry after enabled update: %v", err)
+	}
+
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(desktop); !os.IsNotExist(err) {
+		t.Fatalf("desktop entry remains after uninstall: %v", err)
+	}
+}
+
 func TestUninstallFailureBeforeCleanupPreservesInstallation(t *testing.T) {
 	layout := testLayout(t)
 	server := newArtifactServer(t, fixtureArchive(t, "v1"))

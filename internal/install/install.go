@@ -171,9 +171,6 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	if !sameExecutables(installed.Executables, item.Application.Executables) {
 		return Outcome{}, fmt.Errorf("%w: executable mappings changed during update", ErrConflict)
 	}
-	if installed.DesktopEnabled != item.Desktop.Enabled {
-		return Outcome{}, fmt.Errorf("%w: desktop integration setting cannot change during update", ErrConflict)
-	}
 	if installed.Previous == item.Release.Version {
 		return manager.activateRetained(item.ID, installed, progress)
 	}
@@ -748,7 +745,11 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		if err := integration.ValidateOwned(existingSpec); err != nil {
 			return Outcome{}, err
 		}
-		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
+		if spec.DesktopEnabled {
+			spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
+		} else {
+			spec.DesktopSHA256 = ""
+		}
 		paths, cleanupIntegration, err = integration.Update(spec, existingSpec)
 		if err != nil {
 			return Outcome{}, err
@@ -788,9 +789,6 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 	}
 
 	desktopEnabled := item.Desktop.Enabled
-	if installed != nil {
-		desktopEnabled = installed.DesktopEnabled
-	}
 	desktopPath := ""
 	if desktopEnabled {
 		desktopPath = paths.DesktopEntry
@@ -831,7 +829,7 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 	for _, executable := range paths.Executables {
 		newState.Integration.Executables = append(newState.Integration.Executables, state.ExecutableIntegration{Name: executable.Name, Path: executablePath(item.Application.Executables, executable.Name), Link: executable.Link, Target: executable.Target})
 	}
-	if installed != nil {
+	if installed != nil && desktopEnabled {
 		newState.Integration.PreviousIconFile = installed.Integration.IconFile
 		newState.Integration.PreviousIconSHA256 = installed.Integration.IconSHA256
 		newState.Integration.PreviousIconSource = installed.Integration.IconSource

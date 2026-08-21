@@ -455,3 +455,70 @@ func TestUpdateCanAddAndRemoveAnIcon(t *testing.T) {
 		t.Fatalf("added icon remains after rollback: %v", err)
 	}
 }
+
+func TestUpdateCanToggleDesktopIntegrationAndRollback(t *testing.T) {
+	root := t.TempDir()
+	previous := testSpec(root)
+	previous.DesktopEnabled = false
+	previous.DesktopSHA256 = ""
+	if _, _, err := Ensure(previous); err != nil {
+		t.Fatal(err)
+	}
+
+	next := previous
+	next.DesktopEnabled = true
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
+	paths, rollback, err := Update(next, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(paths.DesktopEntry); err != nil {
+		t.Fatalf("desktop entry was not created: %v", err)
+	}
+	if err := rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(paths.DesktopEntry); !os.IsNotExist(err) {
+		t.Fatalf("desktop entry remains after rollback: %v", err)
+	}
+
+	if _, _, err := Update(next, previous); err != nil {
+		t.Fatal(err)
+	}
+	removed, undo, err := Update(previous, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(removed.DesktopEntry); !os.IsNotExist(err) {
+		t.Fatalf("desktop entry remains after disable: %v", err)
+	}
+	if err := undo(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(removed.DesktopEntry); err != nil {
+		t.Fatalf("desktop entry was not restored: %v", err)
+	}
+}
+
+func TestUpdateDesktopEnableRejectsConflict(t *testing.T) {
+	root := t.TempDir()
+	previous := testSpec(root)
+	previous.DesktopEnabled = false
+	previous.DesktopSHA256 = ""
+	if _, _, err := Ensure(previous); err != nil {
+		t.Fatal(err)
+	}
+	next := previous
+	next.DesktopEnabled = true
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
+	path := ExpectedPaths(next).DesktopEntry
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("user-owned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Update(next, previous); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Update error = %v, want conflict", err)
+	}
+}
