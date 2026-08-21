@@ -36,7 +36,7 @@
 | Threat | Control |
 | --- | --- |
 | Wrong application release bytes | Strict SHA-256 or SHA-512 digest from reviewed upstream checksum provenance |
-| Unapproved historical/channel target | Exact-version and channel resolution are limited to v2 releases and explicit channel heads in the validated official registry; local retention remains current-plus-one-previous |
+| Unapproved historical/channel target | Exact-version and channel resolution are limited to version-3 releases and explicit channel heads in the validated official registry; local retention remains current-plus-one-previous |
 | Weak or ambiguous verification | Explicit SHA-256 or SHA-512 algorithm, fixed digest length, lowercase hex, HTTPS source; other algorithms rejected |
 | Alternate registry substitution | Exact compiled HTTPS source, bounded staged archive, direct manifest validation, normalized immutable generation |
 | Offline or failed refresh | Previously validated cache remains active; absent/invalid cache cannot fall back |
