@@ -90,7 +90,12 @@ func Changed(root, oldRoot string) (Selection, error) {
 		}
 		before, beforeErr := parseManifest(oldPath)
 		after, afterErr := parseManifest(currentPath)
-		if beforeErr != nil || afterErr != nil || affectsMaterialization(before, after) {
+		// A historical manifest may be unreadable only because the current
+		// pre-1.0 parser deliberately removed its schema. Structural validation
+		// already validated the current tree; without a comparable old manifest,
+		// a schema-only migration must not turn every unchanged artifact into an
+		// audit target.
+		if afterErr != nil || (beforeErr == nil && affectsMaterialization(before, after)) {
 			selected[currentPath] = struct{}{}
 		}
 	}
