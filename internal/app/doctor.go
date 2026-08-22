@@ -190,7 +190,7 @@ func (core *Core) auditApplication(value state.State, add func(string, string, s
 			add("executable: "+executable.Name, "ok", "target is present")
 		}
 	}
-	spec := integration.Spec{ID: value.App, ApplicationRoot: appRoot, LocalBinDirectory: core.layout.Bin, DesktopDirectory: core.layout.Desktop, IconDirectory: core.layout.Icons, DesktopEnabled: value.DesktopEnabled, DesktopSHA256: value.Integration.DesktopSHA256, Icon: value.Integration.IconSource, IconSHA256: value.Integration.IconSHA256}
+	spec := integration.Spec{ID: value.App, ApplicationRoot: appRoot, LocalBinDirectory: core.layout.Bin, DesktopDirectory: core.layout.Desktop, IconDirectory: core.layout.Icons, DesktopEnabled: value.DesktopEnabled, DesktopSHA256: value.Integration.DesktopSHA256, Icon: value.Integration.IconSource, IconSHA256: value.Integration.IconSHA256, IconSize: value.Integration.IconSize}
 	for _, executable := range value.Executables {
 		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path})
 	}

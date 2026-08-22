@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/drobilica/tarlink/internal/filesystem"
+	"github.com/drobilica/tarlink/internal/manifest"
 )
 
 const Schema = 2
@@ -25,9 +26,11 @@ type Integration struct {
 	DesktopSHA256      string                  `json:"desktop_sha256"`
 	IconFile           string                  `json:"icon_file,omitempty"`
 	IconSHA256         string                  `json:"icon_sha256,omitempty"`
+	IconSize           int                     `json:"icon_size,omitempty"`
 	IconSource         string                  `json:"icon_source,omitempty"`
 	PreviousIconFile   string                  `json:"previous_icon_file,omitempty"`
 	PreviousIconSHA256 string                  `json:"previous_icon_sha256,omitempty"`
+	PreviousIconSize   int                     `json:"previous_icon_size,omitempty"`
 	PreviousIconSource string                  `json:"previous_icon_source,omitempty"`
 }
 
@@ -169,6 +172,15 @@ func (s State) Validate() error {
 	if s.Integration.IconFile == "" && s.Integration.IconSource != "" {
 		return fmt.Errorf("%w: icon source is inconsistent", ErrCorrupt)
 	}
+	if s.Integration.IconSize < 0 {
+		return fmt.Errorf("%w: icon ownership size is invalid", ErrCorrupt)
+	}
+	if s.Integration.IconFile == "" && s.Integration.IconSize > 0 {
+		return fmt.Errorf("%w: icon ownership fields are inconsistent", ErrCorrupt)
+	}
+	if s.Integration.IconSize > 0 && !manifest.ValidHicolorSize(s.Integration.IconSize) {
+		return fmt.Errorf("%w: icon ownership size is unsupported", ErrCorrupt)
+	}
 	if s.Integration.IconSource != "" {
 		if err := validateExecutable(s.Integration.IconSource); err != nil {
 			return fmt.Errorf("%w: icon source: %v", ErrCorrupt, err)
@@ -179,6 +191,15 @@ func (s State) Validate() error {
 	}
 	if s.Integration.PreviousIconFile == "" && (s.Integration.PreviousIconSHA256 != "" || s.Integration.PreviousIconSource != "") {
 		return fmt.Errorf("%w: previous icon ownership fields are inconsistent", ErrCorrupt)
+	}
+	if s.Integration.PreviousIconSize < 0 {
+		return fmt.Errorf("%w: previous icon ownership size is invalid", ErrCorrupt)
+	}
+	if s.Integration.PreviousIconFile == "" && s.Integration.PreviousIconSize > 0 {
+		return fmt.Errorf("%w: previous icon ownership fields are inconsistent", ErrCorrupt)
+	}
+	if s.Integration.PreviousIconSize > 0 && !manifest.ValidHicolorSize(s.Integration.PreviousIconSize) {
+		return fmt.Errorf("%w: previous icon ownership size is unsupported", ErrCorrupt)
 	}
 	if s.Integration.PreviousIconFile != "" {
 		if !s.DesktopEnabled || len(s.Integration.PreviousIconSHA256) != 64 || strings.ToLower(s.Integration.PreviousIconSHA256) != s.Integration.PreviousIconSHA256 {
@@ -228,14 +249,14 @@ func (s State) ValidateForLayout(l filesystem.Layout) error {
 	}
 	expectedIcon := ""
 	if s.Integration.IconFile != "" {
-		expectedIcon = filepath.Join(l.Icons, iconSizeDirectory(s.Integration.IconFile), "apps", "tarlink-"+s.App+filepath.Ext(s.Integration.IconFile))
+		expectedIcon = filepath.Join(l.Icons, iconSizeDirectory(s.Integration.IconSize, s.Integration.IconFile), "apps", "tarlink-"+s.App+filepath.Ext(s.Integration.IconFile))
 	}
 	if s.Integration.IconFile != expectedIcon {
 		return fmt.Errorf("%w: icon path does not match the canonical layout", ErrCorrupt)
 	}
 	expectedPreviousIcon := ""
 	if s.Integration.PreviousIconFile != "" {
-		expectedPreviousIcon = filepath.Join(l.Icons, iconSizeDirectory(s.Integration.PreviousIconFile), "apps", "tarlink-"+s.App+filepath.Ext(s.Integration.PreviousIconFile))
+		expectedPreviousIcon = filepath.Join(l.Icons, iconSizeDirectory(s.Integration.PreviousIconSize, s.Integration.PreviousIconFile), "apps", "tarlink-"+s.App+filepath.Ext(s.Integration.PreviousIconFile))
 	}
 	if s.Integration.PreviousIconFile != expectedPreviousIcon {
 		return fmt.Errorf("%w: previous icon path does not match the canonical layout", ErrCorrupt)
@@ -246,7 +267,10 @@ func (s State) ValidateForLayout(l filesystem.Layout) error {
 	return nil
 }
 
-func iconSizeDirectory(value string) string {
+func iconSizeDirectory(size int, value string) string {
+	if size > 0 {
+		return fmt.Sprintf("%dx%d", size, size)
+	}
 	if strings.EqualFold(filepath.Ext(value), ".svg") {
 		return "scalable"
 	}

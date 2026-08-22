@@ -30,5 +30,6 @@ application:
       path: blender
 desktop:
   enabled: true
-  icon: blender.svg
+  icon:
+    path: blender.svg
   categories: [Graphics]

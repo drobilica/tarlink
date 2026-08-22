@@ -48,9 +48,9 @@ replaces the canonical owned binary.
 3. Acquire the lifecycle and per-application locks and inspect strict, layout-bound state.
 4. Download the declared HTTPS artifact with timeouts, redirect and size bounds. Redirects must remain HTTPS.
 5. Verify the exact artifact bytes with the manifest's lowercase SHA-256 or SHA-512 digest before extraction or staging.
-6. Extract archives into a private staging directory using the archive path, link, type, count, size, depth, and XZ dictionary limits. AppImages are instead checked as opaque ELF Type 2 files and copied as `appimage` without execution or mounting.
+6. Extract archives into a private staging directory using the archive path, link, type, count, size, depth, and XZ dictionary limits. AppImages are instead checked as opaque ELF Type 2 files and copied as `appimage` without execution or mounting; a remote icon is downloaded and validated separately and never reads the opaque payload.
 7. Validate every declared executable and rename the completed tree into the versioned application directory on the same filesystem.
-8. Create only the known executable link and optional desktop entry/icon in the XDG hicolor hierarchy, then atomically switch the relative `current` link. Icon changes are ownership-checked and rolled back with activation failures.
+8. Create only the known executable link and optional desktop entry/icon in the XDG hicolor hierarchy, then atomically switch the relative `current` link. Icon changes are ownership-checked and rolled back with activation failures. Archive-contained icons keep extension-based sizing (`scalable` for SVG, otherwise `48x48`); verified remote PNG icons are downloaded through the bounded artifact client (max 4 MiB), retained inside the version payload, and placed at the hicolor size validated from their PNG signature and IHDR dimensions.
 9. Atomically write explicit ownership state and retain at most the current and one previous version.
 
 No step invokes an archive-provided program, shell, hook, installer, or arbitrary argument.

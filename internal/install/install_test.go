@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -169,6 +170,46 @@ func (server artifactServer) manifestChannel(version, channel string) *manifest.
 func managerFor(t *testing.T, layout filesystem.Layout, server artifactServer) *Manager {
 	t.Helper()
 	return New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+}
+
+// multiRouteServer serves distinct bytes per URL path and 404s everything
+// else, so artifact and icon downloads are independent.
+type multiRouteServer struct {
+	server *httptest.Server
+}
+
+func newMultiRouteServer(t *testing.T, routes map[string][]byte) multiRouteServer {
+	t.Helper()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, ok := routes[request.URL.Path]
+		if !ok {
+			http.NotFound(writer, request)
+			return
+		}
+		_, _ = writer.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	return multiRouteServer{server: server}
+}
+
+func (server multiRouteServer) manifest(t *testing.T, version string, routes map[string][]byte, artifactPath, iconPath string) *manifest.Manifest {
+	t.Helper()
+	artifact := routes[artifactPath]
+	digest := sha256.Sum256(artifact)
+	release := manifest.Release{Channel: "stable", Version: version, URL: server.server.URL + artifactPath, Verification: manifest.Verification{
+		Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.server.URL + "/SHA256SUMS",
+	}, Archive: "tar.gz"}
+	iconDigest := sha256.Sum256(routes[iconPath])
+	return &manifest.Manifest{
+		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
+		Release:        release,
+		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: version}}, Releases: []manifest.Release{release}},
+		Application:    manifest.Application{Executables: []manifest.Executable{{Name: "run", Path: "bin/run"}}},
+		Desktop: manifest.Desktop{Enabled: true, Categories: []string{"Utility"}, Icon: manifest.DesktopIcon{
+			URL: server.server.URL + iconPath, SHA256: hex.EncodeToString(iconDigest[:]),
+		}},
+	}
 }
 
 func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
@@ -713,5 +754,401 @@ func assertCurrent(t *testing.T, layout filesystem.Layout, appID, version string
 	target, err := os.Readlink(filepath.Join(layout.Apps, appID, "current"))
 	if err != nil || target != version {
 		t.Fatalf("current = %q, %v; want %q", target, err, version)
+	}
+}
+
+func minimalPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	data := make([]byte, 29)
+	copy(data[0:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	binary.BigEndian.PutUint32(data[8:12], 13)
+	copy(data[12:16], []byte("IHDR"))
+	binary.BigEndian.PutUint32(data[16:20], uint32(width))
+	binary.BigEndian.PutUint32(data[20:24], uint32(height))
+	data[24], data[25], data[26], data[27], data[28] = 8, 2, 0, 0, 0
+	return data
+}
+
+func TestRemoteIconInstallRetainsBytesAndPlacesThemedIcon(t *testing.T) {
+	layout := testLayout(t)
+	icon := minimalPNG(t, 512, 512)
+	routes := map[string][]byte{
+		"/fixture-v1.tar.gz":                      fixtureArchive(t, "v1"),
+		"/icons/hicolor/512x512/apps/fixture.png": icon,
+	}
+	server := newMultiRouteServer(t, routes)
+	manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+	item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/hicolor/512x512/apps/fixture.png")
+	installed, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	retained := filepath.Join(layout.Apps, "fixture", "v1", ".tarlink-icon.png")
+	if content, err := os.ReadFile(retained); err != nil || string(content) != string(icon) {
+		t.Fatalf("retained icon = %q, %v", content, err)
+	}
+	themed := filepath.Join(layout.Icons, "512x512", "apps", "tarlink-fixture.png")
+	if content, err := os.ReadFile(themed); err != nil || string(content) != string(icon) {
+		t.Fatalf("themed icon = %q, %v", content, err)
+	}
+	st, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Integration.IconSize != 512 || st.Integration.IconSource != ".tarlink-icon.png" {
+		t.Fatalf("icon state = %#v", st.Integration)
+	}
+	if err := st.ValidateForLayout(layout); err != nil {
+		t.Fatalf("state after remote icon install: %v", err)
+	}
+	if installed.State.Current != "v1" {
+		t.Fatalf("current = %q", installed.State.Current)
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(themed); !os.IsNotExist(err) {
+		t.Fatalf("themed icon remains after uninstall: %v", err)
+	}
+}
+
+func TestRemoteIconUpdateRollbackNeedsNoNetwork(t *testing.T) {
+	layout := testLayout(t)
+	iconV1 := minimalPNG(t, 512, 512)
+	iconV2 := minimalPNG(t, 256, 256)
+	routes := map[string][]byte{
+		"/fixture-v1.tar.gz":                      fixtureArchive(t, "v1"),
+		"/icons/hicolor/512x512/apps/fixture.png": iconV1,
+		"/fixture-v2.tar.gz":                      fixtureArchive(t, "v2"),
+		"/icons/hicolor/256x256/apps/fixture.png": iconV2,
+	}
+	server := newMultiRouteServer(t, routes)
+	client := &download.Client{HTTP: server.server.Client(), RedirectLimit: 2}
+	manager := New(layout, client)
+	v1 := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/hicolor/512x512/apps/fixture.png")
+	if _, err := manager.InstallWithOptions(context.Background(), v1, Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	v2 := server.manifest(t, "v2", routes, "/fixture-v2.tar.gz", "/icons/hicolor/256x256/apps/fixture.png")
+	if _, err := manager.UpdateWithOptions(context.Background(), v2, Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Icons, "256x256", "apps", "tarlink-fixture.png")); err != nil {
+		t.Fatalf("updated themed icon missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Icons, "512x512", "apps", "tarlink-fixture.png")); !os.IsNotExist(err) {
+		t.Fatalf("previous themed icon remains: %v", err)
+	}
+	// Rollback must restore the previous themed icon from the retained bytes
+	// inside the previous version payload; the icon host is gone.
+	server.server.Close()
+	if _, err := manager.Rollback(context.Background(), "fixture", nil); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	assertCurrent(t, layout, "fixture", "v1")
+	if content, err := os.ReadFile(filepath.Join(layout.Icons, "512x512", "apps", "tarlink-fixture.png")); err != nil || string(content) != string(iconV1) {
+		t.Fatalf("restored icon = %q, %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Icons, "256x256", "apps", "tarlink-fixture.png")); !os.IsNotExist(err) {
+		t.Fatalf("rolled-back 256 icon remains: %v", err)
+	}
+	st, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Integration.IconSize != 512 || st.Integration.PreviousIconSize != 256 {
+		t.Fatalf("rollback icon sizes = %d/%d", st.Integration.IconSize, st.Integration.PreviousIconSize)
+	}
+	if err := st.ValidateForLayout(layout); err != nil {
+		t.Fatalf("state after rollback: %v", err)
+	}
+}
+
+func TestRemoteIconDownloadFailuresLeaveNoInstallation(t *testing.T) {
+	t.Run("checksum mismatch", func(t *testing.T) {
+		layout := testLayout(t)
+		icon := []byte("icon bytes")
+		routes := map[string][]byte{
+			"/fixture-v1.tar.gz":                      fixtureArchive(t, "v1"),
+			"/icons/hicolor/512x512/apps/fixture.png": icon,
+		}
+		server := newMultiRouteServer(t, routes)
+		item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/hicolor/512x512/apps/fixture.png")
+		item.Desktop.Icon.SHA256 = strings.Repeat("0", 64)
+		manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+		if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); !errors.Is(err, download.ErrChecksumMismatch) {
+			t.Fatalf("Install() error = %v", err)
+		}
+		if _, err := state.LoadForApp(layout, "fixture"); !os.IsNotExist(err) {
+			t.Fatalf("state exists after icon checksum failure: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(err) {
+			t.Fatalf("app root exists after icon checksum failure: %v", err)
+		}
+	})
+	t.Run("exceeds size limit", func(t *testing.T) {
+		layout := testLayout(t)
+		icon := bytes.Repeat([]byte("x"), maxRemoteIconBytes+1)
+		routes := map[string][]byte{
+			"/fixture-v1.tar.gz":                      fixtureArchive(t, "v1"),
+			"/icons/hicolor/512x512/apps/fixture.png": icon,
+		}
+		server := newMultiRouteServer(t, routes)
+		item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/hicolor/512x512/apps/fixture.png")
+		manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+		if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); !errors.Is(err, download.ErrTooLarge) {
+			t.Fatalf("Install() error = %v", err)
+		}
+		if stages, globErr := filepath.Glob(filepath.Join(layout.Apps, ".staging-fixture-*")); globErr != nil || len(stages) != 0 {
+			t.Fatalf("staging cleanup = %v, %v", stages, globErr)
+		}
+	})
+	t.Run("missing route", func(t *testing.T) {
+		layout := testLayout(t)
+		routes := map[string][]byte{"/fixture-v1.tar.gz": fixtureArchive(t, "v1")}
+		server := newMultiRouteServer(t, routes)
+		item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/hicolor/512x512/apps/fixture.png")
+		manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+		if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); !errors.Is(err, download.ErrNetwork) {
+			t.Fatalf("Install() error = %v", err)
+		}
+	})
+	for name, icon := range map[string][]byte{
+		"non-PNG content":        []byte("these are not PNG bytes"),
+		"unsupported dimensions": minimalPNG(t, 100, 100),
+		"non-square":             minimalPNG(t, 512, 256),
+		"truncated PNG":          minimalPNG(t, 512, 512)[:16],
+	} {
+		t.Run(name, func(t *testing.T) {
+			layout := testLayout(t)
+			routes := map[string][]byte{
+				"/fixture-v1.tar.gz":                      fixtureArchive(t, "v1"),
+				"/icons/hicolor/512x512/apps/fixture.png": icon,
+			}
+			server := newMultiRouteServer(t, routes)
+			item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/hicolor/512x512/apps/fixture.png")
+			manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+			if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); err == nil {
+				t.Fatalf("Install() unexpectedly succeeded with invalid PNG")
+			}
+			if _, err := state.LoadForApp(layout, "fixture"); !os.IsNotExist(err) {
+				t.Fatalf("state exists after invalid PNG failure: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(err) {
+				t.Fatalf("app root exists after invalid PNG failure: %v", err)
+			}
+			if stages, globErr := filepath.Glob(filepath.Join(layout.Apps, ".staging-fixture-*")); globErr != nil || len(stages) != 0 {
+				t.Fatalf("staging cleanup = %v, %v", stages, globErr)
+			}
+		})
+	}
+}
+
+func fixtureArchiveWithIcon(t *testing.T, version string) []byte {
+	t.Helper()
+	var output bytes.Buffer
+	gzipWriter := gzip.NewWriter(&output)
+	tarWriter := tar.NewWriter(gzipWriter)
+	prefix := "fixture-" + version + "/"
+	for _, header := range []tar.Header{
+		{Name: prefix, Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: prefix + "bin/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: prefix + "bin/run", Typeflag: tar.TypeReg, Mode: 0o755, Size: int64(len(version))},
+		{Name: prefix + "share/", Typeflag: tar.TypeDir, Mode: 0o755},
+		{Name: prefix + "share/icon.png", Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(version + "-icon"))},
+	} {
+		if err := tarWriter.WriteHeader(&header); err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case strings.HasSuffix(header.Name, "run"):
+			if _, err := tarWriter.Write([]byte(version)); err != nil {
+				t.Fatal(err)
+			}
+		case strings.HasSuffix(header.Name, "icon.png"):
+			if _, err := tarWriter.Write([]byte(version + "-icon")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func (server artifactServer) manifestWithArchiveIcon(version string) *manifest.Manifest {
+	item := server.manifest(version)
+	item.Desktop.Icon = manifest.DesktopIcon{Path: "share/icon.png"}
+	return item
+}
+
+func TestArchiveIconInstallUpdateAndRollback(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchiveWithIcon(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifestWithArchiveIcon("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	iconV1 := filepath.Join(layout.Icons, "48x48", "apps", "tarlink-fixture.png")
+	if content, err := os.ReadFile(iconV1); err != nil || string(content) != "v1-icon" {
+		t.Fatalf("v1 icon = %q, %v", content, err)
+	}
+	v2Server := newArtifactServer(t, fixtureArchiveWithIcon(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	if _, err := manager.UpdateWithOptions(context.Background(), v2Server.manifestWithArchiveIcon("v2"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(iconV1); err != nil || string(content) != "v2-icon" {
+		t.Fatalf("v2 icon = %q, %v", content, err)
+	}
+	// Rollback restores the previous version's archive icon from its retained
+	// payload without any network access.
+	v2Server.server.Close()
+	if _, err := manager.Rollback(context.Background(), "fixture", nil); err != nil {
+		t.Fatalf("Rollback() error = %v", err)
+	}
+	assertCurrent(t, layout, "fixture", "v1")
+	if content, err := os.ReadFile(iconV1); err != nil || string(content) != "v1-icon" {
+		t.Fatalf("rolled-back icon = %q, %v", content, err)
+	}
+}
+
+func minimalAppImage(t *testing.T) []byte {
+	t.Helper()
+	data := make([]byte, 64)
+	copy(data[0:4], []byte{0x7f, 'E', 'L', 'F'})
+	data[4], data[5], data[6] = 2, 1, 1
+	data[8], data[9], data[10] = 'A', 'I', 2
+	binary.LittleEndian.PutUint16(data[16:18], 3)
+	binary.LittleEndian.PutUint16(data[18:20], 0x3e)
+	return data
+}
+
+func appImageManifest(t *testing.T, server *httptest.Server, version, iconURL, iconDigest string) *manifest.Manifest {
+	t.Helper()
+	release := manifest.Release{Channel: "stable", Version: version, URL: server.URL + "/fixture.AppImage", Verification: manifest.Verification{
+		Algorithm: "sha256", Digest: strings.Repeat("a", 64), Source: server.URL + "/SHA256SUMS",
+	}, Archive: "appimage"}
+	return &manifest.Manifest{
+		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
+		Release:        release,
+		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: version}}, Releases: []manifest.Release{release}},
+		Application:    manifest.Application{Executables: []manifest.Executable{{Name: "fixture", Path: "appimage"}}},
+		Desktop:        manifest.Desktop{Enabled: true, Categories: []string{"Utility"}, Icon: manifest.DesktopIcon{URL: iconURL, SHA256: iconDigest}},
+	}
+}
+
+func TestAppImageRemoteIconInstallsOpaquePayloadAndIcon(t *testing.T) {
+	layout := testLayout(t)
+	appImage := minimalAppImage(t)
+	icon := minimalPNG(t, 512, 512)
+	routes := map[string][]byte{
+		"/fixture.AppImage": appImage,
+		"/AppIconLarge.png": icon,
+	}
+	server := newMultiRouteServer(t, routes)
+	appDigest := sha256.Sum256(appImage)
+	release := appImageManifest(t, server.server, "1.0", server.server.URL+"/AppIconLarge.png", "")
+	release.Release.Verification.Digest = hex.EncodeToString(appDigest[:])
+	release.ReleaseHistory.Releases[0].Verification.Digest = hex.EncodeToString(appDigest[:])
+	iconDigest := sha256.Sum256(icon)
+	release.Desktop.Icon.SHA256 = hex.EncodeToString(iconDigest[:])
+	manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+	installed, err := manager.InstallWithOptions(context.Background(), release, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	payload := filepath.Join(layout.Apps, "fixture", "1.0", "appimage")
+	if content, err := os.ReadFile(payload); err != nil || !bytes.Equal(content, appImage) {
+		t.Fatalf("opaque AppImage payload changed: %v", err)
+	}
+	retained := filepath.Join(layout.Apps, "fixture", "1.0", ".tarlink-icon.png")
+	if content, err := os.ReadFile(retained); err != nil || !bytes.Equal(content, icon) {
+		t.Fatalf("retained icon = %q, %v", content, err)
+	}
+	themed := filepath.Join(layout.Icons, "512x512", "apps", "tarlink-fixture.png")
+	if content, err := os.ReadFile(themed); err != nil || !bytes.Equal(content, icon) {
+		t.Fatalf("themed icon = %q, %v", content, err)
+	}
+	st, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Integration.IconSize != 512 || st.Integration.IconSource != ".tarlink-icon.png" {
+		t.Fatalf("icon state = %#v", st.Integration)
+	}
+	if err := st.ValidateForLayout(layout); err != nil {
+		t.Fatalf("state after AppImage remote icon install: %v", err)
+	}
+	if installed.State.Current != "1.0" {
+		t.Fatalf("current = %q", installed.State.Current)
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(themed); !os.IsNotExist(err) {
+		t.Fatalf("themed icon remains after uninstall: %v", err)
+	}
+}
+
+func TestAppImageManifestRefusesArchiveIconAtInstall(t *testing.T) {
+	item := &manifest.Manifest{
+		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
+		Release: manifest.Release{Channel: "stable", Version: "1.0", URL: "https://example.com/fixture.AppImage", Verification: manifest.Verification{
+			Algorithm: "sha256", Digest: strings.Repeat("a", 64), Source: "https://example.com/fixture.sha256",
+		}, Archive: "appimage"},
+		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: "1.0"}}, Releases: []manifest.Release{{
+			Channel: "stable", Version: "1.0", URL: "https://example.com/fixture.AppImage", Verification: manifest.Verification{
+				Algorithm: "sha256", Digest: strings.Repeat("a", 64), Source: "https://example.com/fixture.sha256",
+			}, Archive: "appimage",
+		}}},
+		Application: manifest.Application{Executables: []manifest.Executable{{Name: "fixture", Path: "appimage"}}},
+		Desktop:     manifest.Desktop{Enabled: true, Categories: []string{"Utility"}, Icon: manifest.DesktopIcon{Path: "icon.png"}},
+	}
+	layout := testLayout(t)
+	manager := New(layout, nil)
+	if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); err == nil {
+		t.Fatal("AppImage with archive-contained icon unexpectedly installed")
+	}
+	if _, err := state.LoadForApp(layout, "fixture"); !os.IsNotExist(err) {
+		t.Fatalf("state exists after AppImage archive icon rejection: %v", err)
+	}
+}
+
+func TestRemoteIconReservedPathRejectsOccupiedAndSymlinkedSources(t *testing.T) {
+	layout := testLayout(t)
+	icon := []byte("icon bytes")
+	routes := map[string][]byte{
+		"/fixture-v1.tar.gz":                      fixtureArchive(t, "v1"),
+		"/icons/hicolor/512x512/apps/fixture.png": icon,
+	}
+	server := newMultiRouteServer(t, routes)
+	item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/hicolor/512x512/apps/fixture.png")
+	manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+	for name, prepare := range map[string]func(string){
+		"regular file": func(root string) {
+			if err := os.WriteFile(filepath.Join(root, remoteIconFile), []byte("user owned"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"symlink": func(root string) {
+			if err := os.Symlink(t.TempDir(), filepath.Join(root, remoteIconFile)); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			prepare(root)
+			if _, _, err := manager.materializeIcon(context.Background(), item, root, nil); !errors.Is(err, ErrConflict) {
+				t.Fatalf("materializeIcon() error = %v", err)
+			}
+		})
 	}
 }

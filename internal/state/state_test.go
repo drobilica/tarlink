@@ -120,6 +120,60 @@ func TestValidateForLayoutRequiresCanonicalIconOwnership(t *testing.T) {
 	}
 }
 
+func TestValidateForLayoutUsesRecordedRasterSize(t *testing.T) {
+	home := t.TempDir()
+	layout, err := filesystem.LayoutFor(home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := testState()
+	value.Integration.Executables[0].Link = filepath.Join(layout.Bin, "demo")
+	value.Integration.Executables[0].Target = filepath.Join(layout.Apps, "demo", "current", "bin", "demo")
+	value.DesktopEnabled = true
+	value.Integration.DesktopEntry = filepath.Join(layout.Desktop, "tarlink-demo.desktop")
+	value.Integration.DesktopSHA256 = strings.Repeat("b", 64)
+	value.Integration.IconFile = filepath.Join(layout.Icons, "512x512", "apps", "tarlink-demo.png")
+	value.Integration.IconSHA256 = strings.Repeat("a", 64)
+	value.Integration.IconSize = 512
+	value.Integration.IconSource = ".tarlink-icon.png"
+	if err := value.ValidateForLayout(layout); err != nil {
+		t.Fatalf("remote-size icon rejected: %v", err)
+	}
+	value.Integration.IconSize = 48
+	if !errors.Is(value.ValidateForLayout(layout), ErrCorrupt) {
+		t.Fatal("icon size inconsistent with canonical path accepted")
+	}
+	value.Integration.IconFile = filepath.Join(layout.Icons, "256x256", "apps", "tarlink-demo.png")
+	value.Integration.IconSize = 512
+	if !errors.Is(value.ValidateForLayout(layout), ErrCorrupt) {
+		t.Fatal("icon path size mismatch accepted")
+	}
+}
+
+func TestValidateRejectsInconsistentIconSize(t *testing.T) {
+	value := testState()
+	value.Integration.IconSize = 512
+	if !errors.Is(value.Validate(), ErrCorrupt) {
+		t.Fatal("icon size without icon file accepted")
+	}
+	value.Integration.IconSize = 100
+	value.Integration.IconFile = "/tmp/icons/100x100/apps/tarlink-demo.png"
+	value.Integration.IconSHA256 = strings.Repeat("a", 64)
+	if !errors.Is(value.Validate(), ErrCorrupt) {
+		t.Fatal("unsupported icon size accepted")
+	}
+	value.Integration.IconSize = 512
+	value.Integration.IconFile = "/tmp/icons/512x512/apps/tarlink-demo.png"
+	value.Integration.IconSHA256 = strings.Repeat("a", 64)
+	value.Integration.IconSource = ".tarlink-icon.png"
+	value.DesktopEnabled = true
+	value.Integration.DesktopEntry = "/tmp/applications/tarlink-demo.desktop"
+	value.Integration.DesktopSHA256 = strings.Repeat("b", 64)
+	if err := value.Validate(); err != nil {
+		t.Fatalf("valid remote-size icon rejected: %v", err)
+	}
+}
+
 func TestValidateRejectsMalformedPreviousIconPath(t *testing.T) {
 	value := testState()
 	value.DesktopEnabled = true

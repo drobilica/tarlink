@@ -5,6 +5,7 @@ package manifest
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -96,10 +97,28 @@ type Executable struct {
 }
 
 type Desktop struct {
-	Enabled    bool     `yaml:"enabled" json:"enabled"`
-	Categories []string `yaml:"categories" json:"categories"`
-	Icon       string   `yaml:"icon" json:"icon"`
+	Enabled    bool        `yaml:"enabled" json:"enabled"`
+	Categories []string    `yaml:"categories" json:"categories"`
+	Icon       DesktopIcon `yaml:"icon" json:"icon"`
 }
+
+// DesktopIcon declares a desktop icon either as a path inside the extracted
+// application tree or as a verified remote PNG. Exactly one form is allowed;
+// a remote icon requires an HTTPS URL, a lowercase SHA-256 digest, and a PNG
+// extension. The hicolor raster size of a remote icon is validated from the
+// downloaded PNG header at install time, never from the URL path.
+type DesktopIcon struct {
+	Path   string `yaml:"path,omitempty" json:"path,omitempty"`
+	URL    string `yaml:"url,omitempty" json:"url,omitempty"`
+	SHA256 string `yaml:"sha256,omitempty" json:"sha256,omitempty"`
+}
+
+// IsZero reports whether no icon is declared.
+func (i DesktopIcon) IsZero() bool { return i.Path == "" && i.URL == "" && i.SHA256 == "" }
+
+// Remote reports whether the icon is a verified remote PNG rather than an
+// archive-contained path.
+func (i DesktopIcon) Remote() bool { return i.URL != "" }
 
 func Parse(r io.Reader) (*Manifest, error) {
 	data, err := io.ReadAll(io.LimitReader(r, MaxManifestBytes+1))
@@ -239,9 +258,18 @@ func validateManifestShape(document *yaml.Node) error {
 			return err
 		}
 	}
-	_, err = requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories", "icon"})
+	desktop, err := requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories", "icon"})
 	if err != nil {
 		return err
+	}
+	if icon, ok := desktop["icon"]; ok {
+		iconMapping, mappingErr := requiredMapping(icon, "desktop.icon", nil, []string{"path", "url", "sha256"})
+		if mappingErr != nil {
+			return mappingErr
+		}
+		if len(iconMapping) == 0 {
+			return errors.New("desktop.icon must not be empty")
+		}
 	}
 	if requirements, ok := root["requirements"]; ok {
 		if requirements.Kind != yaml.SequenceNode || len(requirements.Content) == 0 {
@@ -324,6 +352,9 @@ func (m Manifest) Validate() error {
 		if err := validateRelease(m.Release); err != nil {
 			return err
 		}
+		if err := validateApplicationRelease(m, m.Release); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -388,18 +419,18 @@ func validateApplicationRelease(m Manifest, release Release) error {
 			return fmt.Errorf("AppImage executable %q must target appimage", executable.Name)
 		}
 	}
-	if release.Archive == "appimage" && m.Desktop.Icon != "" {
-		return errors.New("AppImage releases cannot declare desktop icons")
+	if release.Archive == "appimage" && m.Desktop.Icon.Path != "" {
+		return errors.New("AppImage releases cannot declare archive-contained desktop icons")
 	}
 	if m.Desktop.Enabled && len(m.Desktop.Categories) == 0 {
 		return errors.New("desktop categories are required when desktop integration is enabled")
 	}
-	if m.Desktop.Icon != "" {
+	if !m.Desktop.Icon.IsZero() {
 		if !m.Desktop.Enabled {
 			return errors.New("desktop icon requires desktop integration")
 		}
-		if err := ValidateRelativePath(m.Desktop.Icon); err != nil {
-			return fmt.Errorf("invalid desktop icon: %w", err)
+		if err := m.Desktop.Icon.validate(); err != nil {
+			return err
 		}
 	}
 	if err := validateEnumList("desktop category", m.Desktop.Categories, map[string]bool{
@@ -409,6 +440,74 @@ func validateApplicationRelease(m Manifest, release Release) error {
 		return err
 	}
 	return nil
+}
+
+func (i DesktopIcon) validate() error {
+	if i.Path == "" && i.URL == "" {
+		return errors.New("desktop icon must declare a path or a verified remote URL")
+	}
+	if i.Path != "" {
+		if i.URL != "" || i.SHA256 != "" {
+			return errors.New("desktop icon cannot mix a path with remote icon fields")
+		}
+		return ValidateRelativePath(i.Path)
+	}
+	if err := validateHTTPSURL("desktop icon URL", i.URL); err != nil {
+		return err
+	}
+	if err := ValidateDigest("sha256", i.SHA256); err != nil {
+		return fmt.Errorf("desktop icon sha256: %w", err)
+	}
+	parsed, err := url.Parse(i.URL)
+	if err != nil {
+		return fmt.Errorf("invalid desktop icon URL: %w", err)
+	}
+	if !strings.EqualFold(path.Ext(parsed.Path), ".png") {
+		return errors.New("desktop icon URL must reference a PNG file")
+	}
+	return nil
+}
+
+// supportedHicolorSizes are the raster sizes TarLink places into the XDG
+// hicolor hierarchy. Remote PNG icons must be exactly one of these sizes;
+// the size is validated from the PNG header, never decoded from image pixels.
+var supportedHicolorSizes = map[int]bool{
+	16: true, 22: true, 24: true, 32: true, 48: true,
+	64: true, 96: true, 128: true, 256: true, 512: true,
+}
+
+// ValidHicolorSize reports whether size is a supported hicolor raster size.
+func ValidHicolorSize(size int) bool { return size > 0 && supportedHicolorSizes[size] }
+
+// pngSignature is the fixed 8-byte PNG file signature.
+var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+
+// IconSizeFromPNG validates the PNG signature and IHDR header of downloaded
+// icon bytes without decoding image pixels and returns the square supported
+// hicolor raster size. Non-PNG bytes, malformed headers, and unsupported or
+// non-square dimensions are rejected.
+func IconSizeFromPNG(data []byte) (int, error) {
+	if len(data) < 24 {
+		return 0, errors.New("desktop icon is not a PNG")
+	}
+	if !bytes.Equal(data[:8], pngSignature) {
+		return 0, errors.New("desktop icon is not a PNG")
+	}
+	if binary.BigEndian.Uint32(data[8:12]) != 13 || string(data[12:16]) != "IHDR" {
+		return 0, errors.New("desktop icon is not a PNG")
+	}
+	width := int(binary.BigEndian.Uint32(data[16:20]))
+	height := int(binary.BigEndian.Uint32(data[20:24]))
+	if width <= 0 || height <= 0 {
+		return 0, errors.New("desktop icon has invalid PNG dimensions")
+	}
+	if width != height {
+		return 0, fmt.Errorf("desktop icon is not square (%dx%d)", width, height)
+	}
+	if !ValidHicolorSize(width) {
+		return 0, fmt.Errorf("desktop icon has unsupported raster size %dx%d", width, height)
+	}
+	return width, nil
 }
 
 func (m Manifest) ValidateHistory() error {

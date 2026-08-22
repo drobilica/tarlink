@@ -99,6 +99,10 @@ type Spec struct {
 	IconDirectory     string
 	IconSourceRoot    string
 	Icon              string
+	// IconSize is the explicit hicolor raster size of a remote PNG icon.
+	// When positive it overrides extension-based sizing; archive-contained
+	// icons leave it zero so SVG maps to scalable and other rasters to 48x48.
+	IconSize          int
 	DesktopEnabled    bool
 	DesktopCategories []string
 	DesktopSHA256     string
@@ -110,14 +114,20 @@ func ExpectedPaths(spec Spec) Paths {
 		DesktopEntry: filepath.Join(spec.DesktopDirectory, "tarlink-"+spec.ID+".desktop"),
 	}
 	if spec.Icon != "" {
-		size := "48x48"
-		if strings.EqualFold(filepath.Ext(spec.Icon), ".svg") {
-			size = "scalable"
-		}
-		paths.IconFile = filepath.Join(spec.IconDirectory, size, "apps", "tarlink-"+spec.ID+filepath.Ext(filepath.FromSlash(spec.Icon)))
+		paths.IconFile = filepath.Join(spec.IconDirectory, iconSizeDirectory(spec.IconSize, spec.Icon), "apps", "tarlink-"+spec.ID+filepath.Ext(filepath.FromSlash(spec.Icon)))
 	}
 	paths.Executables = executablePaths(spec)
 	return paths
+}
+
+func iconSizeDirectory(size int, icon string) string {
+	if size > 0 {
+		return fmt.Sprintf("%dx%d", size, size)
+	}
+	if strings.EqualFold(filepath.Ext(icon), ".svg") {
+		return "scalable"
+	}
+	return "48x48"
 }
 
 func executablePaths(spec Spec) []ExecutablePath {

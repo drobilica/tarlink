@@ -263,6 +263,61 @@ func TestIconLifecycleUsesHicolorAndValidatesSource(t *testing.T) {
 	}
 }
 
+func TestIconLifecyclePlacesRemoteRasterAtInferredSize(t *testing.T) {
+	root := t.TempDir()
+	spec := testSpec(root)
+	spec.IconDirectory = filepath.Join(root, "data", "icons", "hicolor")
+	spec.Icon = ".tarlink-icon.png"
+	spec.IconSize = 512
+	spec.IconSourceRoot = spec.ApplicationRoot
+	if err := os.MkdirAll(spec.ApplicationRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	icon := []byte("remote png fixture")
+	if err := os.WriteFile(filepath.Join(spec.ApplicationRoot, spec.Icon), icon, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(icon)
+	spec.IconSHA256 = hex.EncodeToString(digest[:])
+	spec.DesktopSHA256 = DesktopDigest(spec, ExpectedPaths(spec).Executables[0].Link)
+	paths, _, err := Ensure(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(spec.IconDirectory, "512x512", "apps", "tarlink-"+spec.ID+".png")
+	if paths.IconFile != want {
+		t.Fatalf("icon path = %q, want %q", paths.IconFile, want)
+	}
+	if got, err := os.ReadFile(want); err != nil || string(got) != string(icon) {
+		t.Fatalf("installed icon = %q, %v", got, err)
+	}
+	if err := ValidateOwned(spec); err != nil {
+		t.Fatalf("ValidateOwned() error = %v", err)
+	}
+	if err := RemoveOwned(spec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIconSizeDerivesExtensionOrExplicitRasterDirectory(t *testing.T) {
+	root := t.TempDir()
+	spec := testSpec(root)
+	spec.IconDirectory = filepath.Join(root, "icons")
+	sizeDir := func(got string) string { return filepath.Base(filepath.Dir(filepath.Dir(got))) }
+	spec.Icon = "share/icon.svg"
+	if got := sizeDir(ExpectedPaths(spec).IconFile); got != "scalable" {
+		t.Fatalf("svg icon directory = %q", got)
+	}
+	spec.Icon = "share/icon.png"
+	if got := sizeDir(ExpectedPaths(spec).IconFile); got != "48x48" {
+		t.Fatalf("raster icon directory = %q", got)
+	}
+	spec.IconSize = 256
+	if got := sizeDir(ExpectedPaths(spec).IconFile); got != "256x256" {
+		t.Fatalf("remote raster icon directory = %q", got)
+	}
+}
+
 func TestIconSourceRejectsSymlinkAndDirectory(t *testing.T) {
 	for _, name := range []string{"link", "directory"} {
 		t.Run(name, func(t *testing.T) {

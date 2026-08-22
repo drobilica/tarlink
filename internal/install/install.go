@@ -31,6 +31,16 @@ var (
 	ErrConflict         = errors.New("unexpected filesystem conflict")
 )
 
+const (
+	// remoteIconFile is the reserved relative path where a verified remote
+	// desktop icon is retained inside each version payload so activation,
+	// doctor checks, and rollback never need the network again.
+	remoteIconFile = ".tarlink-icon.png"
+	// maxRemoteIconBytes bounds remote desktop icon downloads. The manifest
+	// URL must reference a PNG and the archive source limit is identical.
+	maxRemoteIconBytes = 4 << 20
+)
+
 type Progress func(stage string, current, total int64)
 
 type Outcome struct {
@@ -44,6 +54,13 @@ type Outcome struct {
 type materializedArtifact struct {
 	stage           string
 	applicationRoot string
+	// iconSource is the relative source path of the desktop icon inside the
+	// version payload. It is either the declared archive path or the reserved
+	// retained remote-icon file.
+	iconSource string
+	// iconSize is the hicolor raster size of a remote PNG icon; zero for
+	// archive-contained icons.
+	iconSize int
 }
 
 // Options carries lifecycle metadata selected by the application service. The
@@ -535,7 +552,7 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 			returnErr = cleanupErr
 		}
 	}()
-	return manager.activateMaterialized(item, installed, options, progress, materialized.applicationRoot)
+	return manager.activateMaterialized(item, installed, options, progress, materialized)
 }
 
 // materializeArtifact acquires, verifies, extracts, and validates an artifact
@@ -644,8 +661,14 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 			return materializedArtifact{}, err
 		}
 	}
-	if item.Desktop.Icon != "" {
-		if _, err := integration.IconDigest(applicationRoot, item.Desktop.Icon); err != nil {
+	if !item.Desktop.Icon.IsZero() {
+		iconSource, iconSize, err := manager.materializeIcon(ctx, item, applicationRoot, progress)
+		if err != nil {
+			return materializedArtifact{}, err
+		}
+		materialized.iconSource = iconSource
+		materialized.iconSize = iconSize
+		if _, err := integration.IconDigest(applicationRoot, iconSource); err != nil {
 			return materializedArtifact{}, fmt.Errorf("validate desktop icon: %w", err)
 		}
 	}
@@ -657,9 +680,66 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 	return materialized, nil
 }
 
+// materializeIcon returns the relative icon source path inside the staged
+// application root. Archive-contained icons are returned unchanged; remote
+// PNG icons are downloaded through the same bounded artifact client, retained
+// at the reserved path inside the version payload, and their actual PNG
+// dimensions (validated from the signature and IHDR header) determine the
+// hicolor raster size.
+func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Manifest, applicationRoot string, progress Progress) (string, int, error) {
+	if !item.Desktop.Icon.Remote() {
+		return item.Desktop.Icon.Path, 0, nil
+	}
+	destination := filepath.Join(applicationRoot, remoteIconFile)
+	if _, err := os.Lstat(destination); err == nil {
+		return "", 0, fmt.Errorf("%w: reserved icon path %q is occupied", ErrConflict, remoteIconFile)
+	} else if !os.IsNotExist(err) {
+		return "", 0, err
+	}
+	manager.report(progress, "downloading", 0, 0)
+	_, err := manager.Client.FetchArtifact(ctx, download.ArtifactRequest{
+		URL: item.Desktop.Icon.URL, Algorithm: "sha256", Digest: item.Desktop.Icon.SHA256,
+		Destination: destination, MaxBytes: maxRemoteIconBytes,
+		ReportProgress: func(current, total int64) { manager.report(progress, "downloading", current, total) },
+	})
+	if err != nil {
+		return "", 0, fmt.Errorf("download desktop icon: %w", err)
+	}
+	info, err := os.Lstat(destination)
+	if err != nil {
+		return "", 0, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxRemoteIconBytes {
+		return "", 0, fmt.Errorf("%w: retained icon is not a bounded regular file", ErrConflict)
+	}
+	file, err := os.Open(destination)
+	if err != nil {
+		return "", 0, err
+	}
+	content, err := io.ReadAll(io.LimitReader(file, maxRemoteIconBytes+1))
+	closeErr := file.Close()
+	if err != nil {
+		return "", 0, err
+	}
+	if closeErr != nil {
+		return "", 0, closeErr
+	}
+	if int64(len(content)) > maxRemoteIconBytes {
+		return "", 0, fmt.Errorf("%w: retained icon exceeds size limit", ErrConflict)
+	}
+	size, err := manifest.IconSizeFromPNG(content)
+	if err != nil {
+		return "", 0, fmt.Errorf("desktop icon: %w", err)
+	}
+	return remoteIconFile, size, nil
+}
+
 // activateMaterialized publishes a validated staged application and commits
 // its integration, active version, state, and retention policy atomically.
-func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed *state.State, options Options, progress Progress, applicationRoot string) (outcome Outcome, returnErr error) {
+func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed *state.State, options Options, progress Progress, materialized materializedArtifact) (outcome Outcome, returnErr error) {
+	applicationRoot := materialized.applicationRoot
+	iconSource := materialized.iconSource
+	iconSize := materialized.iconSize
 
 	appRoot := filepath.Join(manager.Layout.Apps, item.ID)
 	appRootCreated := false
@@ -715,7 +795,7 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		ID: item.ID, Name: item.Name,
 		ApplicationRoot: appRoot, LocalBinDirectory: manager.Layout.Bin,
 		DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons,
-		Icon: item.Desktop.Icon, IconSourceRoot: finalPath, DesktopEnabled: item.Desktop.Enabled,
+		Icon: iconSource, IconSize: iconSize, IconSourceRoot: finalPath, DesktopEnabled: item.Desktop.Enabled,
 		DesktopCategories: item.Desktop.Categories,
 	}
 	for _, executable := range item.Application.Executables {
@@ -823,7 +903,7 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 			DesktopEntry:  desktopPath,
 			DesktopSHA256: spec.DesktopSHA256,
 			IconFile:      paths.IconFile, IconSHA256: spec.IconSHA256,
-			IconSource: item.Desktop.Icon,
+			IconSize: spec.IconSize, IconSource: iconSource,
 		},
 	}
 	for _, executable := range paths.Executables {
@@ -832,6 +912,7 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 	if installed != nil && desktopEnabled {
 		newState.Integration.PreviousIconFile = installed.Integration.IconFile
 		newState.Integration.PreviousIconSHA256 = installed.Integration.IconSHA256
+		newState.Integration.PreviousIconSize = installed.Integration.IconSize
 		newState.Integration.PreviousIconSource = installed.Integration.IconSource
 	}
 	if err := manager.inject("before_state"); err != nil {
@@ -894,7 +975,11 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 		nextSpec.Icon = "icon" + filepath.Ext(installed.Integration.PreviousIconFile)
 	}
 	nextSpec.IconSHA256 = installed.Integration.PreviousIconSHA256
-	nextSpec.IconSourceRoot = filepath.Join(appRoot, "current")
+	nextSpec.IconSize = installed.Integration.PreviousIconSize
+	// The previous version's payload is a real directory; the retained icon
+	// bytes live inside it so rollback needs no network. The switched current
+	// link itself is a symlink and is never used as an icon source root.
+	nextSpec.IconSourceRoot = filepath.Join(appRoot, installed.Previous)
 	iconRestore, err := integration.SwitchIcon(spec, nextSpec)
 	if err != nil {
 		_ = restore()
@@ -915,6 +1000,7 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	installed.Channel, installed.PreviousChannel = installed.PreviousChannel, installed.Channel
 	installed.Integration.IconFile, installed.Integration.PreviousIconFile = installed.Integration.PreviousIconFile, installed.Integration.IconFile
 	installed.Integration.IconSHA256, installed.Integration.PreviousIconSHA256 = installed.Integration.PreviousIconSHA256, installed.Integration.IconSHA256
+	installed.Integration.IconSize, installed.Integration.PreviousIconSize = installed.Integration.PreviousIconSize, installed.Integration.IconSize
 	installed.Integration.IconSource, installed.Integration.PreviousIconSource = installed.Integration.PreviousIconSource, installed.Integration.IconSource
 	if err := manager.inject("before_state"); err != nil {
 		return Outcome{}, err
@@ -980,6 +1066,7 @@ func (manager *Manager) integrationSpec(installed state.State, name string, cate
 		DesktopEnabled: installed.DesktopEnabled, DesktopCategories: categories,
 		DesktopSHA256:  installed.Integration.DesktopSHA256,
 		IconSHA256:     installed.Integration.IconSHA256,
+		IconSize:       installed.Integration.IconSize,
 		IconSourceRoot: filepath.Join(appRoot, "current"), Icon: installed.Integration.IconSource,
 	}
 	for _, executable := range installed.Executables {

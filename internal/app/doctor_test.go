@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -148,5 +150,66 @@ func TestDoctorReportsMalformedStateAndPathWarning(t *testing.T) {
 	}
 	if report.Errors != 0 || report.Warnings == 0 {
 		t.Fatalf("warning-only report=%+v", report)
+	}
+}
+
+func TestDoctorValidatesRetainedRemoteIcon(t *testing.T) {
+	core, layout := doctorCore(t)
+	icon := []byte("retained 512 icon")
+	digest := sha256.Sum256(icon)
+	root := filepath.Join(layout.Apps, "remote")
+	version := filepath.Join(root, "1.0")
+	if err := os.MkdirAll(version, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(version, ".tarlink-icon.png"), icon, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(version, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(version, "bin", "run"), []byte("#!/bin/false\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("1.0", filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(layout.Bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := integration.Spec{ID: "remote", Name: "remote", ApplicationRoot: root, LocalBinDirectory: layout.Bin, DesktopDirectory: layout.Desktop, IconDirectory: layout.Icons, DesktopEnabled: true, DesktopCategories: []string{"Utility"}, Icon: ".tarlink-icon.png", IconSize: 512, IconSHA256: hex.EncodeToString(digest[:]), IconSourceRoot: version, Executables: []integration.ExecutableSpec{{Name: "run", Path: "bin/run"}}}
+	spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
+	paths, _, err := integration.Ensure(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(filepath.Dir(filepath.Dir(paths.IconFile))) != "512x512" {
+		t.Fatalf("doctor fixture icon path = %q", paths.IconFile)
+	}
+	value := state.State{Schema: state.Schema, App: "remote", Current: "1.0", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "run", Path: "bin/run"}}, DesktopEnabled: true, Integration: state.Integration{
+		DesktopEntry: paths.DesktopEntry, DesktopSHA256: spec.DesktopSHA256,
+		IconFile: paths.IconFile, IconSHA256: spec.IconSHA256, IconSize: 512, IconSource: ".tarlink-icon.png",
+		Executables: []state.ExecutableIntegration{{Name: "run", Path: "bin/run", Link: filepath.Join(layout.Bin, "run"), Target: filepath.Join(root, "current", "bin", "run")}},
+	}}
+	if err := state.WriteForApp(layout, value); err != nil {
+		t.Fatal(err)
+	}
+	report, err := core.Doctor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Errors != 0 {
+		t.Fatalf("healthy remote-icon doctor errors=%d report=%+v", report.Errors, report)
+	}
+	// A tampered themed icon copy must be reported as an integration error.
+	if err := os.WriteFile(paths.IconFile, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err = core.Doctor(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Errors == 0 {
+		t.Fatal("tampered themed icon was not reported")
 	}
 }

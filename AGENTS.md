@@ -19,6 +19,7 @@ TarLink is a rootless, single-user Linux application manager. Preserve its narro
 * Preserve archive/path/resource limits, safe extraction, same-directory regular-file symlink-chain policy, atomic activation/state, locking, ownership checks, and current-plus-one-previous retention.
 * Do not add hardlinks, hooks, scripts, arbitrary commands/arguments, custom install destinations, plugins, telemetry, daemons, automatic installation, system-wide installation, package-manager integration, or system dependencies.
 * Explicit self-upgrade is permitted only through the canonical TarLink-owned binary and verified official release assets.
+* Manifest-declared external desktop icons are an explicitly supported narrow verified resource under the manifest icon contract; this does not authorize arbitrary resource downloads.
 * A task does not implicitly authorize widening a trust or security boundary. Such changes require explicit user authorization and a deliberate design change.
 * Treat `docs/architecture.md`, `docs/security-model.md`, and `docs/threat-model.md` as canonical design references.
 

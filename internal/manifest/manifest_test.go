@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
 )
@@ -38,7 +39,8 @@ desktop:
   enabled: true
   categories:
     - Graphics
-  icon: icons/blender.png
+  icon:
+    path: icons/blender.png
 `
 
 func TestParseValidManifest(t *testing.T) {
@@ -49,8 +51,136 @@ func TestParseValidManifest(t *testing.T) {
 	if m.ID != "blender" || m.Release.Version != "5.2.0" {
 		t.Fatalf("unexpected manifest: %#v", m)
 	}
-	if m.Desktop.Icon != "icons/blender.png" {
-		t.Fatalf("desktop icon = %q", m.Desktop.Icon)
+	if m.Desktop.Icon.Path != "icons/blender.png" {
+		t.Fatalf("desktop icon = %#v", m.Desktop.Icon)
+	}
+	if m.Desktop.Icon.Remote() {
+		t.Fatal("archive icon unexpectedly reported as remote")
+	}
+}
+
+func remoteIconBlock(url string) string {
+	return "  icon:\n    url: " + url + "\n    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+
+func TestParseAcceptsVerifiedRemoteIcon(t *testing.T) {
+	const digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, url := range []string{
+		"https://pcsx2.net/app/AppIconLarge.png",
+		"https://download.dinosaur.app/icons/512.png",
+		"https://openrct2.org/icons/icon_x512.png",
+		"https://xemu.app/xemu_512x512.png",
+		"https://download.blender.org/icons/hicolor/512x512/apps/blender.png",
+	} {
+		t.Run(url, func(t *testing.T) {
+			value := strings.Replace(validManifest, "  icon:\n    path: icons/blender.png", remoteIconBlock(url), 1)
+			m, err := Parse(strings.NewReader(value))
+			if err != nil {
+				t.Fatalf("Parse() remote icon error = %v", err)
+			}
+			if !m.Desktop.Icon.Remote() || m.Desktop.Icon.SHA256 != digest {
+				t.Fatalf("remote icon = %#v", m.Desktop.Icon)
+			}
+		})
+	}
+}
+
+func TestParseRejectsInvalidDesktopIcon(t *testing.T) {
+	tests := map[string]string{
+		"scalar":                  "  icon: icons/blender.png",
+		"empty mapping":           "  icon: {}",
+		"neither path nor url":    "  icon:\n    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"both path and url":       "  icon:\n    path: icons/blender.png\n    url: https://download.blender.org/icons/hicolor/512x512/apps/blender.png\n    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"path with remote fields": "  icon:\n    path: icons/blender.png\n    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"remote with stray path":  "  icon:\n    path: icons/blender.png\n    url: https://download.blender.org/icons/hicolor/512x512/apps/blender.png",
+		"path traversal":          "  icon:\n    path: ../blender.png",
+		"http url":                remoteIconBlock("http://download.blender.org/icons/hicolor/512x512/apps/blender.png"),
+		"uppercase sha256":        "  icon:\n    url: https://download.blender.org/icons/hicolor/512x512/apps/blender.png\n    sha256: " + strings.Repeat("0", 63) + "A",
+		"malformed sha256":        "  icon:\n    url: https://download.blender.org/icons/hicolor/512x512/apps/blender.png\n    sha256: xyz",
+		"non-png extension":       remoteIconBlock("https://download.blender.org/icons/hicolor/512x512/apps/blender.svg"),
+		"unknown icon field":      "  icon:\n    path: icons/blender.png\n    alt: fallback.png",
+	}
+	for name, block := range tests {
+		t.Run(name, func(t *testing.T) {
+			value := strings.Replace(validManifest, "  icon:\n    path: icons/blender.png", block, 1)
+			if _, err := Parse(strings.NewReader(value)); err == nil {
+				t.Fatal("invalid desktop icon unexpectedly accepted")
+			}
+		})
+	}
+}
+
+func TestParseRejectsIconWhenDesktopDisabled(t *testing.T) {
+	value := strings.Replace(strings.Replace(validManifest, "enabled: true", "enabled: false", 1), "categories:\n    - Graphics", "categories: []", 1)
+	if _, err := Parse(strings.NewReader(value)); err == nil {
+		t.Fatal("desktop icon without desktop integration accepted")
+	}
+}
+
+func TestParseRejectsAppImageArchiveIcon(t *testing.T) {
+	appImage := strings.Replace(validManifest, "archive: tar.xz", "archive: appimage", 1)
+	appImage = strings.Replace(appImage, "      path: blender", "      path: appimage", 1)
+	if _, err := Parse(strings.NewReader(appImage)); err == nil {
+		t.Fatal("AppImage archive-contained icon unexpectedly accepted")
+	}
+}
+
+func TestParseAcceptsAppImageRemoteIcon(t *testing.T) {
+	appImage := strings.Replace(validManifest, "archive: tar.xz", "archive: appimage", 1)
+	appImage = strings.Replace(appImage, "      path: blender", "      path: appimage", 1)
+	value := strings.Replace(appImage, "  icon:\n    path: icons/blender.png", remoteIconBlock("https://pcsx2.net/app/AppIconLarge.png"), 1)
+	m, err := Parse(strings.NewReader(value))
+	if err != nil {
+		t.Fatalf("Parse() AppImage remote icon error = %v", err)
+	}
+	if !m.Desktop.Icon.Remote() {
+		t.Fatalf("AppImage remote icon = %#v", m.Desktop.Icon)
+	}
+}
+
+func minimalPNG(size int) []byte {
+	data := make([]byte, 29)
+	copy(data[0:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	binary.BigEndian.PutUint32(data[8:12], 13)
+	copy(data[12:16], []byte("IHDR"))
+	binary.BigEndian.PutUint32(data[16:20], uint32(size))
+	binary.BigEndian.PutUint32(data[20:24], uint32(size))
+	data[24], data[25], data[26], data[27], data[28] = 8, 2, 0, 0, 0
+	return data
+}
+
+func TestIconSizeFromPNG(t *testing.T) {
+	for _, want := range []int{16, 48, 256, 512} {
+		got, err := IconSizeFromPNG(minimalPNG(want))
+		if err != nil {
+			t.Fatalf("IconSizeFromPNG(%d) = %v", want, err)
+		}
+		if got != want {
+			t.Fatalf("IconSizeFromPNG(%d) = %d", want, got)
+		}
+	}
+	nonSquare := minimalPNG(512)
+	binary.BigEndian.PutUint32(nonSquare[20:24], 256)
+	zero := minimalPNG(0)
+	wrongChunk := minimalPNG(512)
+	copy(wrongChunk[12:16], []byte("BLK1"))
+	wrongLength := minimalPNG(512)
+	binary.BigEndian.PutUint32(wrongLength[8:12], 12)
+	tests := map[string][]byte{
+		"short":         {0x89, 'P', 'N'},
+		"bad signature": []byte("this is not a png file at all"),
+		"wrong chunk":   wrongChunk,
+		"wrong length":  wrongLength,
+		"zero size":     zero,
+		"non-square":    nonSquare,
+		"unsupported":   minimalPNG(100),
+	}
+	for name, data := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := IconSizeFromPNG(data); err == nil {
+				t.Fatal("invalid PNG unexpectedly accepted")
+			}
+		})
 	}
 }
 
@@ -205,7 +335,6 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 		"invalid ID":          func(s string) string { return strings.Replace(s, "id: blender", "id: ../Blender", 1) },
 		"absolute executable": func(s string) string { return strings.Replace(s, "      path: blender", "      path: /blender", 1) },
 		"path traversal":      func(s string) string { return strings.Replace(s, "      path: blender", "      path: ../blender", 1) },
-		"icon path traversal": func(s string) string { return strings.Replace(s, "icon: icons/blender.png", "icon: ../blender.png", 1) },
 		"icon when disabled": func(s string) string {
 			return strings.Replace(strings.Replace(s, "enabled: true", "enabled: false", 1), "categories:\n    - Graphics\n  icon:", "categories: []\n  icon:", 1)
 		},
