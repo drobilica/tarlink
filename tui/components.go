@@ -9,6 +9,7 @@ import (
 
 type tuiTheme struct {
 	accent, success, warning, danger, muted, selected lipgloss.Style
+	panel, control, controlSelected                   lipgloss.Style
 }
 
 func newTheme(color bool) tuiTheme {
@@ -22,6 +23,9 @@ func newTheme(color bool) tuiTheme {
 	styles.danger = lipgloss.NewStyle().Foreground(lipgloss.Color("31"))
 	styles.muted = lipgloss.NewStyle().Foreground(lipgloss.Color("90"))
 	styles.selected = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("36")).Bold(true)
+	styles.panel = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("36"))
+	styles.control = lipgloss.NewStyle().Foreground(lipgloss.Color("90"))
+	styles.controlSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("36")).Bold(true)
 	return styles
 }
 

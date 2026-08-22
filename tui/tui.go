@@ -33,6 +33,7 @@ const (
 	screenUninstall
 	screenUpgrade
 	screenInstallConfirm
+	screenInstallChannel
 )
 
 type applicationFilter uint8
@@ -109,6 +110,8 @@ type model struct {
 	applicationFilter   applicationFilter
 	versions            []app.Version
 	selected            int
+	channelSelected     int
+	channels            []string
 	listOffset          int
 	detail              *app.Application
 	searching           bool
@@ -187,7 +190,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.screen = screenInstallConfirm
 			return m, nil
 		}
-		return m.startInstall(message.appID)
+		return m.startInstall(m.installSelector(message.appID))
 	case searchMsg:
 		m.busy = ""
 		m.opCancel = nil
@@ -276,7 +279,7 @@ func (m model) View() tea.View {
 			body.WriteByte('\n')
 		}
 	}
-	line(m.style("TarLink", accent))
+	line(m.theme.panel.Render("TarLink"))
 	if m.upgradeAvailable {
 		line(m.style("UPDATE AVAILABLE "+m.tarlinkVersion.Current+" -> "+m.tarlinkVersion.Latest+" [U] (press U to upgrade)", warning))
 	}
@@ -299,7 +302,7 @@ func (m model) View() tea.View {
 
 	switch m.screen {
 	case screenAvailable:
-		line(m.style("APPLICATIONS", accent))
+		line(m.theme.panel.Render("APPLICATIONS"))
 		line(m.filterView())
 		if m.searching {
 			line("Search /" + m.query + "_")
@@ -312,15 +315,15 @@ func (m model) View() tea.View {
 		}
 		writeApplications(&body, m.visibleApplications(), m.selected, m.listOffset, m.listRows(), m.width, m.theme)
 	case screenInstalled:
-		line(m.style("INSTALLED", accent))
+		line(m.theme.panel.Render("INSTALLED"))
 		body.WriteByte('\n')
 		writeApplications(&body, m.installed, m.selected, m.listOffset, m.listRows(), m.width, m.theme)
 	case screenUpdates:
-		line(m.style("UPDATES", accent))
+		line(m.theme.panel.Render("UPDATES"))
 		body.WriteByte('\n')
 		writeApplications(&body, updates(m.installed), m.selected, m.listOffset, m.listRows(), m.width, m.theme)
 	case screenDetails:
-		line(m.style("APPLICATION DETAILS", accent))
+		line(m.theme.panel.Render("APPLICATION DETAILS"))
 		body.WriteByte('\n')
 		if m.detail != nil {
 			line(m.style(m.detail.Name, accent))
@@ -359,13 +362,13 @@ func (m model) View() tea.View {
 			}
 		}
 	case screenVersions:
-		line(m.style("VERSIONS", accent))
+		line(m.theme.panel.Render("VERSIONS"))
 		body.WriteByte('\n')
 		for _, value := range m.versions {
 			line(truncate(value.Version, max(1, m.width/2), " ") + " " + truncate(value.Status, max(1, m.width/2-1), "…"))
 		}
 	case screenRollback:
-		line(m.style("ROLLBACK", warning))
+		line(m.theme.panel.Render("ROLLBACK"))
 		body.WriteByte('\n')
 		if m.detail != nil {
 			line("Switch " + m.detail.Name + " from " + m.detail.InstalledVersion + " to its retained previous version?")
@@ -373,7 +376,7 @@ func (m model) View() tea.View {
 			line("Enter Confirm   Esc Cancel")
 		}
 	case screenUninstall:
-		line(m.style("UNINSTALL", warning))
+		line(m.theme.panel.Render("UNINSTALL"))
 		body.WriteByte('\n')
 		if m.detail != nil {
 			line("Remove " + m.detail.Name + " (" + m.detail.ID + ") and its installed files?")
@@ -387,13 +390,13 @@ func (m model) View() tea.View {
 			line("Esc Cancel")
 		}
 	case screenUpgrade:
-		line(m.style("TARLINK UPGRADE", warning))
+		line(m.theme.panel.Render("TARLINK UPGRADE"))
 		body.WriteByte('\n')
 		line(m.tarlinkVersion.Current + " → " + m.tarlinkVersion.Latest)
 		body.WriteByte('\n')
 		line("Enter Upgrade   Esc Cancel")
 	case screenInstallConfirm:
-		line(m.style("INSTALL PATH CONFLICT", warning))
+		line(m.theme.panel.Render("INSTALL PATH CONFLICT"))
 		body.WriteByte('\n')
 		if m.detail != nil {
 			line("Installing " + m.detail.Name + " (" + m.detail.ID + ") may be shadowed or hidden by your PATH.")
@@ -409,10 +412,28 @@ func (m model) View() tea.View {
 			body.WriteByte('\n')
 			line("Enter Install anyway   Esc Cancel")
 		}
+	case screenInstallChannel:
+		line(m.theme.panel.Render("INSTALL CHANNEL"))
+		body.WriteByte('\n')
+		if m.detail != nil {
+			line(m.detail.Name)
+			line("Choose a release channel:")
+			body.WriteByte('\n')
+			for index, channel := range m.channels {
+				row := "  " + channel
+				if index == m.channelSelected {
+					row = "> " + channel
+					row = m.theme.selected.Render(row)
+				}
+				line(row)
+			}
+			body.WriteByte('\n')
+			line("Enter Select   ↑/↓ Choose   Esc Back")
+		}
 	}
 
 	body.WriteByte('\n')
-	footerContent := footerLines(m.helpView(), m.width)
+	footerContent := footerLines(m.footer(), m.width)
 	if m.height > 0 && len(footerContent) > m.height {
 		footerContent = footerContent[len(footerContent)-m.height:]
 	}
@@ -439,6 +460,17 @@ func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	mouse := message.Mouse()
+	if m.screen == screenInstallChannel {
+		if mouse.Button != tea.MouseLeft {
+			return m, nil
+		}
+		start, rows := m.channelBounds()
+		index := mouse.Y - start
+		if index >= 0 && index < rows {
+			m.channelSelected = index
+		}
+		return m, nil
+	}
 	if (mouse.Button == tea.MouseWheelUp || mouse.Button == tea.MouseWheelDown) && m.isListScreen() {
 		delta := 3
 		if mouse.Button == tea.MouseWheelUp {
@@ -458,8 +490,23 @@ func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if index >= 0 && index < len(m.visibleApplications()) {
 		m.selected = index
 		m.clampViewport()
+		// A row click has the same activation semantics as Enter: select and
+		// open the application details in one interaction.
+		value := m.visibleApplications()[index]
+		m.detail = &value
+		m.channels = nil
+		m.channelSelected = 0
+		m.returnTo = m.screen
+		m.screen = screenDetails
 	}
 	return m, nil
+}
+
+func (m model) channelBounds() (start, rows int) {
+	// Reuse the shared global layout accounting, then add the application name,
+	// prompt, and spacer rendered before the channel controls.
+	base, _ := m.listBoundsWithoutRows()
+	return base + 3, len(m.channels)
 }
 
 func (m model) isListScreen() bool {
@@ -544,10 +591,18 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case keypkg.Matches(message, bindings.Up):
 		m.clearFeedback()
-		m.moveSelection(-1)
+		if m.screen == screenInstallChannel {
+			m.moveChannel(-1)
+		} else {
+			m.moveSelection(-1)
+		}
 	case keypkg.Matches(message, bindings.Down):
 		m.clearFeedback()
-		m.moveSelection(1)
+		if m.screen == screenInstallChannel {
+			m.moveChannel(1)
+		} else {
+			m.moveSelection(1)
+		}
 	case keypkg.Matches(message, bindings.Left):
 		if m.screen == screenAvailable {
 			m.clearFeedback()
@@ -577,7 +632,9 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.listOffset = 0
 	case keypkg.Matches(message, bindings.Cancel):
 		m.clearFeedback()
-		if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm {
+		if m.screen == screenInstallChannel {
+			m.screen = screenDetails
+		} else if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm {
 			m.screen = m.confirmationTarget()
 			m.confirmSet = false
 			if m.screen != screenDetails {
@@ -599,6 +656,16 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.selected = 0
 		}
 	case keypkg.Matches(message, bindings.Enter):
+		if m.screen == screenInstallChannel {
+			if m.detail != nil && len(m.channels) > 0 && m.channelSelected < len(m.channels) {
+				m.clearFeedback()
+				m.busy = "Checking installation path"
+				cmd, cancel := m.pathCheckCmd(m.detail.ID)
+				m.opCancel = cancel
+				return m, cmd
+			}
+			return m, nil
+		}
 		if m.screen == screenUpgrade {
 			m.busy = "Upgrading TarLink"
 			m.startOperation()
@@ -630,13 +697,21 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if id := m.selectedID(); id != "" {
 				m.busy = "Installing " + id
 				m.startOperation()
-				cmd, cancel := m.installCmd(id)
+				cmd, cancel := m.installCmd(m.installSelector(id))
 				m.opCancel = cancel
 				return m, cmd
 			}
 			return m, nil
 		}
 		if m.screen == screenDetails {
+			if m.detail != nil && m.detail.InstalledVersion == "" && len(m.detail.ChannelHeads) > 1 {
+				m.channels = channelNames(m.detail)
+				m.channelSelected = channelIndex(m.channels, m.detail.DefaultChannel)
+				m.screen = screenInstallChannel
+				return m, nil
+			}
+			m.channels = nil
+			m.channelSelected = 0
 			return m.activateSelected()
 		}
 		visible := m.visibleApplications()
@@ -703,6 +778,38 @@ func (m *model) moveSelection(delta int) {
 		m.selected = length - 1
 	}
 	m.clampViewport()
+}
+
+func (m *model) moveChannel(delta int) {
+	if len(m.channels) == 0 {
+		m.channelSelected = 0
+		return
+	}
+	m.channelSelected += delta
+	if m.channelSelected < 0 {
+		m.channelSelected = 0
+	}
+	if m.channelSelected >= len(m.channels) {
+		m.channelSelected = len(m.channels) - 1
+	}
+}
+
+func channelNames(value *app.Application) []string {
+	channels := make([]string, 0, len(value.ChannelHeads))
+	for channel := range value.ChannelHeads {
+		channels = append(channels, channel)
+	}
+	sort.Strings(channels)
+	return channels
+}
+
+func channelIndex(channels []string, preferred string) int {
+	for index, channel := range channels {
+		if channel == preferred {
+			return index
+		}
+	}
+	return 0
 }
 
 func (m model) activateSelected() (tea.Model, tea.Cmd) {
@@ -799,6 +906,17 @@ func (m model) installCmd(id string) (tea.Cmd, context.CancelFunc) {
 		result, err := m.service.Install(ctx, id, sink)
 		return operationMsg{message: resultMessage("Installed", result)}, err
 	})
+}
+
+func (m model) installSelector(id string) string {
+	if m.detail == nil || m.detail.ID != id || len(m.channels) == 0 || m.channelSelected < 0 || m.channelSelected >= len(m.channels) {
+		return id
+	}
+	channel := m.channels[m.channelSelected]
+	if _, ok := m.detail.ChannelHeads[channel]; !ok {
+		return id
+	}
+	return id + "@" + channel
 }
 
 func (m model) updateCmd(id string) (tea.Cmd, context.CancelFunc) {
@@ -1028,9 +1146,9 @@ func (m model) filterView() string {
 	var parts []string
 	for index, label := range labels {
 		if applicationFilter(index) == m.applicationFilter {
-			parts = append(parts, "["+label+"]")
+			parts = append(parts, m.theme.controlSelected.Render("[ "+label+" ]"))
 		} else {
-			parts = append(parts, label)
+			parts = append(parts, m.theme.control.Render(label))
 		}
 	}
 	return strings.Join(parts, "  ")
@@ -1138,7 +1256,14 @@ func (m model) listBoundsWithoutRows() (start, rows int) {
 }
 
 func (m model) footer() string {
-	return m.helpView()
+	if m.screen == screenInstallChannel {
+		return "↑/↓ Choose  Enter Select  Esc Back  • Click a channel"
+	}
+	footer := m.helpView()
+	if m.isListScreen() && m.busy == "" {
+		footer += "  • Click row to open"
+	}
+	return footer
 }
 
 func updates(values []app.Application) []app.Application {

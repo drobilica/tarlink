@@ -17,6 +17,7 @@ type fakeService struct {
 	applications     []app.Application
 	installedValues  []app.Application
 	rolledBack       string
+	installedID      string
 	uninstalled      string
 	uninstallErr     error
 	installProgress  []app.Progress
@@ -46,7 +47,8 @@ func (f *fakeService) waitForCancel(ctx context.Context, started, canceled chan 
 	return ctx.Err()
 }
 
-func (f *fakeService) Install(ctx context.Context, _ string, sink app.ProgressSink) (app.Result, error) {
+func (f *fakeService) Install(ctx context.Context, id string, sink app.ProgressSink) (app.Result, error) {
+	f.installedID = id
 	for _, event := range f.installProgress {
 		if sink != nil {
 			sink(event)
@@ -63,6 +65,57 @@ func (f *fakeService) Install(ctx context.Context, _ string, sink app.ProgressSi
 		return app.Result{}, ctx.Err()
 	}
 	return app.Result{AppID: "blender", Version: "5.2.0"}, nil
+}
+
+func TestMouseRowClickOpensDetails(t *testing.T) {
+	values := []app.Application{{ID: "one", Name: "One"}, {ID: "two", Name: "Two"}}
+	m := model{screen: screenAvailable, available: values, width: 80, height: 20}
+	start, _ := m.listBounds()
+	updated, command := m.Update(tea.MouseClickMsg{X: 2, Y: start + 1, Button: tea.MouseLeft})
+	got := updated.(model)
+	if command != nil || got.screen != screenDetails || got.detail == nil || got.detail.ID != "two" || got.selected != 1 {
+		t.Fatalf("row click = screen %v detail %#v selected %d command %v", got.screen, got.detail, got.selected, command)
+	}
+}
+
+func TestInstallChannelSelectorUsesDefaultAndExplicitChannel(t *testing.T) {
+	service := &fakeService{}
+	value := app.Application{ID: "pcsx2", Name: "PCSX2", ChannelHeads: map[string]string{"stable": "1", "nightly": "2"}, DefaultChannel: "stable"}
+	m := model{ctx: context.Background(), service: service, screen: screenDetails, detail: &value}
+	updated, command := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command != nil || updated.(model).screen != screenInstallChannel || updated.(model).channels[0] != "nightly" || updated.(model).channelSelected != 1 {
+		t.Fatalf("channel chooser = %#v command %v", updated.(model), command)
+	}
+	updated, command = updated.(model).Update(tea.KeyPressMsg{Text: "up"})
+	if command != nil || updated.(model).channelSelected != 0 {
+		t.Fatalf("channel move = %#v command %v", updated.(model), command)
+	}
+	updated, command = updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil || updated.(model).busy != "Checking installation path" {
+		t.Fatalf("channel confirmation did not start path check: busy=%q command=%v", updated.(model).busy, command)
+	}
+	if got := updated.(model).installSelector("pcsx2"); got != "pcsx2@nightly" {
+		t.Fatalf("install selector = %q", got)
+	}
+}
+
+func TestChannelChooserMouseSelectionAndStaleChannelProtection(t *testing.T) {
+	value := app.Application{ID: "pcsx2", Name: "PCSX2", ChannelHeads: map[string]string{"stable": "1", "nightly": "2"}, DefaultChannel: "stable"}
+	m := model{screen: screenInstallChannel, detail: &value, channels: []string{"nightly", "stable"}, channelSelected: 1, width: 80, height: 20}
+	start, _ := m.channelBounds()
+	lines := strings.Split(m.View().Content, "\n")
+	if start >= len(lines) || !strings.Contains(lines[start], "nightly") {
+		t.Fatalf("channel hit-test row %d does not match rendered view: %q", start, m.View().Content)
+	}
+	updated, command := m.Update(tea.MouseClickMsg{X: 2, Y: start, Button: tea.MouseLeft})
+	if command != nil || updated.(model).channelSelected != 0 {
+		t.Fatalf("channel click selected=%d command=%v", updated.(model).channelSelected, command)
+	}
+	stale := updated.(model)
+	stale.detail = &app.Application{ID: "tiled", Name: "Tiled"}
+	if got := stale.installSelector("tiled"); got != "tiled" {
+		t.Fatalf("stale channel selector = %q", got)
+	}
 }
 func (f *fakeService) Update(context.Context, string, app.ProgressSink) (app.Result, error) {
 	return app.Result{AppID: "blender", Version: "5.2.0"}, nil
@@ -165,6 +218,14 @@ func TestModelLoadsAndShowsApplications(t *testing.T) {
 	view := updated.(model).View()
 	if !strings.Contains(view.Content, "Blender") || !strings.Contains(view.Content, "APPLICATIONS") || !view.AltScreen {
 		t.Fatalf("unexpected view: %q", view.Content)
+	}
+}
+
+func TestPresentationUsesPanelAndSelectableControlLabels(t *testing.T) {
+	m := model{screen: screenAvailable, width: 80, available: []app.Application{{ID: "one", Name: "One"}}}
+	view := m.View().Content
+	if !strings.Contains(view, "TarLink") || !strings.Contains(view, "[ All ]") {
+		t.Fatalf("presentation omitted panel/control labels: %q", view)
 	}
 }
 
