@@ -24,6 +24,7 @@ type fakeService struct {
 	pathChecked    string
 	installed      []string
 	doctorReport   app.DoctorReport
+	synced         bool
 }
 
 func (f *fakeService) Install(_ context.Context, appID string, _ app.ProgressSink) (app.Result, error) {
@@ -48,6 +49,9 @@ func (f *fakeService) Rollback(context.Context, string, app.ProgressSink) (app.R
 	return app.Result{}, errors.New("unused")
 }
 func (f *fakeService) List(context.Context) ([]app.Application, error) { return f.applications, nil }
+func (f *fakeService) ListAvailable(context.Context) ([]app.Application, error) {
+	return f.applications, nil
+}
 func (f *fakeService) Info(context.Context, string) (app.Application, error) {
 	return f.applications[0], nil
 }
@@ -57,7 +61,10 @@ func (f *fakeService) Search(context.Context, string) ([]app.Application, error)
 func (f *fakeService) Versions(context.Context, string) ([]app.Version, error) {
 	return []app.Version{{Version: "1", Status: "current"}}, nil
 }
-func (f *fakeService) SyncRegistry(context.Context, app.ProgressSink) error { return nil }
+func (f *fakeService) SyncRegistry(context.Context, app.ProgressSink) error {
+	f.synced = true
+	return nil
+}
 func (f *fakeService) ValidateRegistry(_ context.Context, root string) error {
 	f.validatedRoot = root
 	return nil
@@ -270,16 +277,16 @@ func TestVersionNoticeUsesStderr(t *testing.T) {
 		t.Fatalf("JSON output was contaminated: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 	errOut.Reset()
-	if code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list"}); code != 0 || !bytes.Contains(errOut.Bytes(), []byte("tarlink upgrade")) {
+	if code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list"}); code != 0 || !bytes.Contains(errOut.Bytes(), []byte("tarlink self-update")) {
 		t.Fatalf("notice was not sent to stderr: code=%d stderr=%q", code, errOut.String())
 	}
 }
 
-func TestUpgradeCommandDelegatesAndReportsCurrent(t *testing.T) {
+func TestSelfUpdateCommandDelegatesAndReportsCurrent(t *testing.T) {
 	var out bytes.Buffer
 	service := &fakeService{upgradeValue: app.TarLinkVersion{Current: "0.5.0", Latest: "0.5.0"}}
-	if code := (Runner{Service: service, Stdout: &out, Stderr: &bytes.Buffer{}}).Run(context.Background(), []string{"upgrade"}); code != 0 || out.String() != "TarLink 0.5.0 is already up to date.\n" {
-		t.Fatalf("upgrade output: code=%d output=%q", code, out.String())
+	if code := (Runner{Service: service, Stdout: &out, Stderr: &bytes.Buffer{}}).Run(context.Background(), []string{"self-update"}); code != 0 || out.String() != "TarLink 0.5.0 is already up to date.\n" {
+		t.Fatalf("self-update output: code=%d output=%q", code, out.String())
 	}
 }
 
@@ -288,6 +295,60 @@ func TestInvalidArgumentsHaveStableExit(t *testing.T) {
 	code := (Runner{Service: &fakeService{}, Stdout: &bytes.Buffer{}, Stderr: &errOut}).Run(context.Background(), []string{"info"})
 	if code != exitInvalidArguments || errOut.Len() == 0 {
 		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+}
+
+func TestMalformedDispatchDoesNotPanic(t *testing.T) {
+	for _, arguments := range [][]string{{"registry"}, {"registry", "freshness"}, {"install"}, {"list", "--installed", "--updates"}} {
+		code := (Runner{Service: &fakeService{}, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), arguments)
+		if code != exitInvalidArguments && arguments[0] != "registry" {
+			t.Fatalf("args=%v code=%d", arguments, code)
+		}
+	}
+}
+
+func TestListFiltersAreExclusiveAndDeterministic(t *testing.T) {
+	service := &fakeService{applications: []app.Application{
+		{ID: "zeta", InstalledVersion: "1", UpdateAvailable: true},
+		{ID: "alpha"},
+		{ID: "beta", InstalledVersion: "2"},
+	}}
+	var out bytes.Buffer
+	runner := Runner{Service: service, Stdout: &out, Stderr: io.Discard}
+	if code := runner.Run(context.Background(), []string{"list", "--updates"}); code != 0 || !bytes.Contains(out.Bytes(), []byte("zeta")) || bytes.Contains(out.Bytes(), []byte("beta")) {
+		t.Fatalf("updates code=%d output=%q", code, out.String())
+	}
+	out.Reset()
+	if code := runner.Run(context.Background(), []string{"list", "--installed"}); code != 0 || !bytes.HasPrefix(out.Bytes(), []byte("beta")) {
+		t.Fatalf("installed code=%d output=%q", code, out.String())
+	}
+	if code := runner.Run(context.Background(), []string{"list", "--installed", "--updates"}); code != exitInvalidArguments {
+		t.Fatalf("exclusive filters code=%d", code)
+	}
+}
+
+func TestRefreshAndScopedHelp(t *testing.T) {
+	service := &fakeService{}
+	var out bytes.Buffer
+	runner := Runner{Service: service, Stdout: &out, Stderr: io.Discard}
+	if code := runner.Run(context.Background(), []string{"refresh"}); code != 0 || !service.synced || out.String() != "Application catalog refreshed.\n" {
+		t.Fatalf("refresh code=%d synced=%t", code, service.synced)
+	}
+	out.Reset()
+	if code := runner.Run(context.Background(), []string{"registry"}); code != 0 || !bytes.Contains(out.Bytes(), []byte("registry validate")) {
+		t.Fatalf("registry help code=%d output=%q", code, out.String())
+	}
+	out.Reset()
+	if code := runner.Run(context.Background(), []string{"help", "list"}); code != 0 || !bytes.Contains(out.Bytes(), []byte("--updates")) {
+		t.Fatalf("list help code=%d output=%q", code, out.String())
+	}
+}
+
+func TestLegacyCommandsAreRejected(t *testing.T) {
+	for _, command := range [][]string{{"upgrade"}, {"registry", "sync"}} {
+		if code := (Runner{Service: &fakeService{}, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), command); code != exitInvalidArguments {
+			t.Fatalf("legacy command %v code=%d", command, code)
+		}
 	}
 }
 

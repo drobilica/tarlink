@@ -236,6 +236,35 @@ func (core *Core) List(ctx context.Context) ([]Application, error) {
 	return result, nil
 }
 
+// ListAvailable returns the platform-specific catalog, including installed
+// state where a local installation exists.
+func (core *Core) ListAvailable(ctx context.Context) ([]Application, error) {
+	catalog, err := core.catalog(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	goos, goarch := core.platform()
+	installed, err := core.installedStates()
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]state.State, len(installed))
+	for _, value := range installed {
+		byID[value.App] = value
+	}
+	items := catalog.SearchForPlatform("", goos, goarch)
+	result := make([]Application, 0, len(items))
+	for _, item := range items {
+		if value, ok := byID[item.ID]; ok {
+			item = core.itemForInstalledChannel(catalog, item, value.Channel)
+			result = append(result, applicationFrom(item, &value))
+		} else {
+			result = append(result, applicationFrom(item, nil))
+		}
+	}
+	return result, nil
+}
+
 func (core *Core) Info(ctx context.Context, appID string) (Application, error) {
 	item, catalog, err := core.resolve(ctx, appID, nil)
 	if err != nil {

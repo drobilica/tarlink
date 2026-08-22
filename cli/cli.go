@@ -18,33 +18,72 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-const help = `TarLink turns portable Linux application archives into managed applications.
+const help = `TarLink manages verified portable Linux applications.
 
 Usage:
-  tarlink registry sync
+  tarlink <command> [options]
+
+Discover applications:
+  list         List available applications
+  search       Search applications
+  info         Show application information
+  versions     Show application versions
+
+Manage applications:
+  install      Install an application
+  update       Update one or all installed applications
+  rollback     Roll back an application
+  uninstall    Uninstall one or all applications
+  pin          Pin an installed application
+  unpin        Unpin an installed application
+
+Catalog:
+  refresh      Refresh the application catalog
+
+Maintenance:
+  doctor       Audit TarLink-managed state
+  self-update  Update TarLink itself
+  version      Show TarLink version
+
+Registry development:
+  registry     Registry validation and maintainer tools
+
+Run 'tarlink <command> --help' for command-specific help.
+`
+
+const registryHelp = `Registry maintenance commands:
   tarlink registry validate <path>
   tarlink registry freshness <app> [--json]
   tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
-	  tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
-	  tarlink registry inspect --file <repositories.yaml> [--json]
+  tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
+  tarlink registry inspect --file <repositories.yaml> [--json]
   tarlink registry candidates [--changed] [--json]
   tarlink registry blockers [--capability <capability>] [--json]
-  tarlink search <query> [--json]
-  tarlink install <app> [--force-path]
-  tarlink update <app>
-  tarlink update --all
-  tarlink pin <app>
-  tarlink unpin <app>
-  tarlink list [--json]
-  tarlink info <app> [--json]
-  tarlink versions <app> [--json]
-  tarlink rollback <app>
-  tarlink uninstall <app>
-  tarlink uninstall --all
-  tarlink upgrade
-  tarlink doctor
-  tarlink version
 `
+
+var commandHelp = map[string]string{
+	"refresh":     "usage: tarlink refresh",
+	"list":        "usage: tarlink list [--installed|--updates] [--json]",
+	"search":      "usage: tarlink search <query> [--json]",
+	"install":     "usage: tarlink install <app> [--force-path]",
+	"update":      "usage: tarlink update <app> | tarlink update --all",
+	"self-update": "usage: tarlink self-update",
+	"doctor":      "usage: tarlink doctor",
+	"version":     "usage: tarlink version",
+	"pin":         "usage: tarlink pin <app>",
+	"unpin":       "usage: tarlink unpin <app>",
+	"info":        "usage: tarlink info <app> [--json]",
+	"versions":    "usage: tarlink versions <app> [--json]",
+	"rollback":    "usage: tarlink rollback <app>",
+	"uninstall":   "usage: tarlink uninstall <app> | tarlink uninstall --all",
+}
+
+var registryCommandHelp = map[string]string{
+	"validate": "usage: tarlink registry validate <path>", "freshness": "usage: tarlink registry freshness <app> [--json]",
+	"provenance": "usage: tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]",
+	"inspect":    "usage: tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]",
+	"candidates": "usage: tarlink registry candidates [--changed] [--json]", "blockers": "usage: tarlink registry blockers [--capability <capability>] [--json]",
+}
 
 type Runner struct {
 	Service   app.Service
@@ -69,20 +108,36 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		}
 		return 0
 	}
+	if len(arguments) == 2 && (arguments[1] == "--help" || arguments[1] == "-h") {
+		if arguments[0] == "registry" {
+			_, _ = io.WriteString(r.Stdout, registryHelp)
+			return 0
+		}
+		if usage, ok := commandHelp[arguments[0]]; ok {
+			_, _ = io.WriteString(r.Stdout, usage+"\n")
+			return 0
+		}
+	}
+	if len(arguments) == 3 && arguments[0] == "registry" && (arguments[2] == "--help" || arguments[2] == "-h") {
+		if usage, ok := registryCommandHelp[arguments[1]]; ok {
+			_, _ = io.WriteString(r.Stdout, usage+"\n")
+			return 0
+		}
+	}
 	if r.Service == nil && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" {
 		return r.fail(errors.New("TarLink core is unavailable"))
 	}
-	if arguments[0] != "upgrade" && arguments[0] != "doctor" && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" && !contains(arguments[1:], "--json") {
+	if arguments[0] != "self-update" && arguments[0] != "upgrade" && arguments[0] != "doctor" && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" && !contains(arguments[1:], "--json") {
 		if value, checkErr := r.Service.CheckTarLinkVersion(ctx); checkErr == nil && value.UpgradeAvailable {
-			_, _ = fmt.Fprintf(r.Stderr, "TarLink %s is available (current %s).\nRun `tarlink upgrade` to update.\n", value.Latest, value.Current)
+			_, _ = fmt.Fprintf(r.Stderr, "TarLink %s is available (current %s).\nRun `tarlink self-update` to update.\n", value.Latest, value.Current)
 		}
 	}
 
 	var err error
 	switch arguments[0] {
 	case "registry":
-		if len(arguments) == 2 && arguments[1] == "sync" {
-			err = r.Service.SyncRegistry(ctx, r.progress())
+		if len(arguments) == 1 || (len(arguments) == 2 && (arguments[1] == "help" || arguments[1] == "--help" || arguments[1] == "-h")) {
+			_, err = io.WriteString(r.Stdout, registryHelp)
 			break
 		}
 		if len(arguments) == 3 && arguments[1] == "validate" {
@@ -283,7 +338,15 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			}
 			break
 		}
-		return r.invalid("usage: tarlink registry sync | tarlink registry validate <path> | tarlink registry freshness <app> [--json] | tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]")
+		return r.invalid("usage: tarlink registry <validate|freshness|provenance|inspect|candidates|blockers> ...")
+	case "refresh":
+		if len(arguments) != 1 {
+			return r.invalid("usage: tarlink refresh")
+		}
+		err = r.Service.SyncRegistry(ctx, r.progress())
+		if err == nil {
+			_, err = io.WriteString(r.Stdout, "Application catalog refreshed.\n")
+		}
 	case "search":
 		value, jsonOutput, parseErr := oneValueJSON(arguments[1:])
 		if parseErr != nil {
@@ -292,7 +355,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		var result []app.Application
 		result, err = r.Service.Search(ctx, value)
 		if err == nil {
-			err = r.printApplications(result, jsonOutput)
+			err = r.printApplications(result, jsonOutput, "No applications found.")
 		}
 	case "install":
 		value, forcePath, parseErr := installArguments(arguments[1:])
@@ -360,9 +423,9 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		if err == nil {
 			_, err = fmt.Fprintf(r.Stdout, "%s %s\n", strings.Title(arguments[0]), value)
 		}
-	case "upgrade":
+	case "self-update":
 		if len(arguments) != 1 {
-			return r.invalid("usage: tarlink upgrade")
+			return r.invalid("usage: tarlink self-update")
 		}
 		var value app.TarLinkVersion
 		value, err = r.Service.UpgradeTarLink(ctx, r.progress())
@@ -386,14 +449,29 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			}
 		}
 	case "list":
-		jsonOutput, parseErr := onlyJSON(arguments[1:])
+		installedOnly, updatesOnly, jsonOutput, parseErr := listArguments(arguments[1:])
 		if parseErr != nil {
-			return r.invalid("usage: tarlink list [--json]")
+			return r.invalid("usage: tarlink list [--installed|--updates] [--json]")
 		}
 		var result []app.Application
-		result, err = r.Service.List(ctx)
+		result, err = r.Service.ListAvailable(ctx)
 		if err == nil {
-			err = r.printApplications(result, jsonOutput)
+			if installedOnly || updatesOnly {
+				filtered := make([]app.Application, 0, len(result))
+				for _, value := range result {
+					if value.InstalledVersion != "" && (!updatesOnly || value.UpdateAvailable) {
+						filtered = append(filtered, value)
+					}
+				}
+				result = filtered
+			}
+			emptyMessage := "No applications found."
+			if installedOnly {
+				emptyMessage = "No installed applications."
+			} else if updatesOnly {
+				emptyMessage = "No updates available."
+			}
+			err = r.printApplications(result, jsonOutput, emptyMessage)
 		}
 	case "info":
 		value, jsonOutput, parseErr := oneValueJSON(arguments[1:])
@@ -447,8 +525,18 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		}
 		_, err = fmt.Fprintf(r.Stdout, "tarlink %s\n", version.Current)
 	case "help", "--help", "-h":
+		if len(arguments) == 2 && arguments[1] == "registry" {
+			_, err = io.WriteString(r.Stdout, registryHelp)
+			break
+		}
+		if len(arguments) == 2 {
+			if usage, ok := commandHelp[arguments[1]]; ok {
+				_, err = io.WriteString(r.Stdout, usage+"\n")
+				break
+			}
+		}
 		if len(arguments) != 1 {
-			return r.invalid("usage: tarlink help")
+			return r.invalid("usage: tarlink help [registry]")
 		}
 		_, err = io.WriteString(r.Stdout, help)
 	default:
@@ -471,12 +559,14 @@ func (r Runner) progress() app.ProgressSink {
 	}
 }
 
-func (r Runner) printApplications(values []app.Application, jsonOutput bool) error {
+func (r Runner) printApplications(values []app.Application, jsonOutput bool, emptyMessage string) error {
+	values = append([]app.Application{}, values...)
+	sort.Slice(values, func(i, j int) bool { return values[i].ID < values[j].ID })
 	if jsonOutput {
 		return writeJSON(r.Stdout, values)
 	}
 	if len(values) == 0 {
-		_, err := io.WriteString(r.Stdout, "No applications found.\n")
+		_, err := fmt.Fprintf(r.Stdout, "%s\n", emptyMessage)
 		return err
 	}
 	for _, value := range values {
@@ -608,7 +698,7 @@ func blockerArguments(a []string) (string, bool, error) {
 		case "--json":
 			jsonOut = true
 		case "--capability":
-			if i+1 >= len(a) {
+			if i+1 >= len(a) || strings.HasPrefix(a[i+1], "-") {
 				return "", false, errors.New("capability required")
 			}
 			capability = a[i+1]
@@ -856,6 +946,34 @@ func onlyJSON(arguments []string) (bool, error) {
 		return true, nil
 	}
 	return false, errors.New("only --json is allowed")
+}
+
+func listArguments(arguments []string) (installed, updates, jsonOutput bool, err error) {
+	for _, argument := range arguments {
+		switch argument {
+		case "--installed":
+			if installed {
+				return false, false, false, errors.New("duplicate list filter")
+			}
+			installed = true
+		case "--updates":
+			if updates {
+				return false, false, false, errors.New("duplicate list filter")
+			}
+			updates = true
+		case "--json":
+			if jsonOutput {
+				return false, false, false, errors.New("duplicate list option")
+			}
+			jsonOutput = true
+		default:
+			return false, false, false, errors.New("unknown list option")
+		}
+	}
+	if installed && updates {
+		return false, false, false, errors.New("list filters are mutually exclusive")
+	}
+	return installed, updates, jsonOutput, nil
 }
 
 func title(value string) string {

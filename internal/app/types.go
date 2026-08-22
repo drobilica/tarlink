@@ -119,6 +119,7 @@ type Service interface {
 	UninstallAll(context.Context, ProgressSink) error
 	Rollback(context.Context, string, ProgressSink) (Result, error)
 	List(context.Context) ([]Application, error)
+	ListAvailable(context.Context) ([]Application, error)
 	Info(context.Context, string) (Application, error)
 	Search(context.Context, string) ([]Application, error)
 	Versions(context.Context, string) ([]Version, error)

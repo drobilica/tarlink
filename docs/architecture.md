@@ -33,7 +33,7 @@ bounded download ── digest verification ── staging directory
 
 The official registry is the only catalog authority. TarLink directly enumerates the strict platform files below `apps/<id>/`; there is no generated index, compatibility filename fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves only its normalized `apps/` data into a private generation, validates that generation again, flushes it, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations. Historical releases remain registry-approved metadata; they do not imply local retention, and channel heads are never inferred by version sorting.
 
-Normal registry-dependent commands bootstrap a missing cache automatically. Valid caches remain local-only for 24 hours. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache. `registry sync` always attempts a refresh, while local operations such as rollback and uninstall do not require networking.
+Normal registry-dependent commands bootstrap a missing cache automatically. Valid caches remain local-only for 24 hours. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache. `refresh` always attempts a refresh, while local operations such as rollback and uninstall do not require networking. The CLI `list` command enumerates the available platform catalog and annotates installed state; the TUI's installed list remains a separate view.
 
 TarLink release discovery is separate from the application registry. A 24-hour
 XDG cache makes version checks advisory and non-blocking for normal operations.

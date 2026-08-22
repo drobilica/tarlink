@@ -67,11 +67,13 @@ tarlink update <app>
 tarlink rollback <app>
 tarlink uninstall <app>
 tarlink doctor
-tarlink upgrade
+tarlink self-update
 ```
 
 Use `tarlink` for the TUI. The registry is refreshed automatically when needed
-and can be refreshed explicitly with `tarlink registry sync`.
+and can be refreshed explicitly with `tarlink refresh`. `tarlink list` shows the
+available catalog with installed state; use `--installed` or `--updates` to
+filter it.
 
 ## Applications
 

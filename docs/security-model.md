@@ -24,7 +24,7 @@ Accepted formats are exactly `tar.gz`, `tar.xz`, and ZIP, and the declared forma
 
 | Resource | Limit |
 | --- | ---: |
-| Compressed archive bytes | 8 GiB for applications; 64 MiB for registry sync |
+| Compressed archive bytes | 8 GiB for applications; 64 MiB for registry refresh |
 | Entries | 100,000 |
 | Extracted bytes | 24 GiB |
 | One regular file | 8 GiB |

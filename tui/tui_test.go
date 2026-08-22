@@ -157,6 +157,9 @@ func (f *fakeService) List(context.Context) ([]app.Application, error) {
 	}
 	return f.applications, nil
 }
+func (f *fakeService) ListAvailable(context.Context) ([]app.Application, error) {
+	return f.applications, nil
+}
 func (f *fakeService) Info(context.Context, string) (app.Application, error) {
 	return app.Application{}, errors.New("unused")
 }
