@@ -68,12 +68,14 @@ func (core *Core) Doctor(ctx context.Context) (DoctorReport, error) {
 		}
 	}
 	binRequired := false
+	hasState := false
 	if stateRootHealthy {
 		if entries, readErr := os.ReadDir(core.layout.States); readErr == nil {
 			for _, entry := range entries {
 				if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".json" {
 					continue
 				}
+				hasState = true
 				value, loadErr := state.LoadForApp(core.layout, entry.Name()[:len(entry.Name())-5])
 				if loadErr != nil {
 					continue
@@ -93,7 +95,7 @@ func (core *Core) Doctor(ctx context.Context) (DoctorReport, error) {
 	binInfo, err := os.Lstat(core.layout.Bin)
 	if errors.Is(err, os.ErrNotExist) {
 		status := "warning"
-		if !binRequired {
+		if !binRequired && hasState {
 			status = "ok"
 		}
 		check(&report.Global, "~/.local/bin", status, "directory is missing")
