@@ -222,13 +222,26 @@ func newHelp(color bool) help.Model {
 }
 
 func (m model) helpView() string {
-	labels := make([]string, 0, len(m.contextualActionPolicy()))
-	for _, action := range m.contextualActionPolicy() {
-		if len(labels) == 0 || labels[len(labels)-1] != action.label {
-			labels = append(labels, action.label)
-		}
+	helper := m.help
+	if helper.ShortSeparator == "" {
+		helper = newHelp(m.color)
 	}
-	return strings.Join(labels, "  ")
+	bindings := make([]keypkg.Binding, 0, len(m.contextualActionPolicy()))
+	seen := make(map[string]bool)
+	for _, action := range m.contextualActionPolicy() {
+		if seen[action.label] {
+			continue
+		}
+		seen[action.label] = true
+		binding := action.binding
+		if action.label == "Navigate" {
+			binding = keypkg.NewBinding(keypkg.WithKeys("up", "down", "k", "j"), keypkg.WithHelp("↑↓", "Navigate"))
+		}
+		binding.SetHelp(binding.Help().Key, strings.TrimPrefix(action.label, binding.Help().Key+" "))
+		bindings = append(bindings, binding)
+	}
+	helper.SetWidth(max(1, viewWidth(m.width)))
+	return helper.ShortHelpView(bindings)
 }
 
 func newProgress(color bool) progress.Model {

@@ -253,6 +253,38 @@ func TestWorkspaceKeepsListAndLiveDetailTogether(t *testing.T) {
 	}
 }
 
+func TestTableWorkspaceBoundsRowsAndKeepsMetadataInDetails(t *testing.T) {
+	value := app.Application{
+		ID: "long", Name: "Long application name", RegistryVersion: "1.2.3",
+		Summary:      "A deliberately long summary that belongs in the detail pane.",
+		Requirements: []string{"original-game-data"}, Homepage: "https://example.com/a/very/long/homepage",
+	}
+	m := model{screen: screenAvailable, available: []app.Application{value}, width: 160, height: 40}
+	content := m.View().Content
+	for _, line := range strings.Split(strings.TrimSuffix(content, "\n"), "\n") {
+		if displaywidth.String(line) > 160 {
+			t.Fatalf("wide line overflow: %q", line)
+		}
+		if strings.Contains(line, "│") && !strings.Contains(line[strings.Index(line, "│"):], "Original game data") && strings.Contains(line[:strings.Index(line, "│")], "Original game data") {
+			t.Fatalf("metadata leaked into list pane: %q", line)
+		}
+	}
+	if !strings.Contains(content, "Selected application") || !strings.Contains(content, "Original game data") {
+		t.Fatalf("bounded workspace omitted detail metadata: %q", content)
+	}
+	values := make([]app.Application, 20)
+	for i := range values {
+		values[i] = app.Application{ID: string(rune('a' + i)), Name: "Application"}
+	}
+	m = model{screen: screenAvailable, available: values, width: 80, height: 12}
+	m.initComponents()
+	m.configureApplicationTable(values, 36, 4)
+	m.moveSelection(15)
+	if m.applicationTable.Cursor() != 15 || !strings.Contains(m.applicationTable.View(), "Applic") {
+		t.Fatalf("table cursor/viewport state = %d, %q", m.applicationTable.Cursor(), m.applicationTable.View())
+	}
+}
+
 func TestWorkspaceFocusHelpAndSearchUseComponents(t *testing.T) {
 	m := model{screen: screenAvailable, available: []app.Application{{ID: "one", Name: "One"}}, width: 80, height: 24}
 	updated, _ := m.Update(tea.KeyPressMsg{Text: "?"})
@@ -289,7 +321,7 @@ func TestWorkspaceResponsiveAndFooterAreStable(t *testing.T) {
 				t.Fatalf("%dx%d overflow: %q", size[0], size[1], line)
 			}
 		}
-		if got := strings.Count(m.View().Content, "[↑↓]"); got != 1 {
+		if got := strings.Count(m.View().Content, "Navigate"); got != 1 {
 			t.Fatalf("footer rendered %d times", got)
 		}
 	}
@@ -351,7 +383,7 @@ func TestMouseModeAndRenderedListHitTesting(t *testing.T) {
 	if view.MouseMode != tea.MouseModeCellMotion {
 		t.Fatalf("mouse mode = %v, want cell motion", view.MouseMode)
 	}
-	if !strings.Contains(view.Content, "TarLink update available: 0.6.1 → 0.6.2") || !strings.Contains(view.Content, "[U] Upgrade") {
+	if !strings.Contains(view.Content, "TarLink update available: 0.6.1 → 0.6.2") || !strings.Contains(view.Content, "U Upgrade") {
 		t.Fatalf("update banner missing from view: %q", view.Content)
 	}
 	start, _ := m.listBounds()
@@ -404,9 +436,9 @@ func TestContextualActionPolicyMatrices(t *testing.T) {
 		model  model
 		labels []string
 	}{
-		{"available list", model{screen: screenAvailable}, []string{"Navigate", "Open", "←/→ Filter", "/ Search", "i Installed", "u Updates", "q Quit"}},
-		{"installed list", model{screen: screenInstalled}, []string{"Navigate", "Open", "/ Search", "u Updates", "Esc Browse", "q Quit"}},
-		{"updates list", model{screen: screenUpdates}, []string{"Navigate", "Open", "/ Search", "i Installed", "Esc Browse", "q Quit"}},
+		{"available list", model{screen: screenAvailable}, []string{"↑↓ Navigate", "Enter Open", "←/→ Filter", "/ Search", "i Installed", "u Updates", "q Quit"}},
+		{"installed list", model{screen: screenInstalled}, []string{"↑↓ Navigate", "Enter Open", "/ Search", "u Updates", "Esc Browse", "q Quit"}},
+		{"updates list", model{screen: screenUpdates}, []string{"↑↓ Navigate", "Enter Open", "/ Search", "i Installed", "Esc Browse", "q Quit"}},
 		{"versions", model{screen: screenVersions}, []string{"r Rollback", "x Uninstall", "Esc Back", "q Quit"}},
 		{"search", model{screen: screenAvailable, searching: true}, []string{"Enter Search", "Esc Cancel"}},
 		{"busy", model{screen: screenAvailable, busy: "Searching"}, []string{"Esc Cancel", "q Quit"}},
@@ -444,7 +476,7 @@ func TestFooterIsUniqueSingleRowAndFitsWidth(t *testing.T) {
 			t.Fatalf("width %d footer lines = %#v", width, lines)
 		}
 		labels := strings.Fields((model{screen: screenAvailable}).helpView())
-		if len(labels) != len(strings.Fields(strings.Join([]string{"Navigate", "Open", "←/→ Filter", "/ Search", "i Installed", "u Updates", "q Quit"}, " "))) {
+		if len(labels) != len(strings.Fields(strings.Join([]string{"↑↓ Navigate", "Enter Open", "←/→ Filter", "/ Search", "i Installed", "u Updates", "q Quit"}, " "))) {
 			t.Fatal("footer policy unexpectedly duplicated an action")
 		}
 	}
@@ -1066,17 +1098,19 @@ func TestViewportKeepsSelectionVisible(t *testing.T) {
 		values[i] = app.Application{ID: string(rune('a' + i)), Name: "Application"}
 	}
 	m := model{screen: screenAvailable, available: values, width: 80, height: 16}
+	m.initComponents()
+	m.configureApplicationTable(values, 36, 8)
 	for i := 0; i < len(values)-1; i++ {
 		m.selected = i
-		m.clampViewport()
+		m.clampSelection()
 	}
-	if m.selected < m.listOffset || m.selected >= m.listOffset+m.listRows() {
-		t.Fatalf("selected=%d offset=%d rows=%d", m.selected, m.listOffset, m.listRows())
+	if m.applicationTable.Cursor() != m.selected {
+		t.Fatalf("selected=%d cursor=%d", m.selected, m.applicationTable.Cursor())
 	}
 	m.selected = 0
-	m.clampViewport()
-	if m.listOffset != 0 {
-		t.Fatalf("viewport did not scroll back: %d", m.listOffset)
+	m.clampSelection()
+	if m.applicationTable.Cursor() != 0 {
+		t.Fatalf("table cursor did not return to top: %d", m.applicationTable.Cursor())
 	}
 }
 
@@ -1583,7 +1617,7 @@ func TestModernShellScreenSemantics(t *testing.T) {
 				}
 			}
 			lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
-			if len(lines) == 0 || !strings.Contains(lines[len(lines)-1], "[") {
+			if len(lines) == 0 || strings.TrimSpace(lines[len(lines)-1]) == "" {
 				t.Errorf("footer is not last physical row: %q", content)
 			}
 		})

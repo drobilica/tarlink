@@ -15,9 +15,11 @@ import (
 	"charm.land/bubbles/v2/help"
 	keypkg "charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/clipperhouse/displaywidth"
 	"github.com/drobilica/tarlink/internal/app"
 )
@@ -149,6 +151,7 @@ type model struct {
 	color               bool
 	theme               tuiTheme
 	help                help.Model
+	applicationTable    table.Model
 	progressBar         progress.Model
 	tarlinkVersion      app.TarLinkVersion
 	upgradeAvailable    bool
@@ -185,11 +188,14 @@ func (m model) Init() tea.Cmd { return tea.Batch(m.loadCmd(), m.checkVersionCmd(
 
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	m.initComponents()
+	if m.isListScreen() {
+		m.configureApplicationTable(m.visibleApplications(), max(28, (viewWidth(m.width)*46)/100), max(3, m.height-8))
+	}
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width = message.Width
 		m.height = message.Height
-		m.clampViewport()
+		m.clampSelection()
 		m.help.SetWidth(m.width)
 		m.progressBar.SetWidth(progressBarWidthFor(m.width))
 		m.searchInput.SetWidth(max(12, m.width-18))
@@ -330,7 +336,7 @@ func (m model) View() tea.View {
 	m.initComponents()
 	m.setViewportSize()
 	body := m.bodyLines()
-	footer := m.style(truncate(m.formattedFooter(), viewWidth(m.width), "…"), muted)
+	footer := m.style(fit(m.formattedFooter(), viewWidth(m.width)), muted)
 	if m.height > 0 {
 		available := max(0, m.height-1)
 		if len(body) > available {
@@ -407,6 +413,12 @@ func (m *model) initComponents() {
 	m.detailViewport.SoftWrap = true
 	m.versionsViewport = viewport.New()
 	m.versionsViewport.SoftWrap = true
+	m.applicationTable = table.New(table.WithFocused(true))
+	m.applicationTable.SetStyles(table.Styles{
+		Header:   m.theme.panel,
+		Cell:     lipgloss.NewStyle().PaddingRight(1),
+		Selected: m.theme.selected,
+	})
 	m.focus = focusList
 	m.componentsReady = true
 }
@@ -432,6 +444,9 @@ func (m model) workspaceLines() ([]string, int) {
 	}
 	leftWidth := max(28, (viewWidth(m.width)*46)/100)
 	wide := viewWidth(m.width) >= 72
+	if m.isListScreen() {
+		m.configureApplicationTable(values, leftWidth, max(3, m.height-8))
+	}
 	if !wide {
 		lines := []string{m.theme.panel.Render("Applications")}
 		if m.screen == screenAvailable {
@@ -439,11 +454,8 @@ func (m model) workspaceLines() ([]string, int) {
 		}
 		if m.searching {
 			lines = append(lines, m.searchInput.View())
-		} else if m.query != "" {
-			lines = append(lines, "Search: "+m.query)
 		}
-		rows := max(1, m.listRows()-2)
-		writeApplicationLinesWithSelection(&lines, values, m.selected, m.listOffset, rows, m.width, m.theme, m.screen == screenUpdates, m.selectedIDs)
+		lines = append(lines, strings.Split(m.applicationTable.View(), "\n")...)
 		lines = append(lines, m.theme.panel.Render("Selected application"))
 		detail, _ := m.detailLines()
 		lines = append(lines, detail...)
@@ -457,18 +469,9 @@ func (m model) workspaceLines() ([]string, int) {
 	}
 	if m.searching {
 		list = append(list, m.searchInput.View())
-	} else if m.query != "" {
-		list = append(list, "Search: "+m.query)
 	}
-	writeApplicationLinesWithSelection(&list, values, m.selected, m.listOffset, max(1, m.listRows()-2), leftWidth, m.theme, m.screen == screenUpdates, m.selectedIDs)
+	list = append(list, strings.Split(m.applicationTable.View(), "\n")...)
 	detail, _ := m.detailLines()
-	if len(detail) == 0 && m.detail != nil {
-		detail = []string{m.breadcrumb(), m.detail.Name}
-		if m.detail.Summary != "" {
-			detail = append(detail, m.detail.Summary)
-		}
-		addDetailFields(&detail, *m.detail, max(1, viewWidth(m.width)-leftDetailWidth(m.width)), m.theme)
-	}
 	maxLines := max(len(list), len(detail)+1)
 	result := make([]string, maxLines)
 	for i := range result {
@@ -486,6 +489,53 @@ func (m model) workspaceLines() ([]string, int) {
 	return result, 3
 }
 
+func (m *model) configureApplicationTable(values []app.Application, width, height int) {
+	usableWidth := max(1, width-3)
+	versionWidth := min(16, max(11, width/5))
+	nameWidth := max(13, usableWidth-versionWidth-9)
+	stateWidth := max(9, usableWidth-nameWidth-versionWidth)
+	rows := make([]table.Row, 0, len(values))
+	for _, value := range values {
+		marker := "  "
+		if len(m.selectedIDs) > 0 {
+			if m.selectedIDs[value.ID] {
+				marker = "[x]"
+			} else {
+				marker = "[ ]"
+			}
+		}
+		version := value.RegistryVersion
+		state := applicationStatus(value)
+		if value.InstalledVersion != "" {
+			version = value.InstalledVersion
+		}
+		if m.screen == screenUpdates {
+			version, state = value.InstalledVersion, value.RegistryVersion
+		}
+		rows = append(rows, table.Row{marker + " " + value.Name, version, state})
+	}
+	if len(rows) == 0 {
+		rows = append(rows, table.Row{"No applications.", "", ""})
+	}
+	versionTitle, stateTitle := "VERSION", "STATUS"
+	if m.screen == screenUpdates {
+		versionTitle, stateTitle = "INSTALLED", "AVAILABLE"
+	}
+	columns := []table.Column{{Title: "APPLICATION", Width: nameWidth}, {Title: versionTitle, Width: versionWidth}, {Title: stateTitle, Width: stateWidth}}
+	if len(values) == 0 {
+		columns = []table.Column{{Title: "APPLICATION", Width: width}, {Width: 0}, {Width: 0}}
+	}
+	m.applicationTable.SetColumns(columns)
+	m.applicationTable.SetRows(rows)
+	m.applicationTable.SetWidth(max(1, width))
+	m.applicationTable.SetHeight(max(2, height))
+	cursor := 0
+	if len(rows) > 0 {
+		cursor = min(m.selected, len(rows)-1)
+	}
+	m.applicationTable.SetCursor(max(0, cursor))
+}
+
 func (m model) detailLines() ([]string, bool) {
 	if len(m.selectedIDs) > 0 {
 		lines := []string{m.theme.warning.Render(fmt.Sprintf("%d applications selected", len(m.selectedIDs)))}
@@ -493,9 +543,6 @@ func (m model) detailLines() ([]string, bool) {
 			if m.selectedIDs[value.ID] {
 				lines = append(lines, "  "+value.Name)
 			}
-		}
-		if len(m.selectedIDs) > 0 {
-			lines = append(lines, "", m.buttonLine())
 		}
 		return lines, true
 	}
@@ -510,6 +557,9 @@ func (m model) detailLines() ([]string, bool) {
 		if m.width > 0 && m.height > 0 {
 			m.versionsViewport.SetContent(strings.Join(lines, "\n"))
 		}
+		if m.focus == focusDetail && m.width > 0 && m.height > 0 {
+			return strings.Split(m.versionsViewport.View(), "\n"), true
+		}
 		return lines, true
 	}
 	lines := []string{m.theme.accent.Render(m.detail.Name)}
@@ -521,9 +571,11 @@ func (m model) detailLines() ([]string, bool) {
 	}
 	lines = append(lines, "")
 	addDetailFields(&lines, *m.detail, max(1, viewWidth(m.width)-leftDetailWidth(m.width)-3), m.theme)
-	lines = append(lines, "", m.buttonLine())
 	if m.width > 0 && m.height > 0 {
 		m.detailViewport.SetContent(strings.Join(lines, "\n"))
+	}
+	if m.focus == focusDetail && m.width > 0 && m.height > 0 {
+		return strings.Split(m.detailViewport.View(), "\n"), true
 	}
 	return lines, true
 }
@@ -541,24 +593,6 @@ func (m model) primaryActionLabel() string {
 		return "Update"
 	}
 	return "Inspect"
-}
-
-func (m model) buttonLine() string {
-	parts := make([]string, 0, 4)
-	for _, a := range m.contextualActionPolicy() {
-		if a.id == actionEnter || a.id == actionVersions || a.id == actionRollback || a.id == actionUninstall || a.id == actionInstalled || a.id == actionUpdates {
-			label := a.label
-			if i := strings.IndexByte(label, ' '); i >= 0 {
-				label = label[i+1:]
-			}
-			style := m.theme.controlSelected
-			if a.id == actionUninstall {
-				style = m.theme.danger
-			}
-			parts = append(parts, style.Render("[ "+label+" ]"))
-		}
-	}
-	return strings.Join(parts, "  ")
 }
 
 func (m model) overlayLines() []string {
@@ -604,9 +638,12 @@ func (m model) overlayLines() []string {
 }
 
 func (m model) helpOverlayLines() []string {
-	bindings := []keypkg.Binding{newKeyMap().Up, newKeyMap().Down, newKeyMap().Enter, newKeyMap().Search, newKeyMap().Versions, newKeyMap().Rollback, newKeyMap().Uninstall, newKeyMap().Cancel, newKeyMap().Quit}
+	bindings := make([]keypkg.Binding, 0, len(m.contextualActionPolicy()))
+	for _, action := range m.contextualActionPolicy() {
+		bindings = append(bindings, action.binding)
+	}
 	m.help.SetWidth(max(1, viewWidth(m.width)-4))
-	return []string{m.theme.panel.Render("┌─ Keyboard reference ──────────────┐"), m.help.FullHelpView([][]keypkg.Binding{bindings}), "└────────────────────────────────────┘"}
+	return []string{m.theme.panel.Render("Keyboard reference"), m.help.FullHelpView([][]keypkg.Binding{bindings})}
 }
 
 func (m model) headerLine() string {
@@ -685,29 +722,7 @@ func detailName(value *app.Application) string {
 }
 
 func (m model) formattedFooter() string {
-	labels := make([]string, 0, len(m.contextualActionPolicy()))
-	for _, action := range m.contextualActionPolicy() {
-		label := action.label
-		if label == "Navigate" {
-			label = "[↑↓] Navigate"
-		} else if label == "Open" {
-			label = "[Enter] Open"
-		} else {
-			parts := strings.SplitN(label, " ", 2)
-			label = "[" + parts[0] + "]"
-			if len(parts) == 2 {
-				label += " " + parts[1]
-			}
-		}
-		if len(labels) == 0 || labels[len(labels)-1] != label {
-			labels = append(labels, label)
-		}
-	}
-	value := strings.Join(labels, "  ")
-	if m.isOverlay() {
-		value = strings.ReplaceAll(value, "[Enter]", "[↵]")
-	}
-	return value
+	return m.helpView()
 }
 
 func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -715,6 +730,11 @@ func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	mouse := message.Mouse()
+	if m.focus == focusDetail && (mouse.Button == tea.MouseWheelUp || mouse.Button == tea.MouseWheelDown) {
+		var cmd tea.Cmd
+		m.detailViewport, cmd = m.detailViewport.Update(message)
+		return m, cmd
+	}
 	if m.screen == screenInstallChannel {
 		if mouse.Button != tea.MouseLeft {
 			return m, nil
@@ -744,7 +764,7 @@ func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
 	index := m.listOffset + mouse.Y - start
 	if index >= 0 && index < len(m.visibleApplications()) {
 		m.selected = index
-		m.clampViewport()
+		m.clampSelection()
 		// A row click has the same activation semantics as Enter: select and
 		// open the application details in one interaction.
 		value := m.visibleApplications()[index]
@@ -798,6 +818,11 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.focus = focusOverlay
 		} else {
 			m.focus = focusList
+		}
+		if m.focus == focusDetail {
+			m.applicationTable.Blur()
+		} else {
+			m.applicationTable.Focus()
 		}
 		return m, nil
 	}
@@ -1128,14 +1153,13 @@ func (m *model) moveSelection(delta int) {
 		m.selected = 0
 		return
 	}
-	m.selected += delta
-	if m.selected < 0 {
-		m.selected = 0
+	if delta < 0 {
+		m.applicationTable.MoveUp(-delta)
+	} else {
+		m.applicationTable.MoveDown(delta)
 	}
-	if m.selected >= length {
-		m.selected = length - 1
-	}
-	m.clampViewport()
+	m.selected = m.applicationTable.Cursor()
+	m.listOffset = m.selected
 	values := m.visibleApplications()
 	if m.selected >= 0 && m.selected < len(values) {
 		value := values[m.selected]
@@ -1648,23 +1672,7 @@ func (m *model) clampSelection() {
 	} else if m.selected >= length {
 		m.selected = length - 1
 	}
-	m.clampViewport()
-}
-
-func (m *model) clampViewport() {
-	rows := m.listRows()
-	if rows < 1 {
-		rows = 1
-	}
-	if m.selected < m.listOffset {
-		m.listOffset = m.selected
-	}
-	if m.selected >= m.listOffset+rows {
-		m.listOffset = m.selected - rows + 1
-	}
-	if m.listOffset < 0 {
-		m.listOffset = 0
-	}
+	m.applicationTable.SetCursor(m.selected)
 }
 
 func (m model) listRows() int {
@@ -1724,98 +1732,6 @@ func updates(values []app.Application) []app.Application {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result
-}
-
-func writeApplications(destination *strings.Builder, values []app.Application, selected, offset, rows, width int, theme tuiTheme) {
-	lines := make([]string, 0)
-	writeApplicationLines(&lines, values, selected, offset, rows, width, theme, false)
-	for _, line := range lines {
-		destination.WriteString(line + "\n")
-	}
-}
-
-func writeApplicationLines(destination *[]string, values []app.Application, selected, offset, rows, width int, theme tuiTheme, updatesTable bool) {
-	writeApplicationLinesWithSelection(destination, values, selected, offset, rows, width, theme, updatesTable, nil)
-}
-
-func writeApplicationLinesWithSelection(destination *[]string, values []app.Application, selected, offset, rows, width int, theme tuiTheme, updatesTable bool, selectedIDs map[string]bool) {
-	if updatesTable {
-		*destination = append(*destination, applicationColumns(width, true))
-	} else {
-		*destination = append(*destination, applicationColumns(width, false))
-	}
-	if len(values) == 0 {
-		*destination = append(*destination, truncate("No applications.", viewWidth(width), "…"))
-		return
-	}
-	end := min(len(values), offset+rows)
-	for index := offset; index < end; index++ {
-		value := values[index]
-		marker := "  "
-		if selectedIDs != nil {
-			if selectedIDs[value.ID] {
-				marker = "[x] "
-			} else {
-				marker = "[ ] "
-			}
-		}
-		if index == selected {
-			marker = "> "
-		}
-		if width <= 2 {
-			marker = ""
-		}
-		terminalWidth := viewWidth(width)
-		row := marker + applicationRow(value, terminalWidth, updatesTable)
-		if index == selected {
-			row = theme.selected.Render(row)
-		}
-		*destination = append(*destination, fit(row, width))
-	}
-}
-
-func applicationColumns(width int, updateTable bool) string {
-	if viewWidth(width) < 60 {
-		if updateTable {
-			return "  APPLICATION  INSTALLED  AVAILABLE"
-		}
-		return "  APPLICATION  VERSION  STATUS"
-	}
-	if updateTable {
-		return "  " + columnLayout("APPLICATION", "INSTALLED", "AVAILABLE", viewWidth(width))
-	}
-	return "  " + columnLayout("APPLICATION", "VERSION", "STATUS", viewWidth(width))
-}
-
-func applicationRow(value app.Application, width int, updateTable bool) string {
-	if width < 60 {
-		label := value.Name
-		if value.UpdateAvailable {
-			label += "  ↑ Update available"
-		} else if value.InstalledVersion != "" {
-			label += "  ✓ Installed"
-		}
-		return truncate(label, max(1, width-2), "…")
-	}
-	name := value.Name
-	if updateTable {
-		return columnLayout(name, value.InstalledVersion, value.RegistryVersion, width-2)
-	}
-	version := value.RegistryVersion
-	if value.InstalledVersion != "" {
-		version = value.InstalledVersion
-	}
-	return columnLayout(name, version, installedLabel(value), width-2)
-}
-
-func columnLayout(first, second, third string, width int) string {
-	width = max(18, width)
-	firstWidth := min(34, max(12, (width-4)/2))
-	secondWidth := min(16, max(8, width/5))
-	thirdWidth := max(1, width-firstWidth-secondWidth-4)
-	firstValue := truncate(first, firstWidth, "…")
-	secondValue := truncate(second, secondWidth, "…")
-	return firstValue + strings.Repeat(" ", firstWidth-displaywidth.String(firstValue)+2) + secondValue + strings.Repeat(" ", secondWidth-displaywidth.String(secondValue)+2) + truncate(third, thirdWidth, "…")
 }
 
 func addDetailFields(lines *[]string, value app.Application, width int, theme tuiTheme) {
