@@ -183,7 +183,7 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 		return Outcome{}, err
 	}
 	if installed.Current == item.Release.Version {
-		return Outcome{}, ErrNoUpdate
+		return manager.reconcileExisting(item, installed, options, progress)
 	}
 	if !sameExecutables(installed.Executables, item.Application.Executables) {
 		return Outcome{}, fmt.Errorf("%w: executable mappings changed during update", ErrConflict)
@@ -192,6 +192,63 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 		return manager.activateRetained(item.ID, installed, progress)
 	}
 	return manager.installVersion(ctx, item, &installed, options, progress)
+}
+
+// reconcileExisting applies manifest integration changes without downloading
+// an unchanged release. This is used when a registry changes ownership or
+// desktop integration while the installed artifact remains current.
+func (manager *Manager) reconcileExisting(item *manifest.Manifest, installed state.State, options Options, progress Progress) (Outcome, error) {
+	oldSpec, err := manager.integrationSpec(installed, item.Name, item.Desktop.Categories)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if err := integration.ValidateOwned(oldSpec); err != nil {
+		return Outcome{}, err
+	}
+	spec := integration.Spec{ID: item.ID, Name: item.Name, ApplicationRoot: filepath.Join(manager.Layout.Apps, item.ID), LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons, DesktopEnabled: item.Desktop.Enabled, DesktopCategories: item.Desktop.Categories, WorkingDirectory: item.Desktop.WorkingDirectory == "application-root", Icon: installed.Integration.IconSource, IconSize: installed.Integration.IconSize, IconSHA256: installed.Integration.IconSHA256, IconSourceRoot: filepath.Join(manager.Layout.Apps, item.ID, "current")}
+	for _, executable := range item.Application.Executables {
+		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path, CreateBinLink: executable.CreateBinLink})
+	}
+	spec.DesktopExecutable = filepath.Join(manager.Layout.Apps, item.ID, "current", desktopExecutablePath(item))
+	if spec.DesktopEnabled {
+		spec.DesktopSHA256 = integration.DesktopDigest(spec, "")
+	}
+	paths, undo, err := integration.Update(spec, oldSpec)
+	if err != nil {
+		return Outcome{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = undo()
+		}
+	}()
+	manager.report(progress, "integrating", 0, 0)
+	updated := installed
+	updated.Executables = manifestExecutables(item.Application.Executables)
+	updated.DesktopEnabled = item.Desktop.Enabled
+	updated.Integration.DesktopEntry = ""
+	updated.Integration.DesktopSHA256 = ""
+	updated.Integration.DesktopExecutable = desktopExecutableName(item)
+	updated.Integration.WorkingDirectory = spec.WorkingDirectory
+	if item.Desktop.Enabled {
+		updated.Integration.DesktopEntry = paths.DesktopEntry
+		updated.Integration.DesktopSHA256 = spec.DesktopSHA256
+	}
+	updated.Integration.Executables = nil
+	for _, executable := range paths.Executables {
+		value := findManifestExecutable(item.Application.Executables, executable.Name)
+		updated.Integration.Executables = append(updated.Integration.Executables, state.ExecutableIntegration{Name: executable.Name, Path: value.Path, Link: executable.Link, Target: executable.Target, CreateBinLink: value.CreateBinLink})
+	}
+	stateCommitted, stateErr := manager.persistState(updated)
+	if stateCommitted {
+		committed = true
+	}
+	if stateErr != nil {
+		return Outcome{State: updated}, stateErr
+	}
+	manager.report(progress, "complete", 0, 0)
+	return Outcome{State: updated}, nil
 }
 
 func (manager *Manager) Rollback(ctx context.Context, appID string, progress Progress) (Outcome, error) {
