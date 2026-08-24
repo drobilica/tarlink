@@ -11,11 +11,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"charm.land/bubbles/v2/help"
 	keypkg "charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/progress"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/clipperhouse/displaywidth"
 	"github.com/drobilica/tarlink/internal/app"
@@ -43,6 +44,15 @@ const (
 	filterAll applicationFilter = iota
 	filterInstalled
 	filterNotInstalled
+)
+
+type paneFocus uint8
+
+const (
+	focusList paneFocus = iota
+	focusDetail
+	focusSearch
+	focusOverlay
 )
 
 type loadedMsg struct {
@@ -145,6 +155,12 @@ type model struct {
 	cancel              context.CancelFunc
 	opCancel            context.CancelFunc
 	uninstallConflict   *app.UninstallConflict
+	focus               paneFocus
+	helpOverlay         bool
+	componentsReady     bool
+	searchInput         textinput.Model
+	detailViewport      viewport.Model
+	versionsViewport    viewport.Model
 }
 
 // Run starts the terminal renderer. All application changes are delegated to
@@ -155,8 +171,10 @@ func Run(ctx context.Context, service app.Service, input io.Reader, output io.Wr
 	}
 	operationContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	m := model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), theme: newTheme(colorEnabled(output)), help: newHelp(colorEnabled(output)), progressBar: newProgress(colorEnabled(output)), cancel: cancel}
+	m.initComponents()
 	program := tea.NewProgram(
-		model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), theme: newTheme(colorEnabled(output)), help: newHelp(colorEnabled(output)), progressBar: newProgress(colorEnabled(output)), cancel: cancel},
+		m,
 		tea.WithContext(ctx), tea.WithInput(input), tea.WithOutput(output),
 	)
 	_, err := program.Run()
@@ -166,6 +184,7 @@ func Run(ctx context.Context, service app.Service, input io.Reader, output io.Wr
 func (m model) Init() tea.Cmd { return tea.Batch(m.loadCmd(), m.checkVersionCmd()) }
 
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
+	m.initComponents()
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width = message.Width
@@ -173,6 +192,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampViewport()
 		m.help.SetWidth(m.width)
 		m.progressBar.SetWidth(progressBarWidthFor(m.width))
+		m.searchInput.SetWidth(max(12, m.width-18))
+		m.setViewportSize()
 		return m, nil
 	case loadedMsg:
 		m.busy = ""
@@ -181,6 +202,13 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.available = message.available
 			m.installed = message.installed
 			m.refreshDetail()
+			if m.detail == nil {
+				values := m.visibleApplications()
+				if len(values) > 0 {
+					value := values[0]
+					m.detail = &value
+				}
+			}
 		}
 		m.clampSelection()
 		return m, nil
@@ -299,6 +327,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() tea.View {
+	m.initComponents()
+	m.setViewportSize()
 	body := m.bodyLines()
 	footer := m.style(truncate(m.formattedFooter(), viewWidth(m.width), "…"), muted)
 	if m.height > 0 {
@@ -318,7 +348,7 @@ func (m model) View() tea.View {
 // bodyLines is the shared shell and screen content. Keeping chrome here makes
 // the footer and mouse coordinates agree with every screen's rendered layout.
 func (m model) bodyLines() []string {
-	lines := []string{m.headerLine(), m.breadcrumb(), m.separator()}
+	lines := []string{m.headerLine(), m.tabsLine(), m.separator()}
 	add := func(value string) {
 		for _, part := range strings.Split(value, "\n") {
 			lines = append(lines, fit(part, m.width))
@@ -333,6 +363,9 @@ func (m model) bodyLines() []string {
 		add(m.style(m.err.Error(), danger))
 		lines = append(lines, "")
 	}
+	if m.uninstallConflict != nil {
+		add("Conflicting integration: " + m.uninstallConflict.Path)
+	}
 	if m.busy != "" {
 		add(m.style(m.busy, accent))
 		if m.progress.Stage != "" {
@@ -343,131 +376,277 @@ func (m model) bodyLines() []string {
 	if m.upgradeAvailable {
 		add(m.style("TarLink update available: "+m.tarlinkVersion.Current+" → "+m.tarlinkVersion.Latest, warning))
 	}
-	switch m.screen {
-	case screenAvailable, screenInstalled, screenUpdates:
-		if m.screen == screenAvailable {
-			add(m.filterView())
-			if m.searching {
-				add("Search: " + m.query + "_")
-			} else if m.query != "" {
-				add("Search: " + m.query)
-			}
-			lines = append(lines, "")
-		}
-		if m.screen == screenUpdates {
-			add(fmt.Sprintf("%d updates available", len(updates(m.installed))))
-			lines = append(lines, "")
-		}
-		values := m.visibleApplications()
-		writeApplicationLinesWithSelection(&lines, values, m.selected, m.listOffset, m.listRows(), m.width, m.theme, m.screen == screenUpdates, m.selectedIDs)
-	case screenDetails:
-		if m.detail != nil {
-			add(m.style(m.detail.Name, accent))
-			if m.detail.Summary != "" {
-				add(m.detail.Summary)
-			}
-			lines = append(lines, "")
-			addDetailFields(&lines, *m.detail, m.width, m.theme)
-		}
-	case screenVersions:
-		if m.detail != nil {
-			add(m.detail.Name + " / Versions")
-			lines = append(lines, "")
-		}
-		add(versionHeading(m.width))
-		for _, value := range m.versions {
-			add(versionRow(value, m.width))
-		}
-	case screenRollback:
-		if m.detail != nil {
-			add(m.detail.Name)
-			lines = append(lines, "")
-			add("Roll back from " + m.detail.InstalledVersion + " to the retained previous version?")
-		}
-	case screenUninstall:
-		if len(m.batchIDs) > 0 {
-			add(fmt.Sprintf("Uninstall %d applications?", len(m.batchIDs)))
-			lines = append(lines, "")
-			for _, id := range m.batchIDs {
-				add("- " + id)
-			}
-			break
-		}
-		if m.detail != nil {
-			add(m.detail.Name)
-			lines = append(lines, "")
-			add("Remove version " + m.detail.InstalledVersion + "?")
-			lines = append(lines, "")
-			add("Application files and desktop integration will be removed.")
-			add("User-owned application data will not be touched.")
-		}
-		if m.uninstallConflict != nil {
-			lines = append(lines, "")
-			add("Uninstall could not continue because this expected integration file was modified or replaced:")
-			add(m.uninstallConflict.Path)
-		}
-	case screenUninstallConflictConfirm:
-		if m.uninstallConflict != nil {
-			add("Remove conflicting integration file?")
-			lines = append(lines, "")
-			add(m.uninstallConflict.Path)
-			lines = append(lines, "")
-			add("This file no longer matches what TarLink installed.")
-			add("TarLink will remove this exact integration entry.")
-			add("This is necessary to continue uninstalling.")
-		}
-	case screenUpgrade:
-		add("TarLink")
+	workspace, _ := m.workspaceLines()
+	for _, line := range workspace {
+		lines = append(lines, fit(line, m.width))
+	}
+	if m.isOverlay() {
 		lines = append(lines, "")
-		add("Upgrade from " + m.tarlinkVersion.Current + " to " + m.tarlinkVersion.Latest + "?")
-	case screenInstallConfirm:
-		if len(m.batchTargets) > 0 {
-			add(fmt.Sprintf("Install %d applications?", len(m.batchTargets)))
-			lines = append(lines, "")
-			for _, target := range m.batchTargets {
-				add(fmt.Sprintf("%-24s %s %s", target.Name, target.Channel, target.Version))
-			}
-			break
+		for _, line := range m.overlayLines() {
+			lines = append(lines, fit(line, m.width))
 		}
-		if m.detail != nil {
-			add(m.detail.Name)
-			lines = append(lines, "")
-			add("PATH conflicts were found:")
-			for _, conflict := range m.pathConflicts {
-				switch conflict.Type {
-				case "not_in_path":
-					add("- " + conflict.Directory + " is not in your PATH; " + m.detail.ID + " would not run as a command.")
-				case "shadowed":
-					add("- " + conflict.Directory + " shadows " + m.detail.ID + "; running \"" + m.detail.ID + "\" would use " + conflict.Candidate + ".")
-				}
-			}
-		}
-	case screenInstallChannel:
-		if m.detail != nil {
-			add(m.detail.Name)
-			lines = append(lines, "")
-			add("Choose a release channel")
-			lines = append(lines, "")
-			for index, channel := range m.channels {
-				row := "  " + channel
-				if index == m.channelSelected {
-					row = m.theme.selected.Render("> " + channel)
-				}
-				add(row)
-			}
+	}
+	if m.helpOverlay {
+		lines = append(lines, "")
+		for _, line := range m.helpOverlayLines() {
+			lines = append(lines, fit(line, m.width))
 		}
 	}
 	return lines
 }
 
+func (m *model) initComponents() {
+	if m.componentsReady {
+		return
+	}
+	m.searchInput = textinput.New()
+	m.searchInput.Prompt = ""
+	m.searchInput.Placeholder = "Search applications"
+	m.searchInput.CharLimit = 128
+	m.detailViewport = viewport.New()
+	m.detailViewport.SoftWrap = true
+	m.versionsViewport = viewport.New()
+	m.versionsViewport.SoftWrap = true
+	m.focus = focusList
+	m.componentsReady = true
+}
+
+func (m *model) setViewportSize() {
+	contentWidth := max(1, m.width-4)
+	contentHeight := max(1, m.height-7)
+	m.detailViewport.SetWidth(contentWidth)
+	m.detailViewport.SetHeight(contentHeight)
+	m.versionsViewport.SetWidth(contentWidth)
+	m.versionsViewport.SetHeight(contentHeight)
+}
+
+func (m model) isOverlay() bool {
+	return m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm || m.screen == screenInstallChannel || m.screen == screenUninstallConflictConfirm
+}
+
+func (m model) workspaceLines() ([]string, int) {
+	values := m.visibleApplications()
+	if m.detail == nil && len(values) > 0 && m.selected < len(values) {
+		value := values[m.selected]
+		m.detail = &value
+	}
+	leftWidth := max(28, (viewWidth(m.width)*46)/100)
+	wide := viewWidth(m.width) >= 72
+	if !wide {
+		lines := []string{m.theme.panel.Render("Applications")}
+		if m.screen == screenAvailable {
+			lines = append(lines, m.filterView())
+		}
+		if m.searching {
+			lines = append(lines, m.searchInput.View())
+		} else if m.query != "" {
+			lines = append(lines, "Search: "+m.query)
+		}
+		rows := max(1, m.listRows()-2)
+		writeApplicationLinesWithSelection(&lines, values, m.selected, m.listOffset, rows, m.width, m.theme, m.screen == screenUpdates, m.selectedIDs)
+		lines = append(lines, m.theme.panel.Render("Selected application"))
+		detail, _ := m.detailLines()
+		lines = append(lines, detail...)
+		return lines, 3
+	}
+
+	list := make([]string, 0)
+	list = append(list, m.theme.panel.Render("Applications"))
+	if m.screen == screenAvailable {
+		list = append(list, m.filterView())
+	}
+	if m.searching {
+		list = append(list, m.searchInput.View())
+	} else if m.query != "" {
+		list = append(list, "Search: "+m.query)
+	}
+	writeApplicationLinesWithSelection(&list, values, m.selected, m.listOffset, max(1, m.listRows()-2), leftWidth, m.theme, m.screen == screenUpdates, m.selectedIDs)
+	detail, _ := m.detailLines()
+	if len(detail) == 0 && m.detail != nil {
+		detail = []string{m.breadcrumb(), m.detail.Name}
+		if m.detail.Summary != "" {
+			detail = append(detail, m.detail.Summary)
+		}
+		addDetailFields(&detail, *m.detail, max(1, viewWidth(m.width)-leftDetailWidth(m.width)), m.theme)
+	}
+	maxLines := max(len(list), len(detail)+1)
+	result := make([]string, maxLines)
+	for i := range result {
+		left, right := "", ""
+		if i < len(list) {
+			left = fit(list[i], leftWidth)
+		}
+		if i == 0 {
+			right = m.theme.panel.Render("Selected application")
+		} else if i-1 < len(detail) {
+			right = detail[i-1]
+		}
+		result[i] = fit(left, leftWidth) + " │ " + fit(right, max(1, viewWidth(m.width)-leftWidth-3))
+	}
+	return result, 3
+}
+
+func (m model) detailLines() ([]string, bool) {
+	if len(m.selectedIDs) > 0 {
+		lines := []string{m.theme.warning.Render(fmt.Sprintf("%d applications selected", len(m.selectedIDs)))}
+		for _, value := range m.visibleApplications() {
+			if m.selectedIDs[value.ID] {
+				lines = append(lines, "  "+value.Name)
+			}
+		}
+		if len(m.selectedIDs) > 0 {
+			lines = append(lines, "", m.buttonLine())
+		}
+		return lines, true
+	}
+	if m.detail == nil {
+		return []string{"Select an application to inspect it."}, false
+	}
+	if m.screen == screenVersions {
+		lines := []string{m.detail.Name + " / Versions", versionHeading(max(1, viewWidth(m.width)-leftDetailWidth(m.width)-3))}
+		for _, value := range m.versions {
+			lines = append(lines, versionRow(value, max(1, viewWidth(m.width)-leftDetailWidth(m.width)-3)))
+		}
+		if m.width > 0 && m.height > 0 {
+			m.versionsViewport.SetContent(strings.Join(lines, "\n"))
+		}
+		return lines, true
+	}
+	lines := []string{m.theme.accent.Render(m.detail.Name)}
+	if m.screen == screenDetails {
+		lines = append([]string{m.breadcrumb()}, lines...)
+	}
+	if m.detail.Summary != "" {
+		lines = append(lines, m.detail.Summary)
+	}
+	lines = append(lines, "")
+	addDetailFields(&lines, *m.detail, max(1, viewWidth(m.width)-leftDetailWidth(m.width)-3), m.theme)
+	lines = append(lines, "", m.buttonLine())
+	if m.width > 0 && m.height > 0 {
+		m.detailViewport.SetContent(strings.Join(lines, "\n"))
+	}
+	return lines, true
+}
+
+func leftDetailWidth(width int) int { return max(28, (viewWidth(width)*46)/100) }
+
+func (m model) primaryActionLabel() string {
+	if m.detail == nil {
+		return "Open"
+	}
+	if m.detail.InstalledVersion == "" {
+		return "Install"
+	}
+	if m.detail.UpdateAvailable && !m.detail.Pinned {
+		return "Update"
+	}
+	return "Inspect"
+}
+
+func (m model) buttonLine() string {
+	parts := make([]string, 0, 4)
+	for _, a := range m.contextualActionPolicy() {
+		if a.id == actionEnter || a.id == actionVersions || a.id == actionRollback || a.id == actionUninstall || a.id == actionInstalled || a.id == actionUpdates {
+			label := a.label
+			if i := strings.IndexByte(label, ' '); i >= 0 {
+				label = label[i+1:]
+			}
+			style := m.theme.controlSelected
+			if a.id == actionUninstall {
+				style = m.theme.danger
+			}
+			parts = append(parts, style.Render("[ "+label+" ]"))
+		}
+	}
+	return strings.Join(parts, "  ")
+}
+
+func (m model) overlayLines() []string {
+	title, message := "", ""
+	switch m.screen {
+	case screenRollback:
+		title, message = detailName(m.detail)+" / Rollback", "Roll back to the retained previous version?"
+	case screenUninstall:
+		title, message = detailName(m.detail)+" / Uninstall", "Remove this application and its integrations?"
+	case screenUpgrade:
+		title, message = "Upgrade TarLink", "Upgrade from "+m.tarlinkVersion.Current+" to "+m.tarlinkVersion.Latest+"?"
+	case screenInstallConfirm:
+		title, message = detailName(m.detail)+" / Install", "PATH conflicts found. Install anyway?"
+	case screenInstallChannel:
+		title, message = "Channel", "Choose a release channel"
+	case screenUninstallConflictConfirm:
+		title, message = "Remove conflict", "Remove this exact conflicting integration file?"
+	}
+	if title == "" {
+		return nil
+	}
+	lines := []string{m.theme.panel.Render("┌─ " + title + " ─────────────────────────┐"), "│ " + message}
+	if m.screen == screenInstallConfirm {
+		for _, conflict := range m.pathConflicts {
+			lines = append(lines, "│ "+conflict.Type+": "+conflict.Directory+" "+conflict.Candidate)
+		}
+	}
+	if m.screen == screenInstallChannel {
+		for i, channel := range m.channels {
+			prefix := "  "
+			if i == m.channelSelected {
+				prefix = "> "
+			}
+			lines = append(lines, "│ "+prefix+channel)
+		}
+	}
+	confirm := "Confirm"
+	if m.screen == screenInstallConfirm {
+		confirm = "Install anyway"
+	}
+	lines = append(lines, "│", "│        [ Cancel ]  [Enter] "+confirm, "└──────────────────────────────────┘")
+	return lines
+}
+
+func (m model) helpOverlayLines() []string {
+	bindings := []keypkg.Binding{newKeyMap().Up, newKeyMap().Down, newKeyMap().Enter, newKeyMap().Search, newKeyMap().Versions, newKeyMap().Rollback, newKeyMap().Uninstall, newKeyMap().Cancel, newKeyMap().Quit}
+	m.help.SetWidth(max(1, viewWidth(m.width)-4))
+	return []string{m.theme.panel.Render("┌─ Keyboard reference ──────────────┐"), m.help.FullHelpView([][]keypkg.Binding{bindings}), "└────────────────────────────────────┘"}
+}
+
 func (m model) headerLine() string {
 	left := m.theme.panel.Render("TarLink")
 	count := len(updates(m.installed))
-	right := fmt.Sprintf("%d installed · %d updates", len(m.installed), count)
+	right := fmt.Sprintf("Installed %d   Updates %d", len(m.installed), count)
 	if viewWidth(m.width) < displaywidth.String(left)+displaywidth.String(right)+3 {
 		return fit(left, m.width)
 	}
 	return left + strings.Repeat(" ", viewWidth(m.width)-displaywidth.String(left)-displaywidth.String(right)) + right
+}
+
+func (m model) tabsLine() string {
+	labels := []string{"Browse", fmt.Sprintf("Installed %d", len(m.installed)), fmt.Sprintf("Updates %d", len(updates(m.installed)))}
+	active := 0
+	if m.screen == screenInstalled {
+		active = 1
+	}
+	if m.screen == screenUpdates {
+		active = 2
+	}
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		if i == active {
+			parts[i] = m.theme.controlSelected.Render("[ " + label + " ]")
+		} else {
+			parts[i] = m.theme.control.Render(label)
+		}
+	}
+	search := "[ / Search ]"
+	if m.screen == screenUpdates {
+		search = fmt.Sprintf("%d updates available", len(updates(m.installed))) + "   " + search
+	}
+	if m.searching {
+		search = "[ / " + m.searchInput.View() + " ]"
+	}
+	if viewWidth(m.width) < displaywidth.String(strings.Join(parts, "   "))+displaywidth.String(search)+3 {
+		return fit(strings.Join(parts, "  "), m.width)
+	}
+	return strings.Join(parts, "   ") + strings.Repeat(" ", max(1, viewWidth(m.width)-displaywidth.String(strings.Join(parts, "   "))-displaywidth.String(search))) + search
 }
 
 func (m model) breadcrumb() string {
@@ -524,7 +703,11 @@ func (m model) formattedFooter() string {
 			labels = append(labels, label)
 		}
 	}
-	return strings.Join(labels, "  ")
+	value := strings.Join(labels, "  ")
+	if m.isOverlay() {
+		value = strings.ReplaceAll(value, "[Enter]", "[↵]")
+	}
+	return value
 }
 
 func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
@@ -575,10 +758,8 @@ func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) channelBounds() (start, rows int) {
-	// Reuse the shared global layout accounting, then add the application name,
-	// prompt, and spacer rendered before the channel controls.
-	base, _ := m.listBoundsWithoutRows()
-	return base + 4, len(m.channels)
+	workspace, _ := m.workspaceLines()
+	return 3 + len(workspace) + 3, len(m.channels)
 }
 
 func (m model) isListScreen() bool {
@@ -587,7 +768,6 @@ func (m model) isListScreen() bool {
 
 func (m model) listBounds() (start, rows int) {
 	start, _ = m.listBoundsWithoutRows()
-	start++ // the column heading occupies the computed pre-list row
 	rows = min(m.listRows(), len(m.visibleApplications())-m.listOffset)
 	if rows < 0 {
 		rows = 0
@@ -600,6 +780,7 @@ func (m model) listBounds() (start, rows int) {
 }
 
 func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	m.initComponents()
 	pressed := message.String()
 	bindings := newKeyMap()
 	if keypkg.Matches(message, bindings.CtrlC) {
@@ -611,15 +792,52 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	}
+	if keypkg.Matches(message, bindings.Help) {
+		m.helpOverlay = !m.helpOverlay
+		if m.helpOverlay {
+			m.focus = focusOverlay
+		} else {
+			m.focus = focusList
+		}
+		return m, nil
+	}
+	if m.helpOverlay {
+		if keypkg.Matches(message, bindings.Cancel) {
+			m.helpOverlay = false
+			m.focus = focusList
+		}
+		return m, nil
+	}
+	if keypkg.Matches(message, bindings.Tab) && !m.isOverlay() {
+		if pressed == "shift+tab" {
+			if m.focus == focusList {
+				m.focus = focusDetail
+			} else {
+				m.focus = focusList
+			}
+		} else if m.focus == focusList {
+			m.focus = focusDetail
+		} else {
+			m.focus = focusList
+		}
+		return m, nil
+	}
+	if m.focus == focusDetail && !m.searching && !m.isOverlay() && (keypkg.Matches(message, bindings.Up) || keypkg.Matches(message, bindings.Down) || pressed == "pgup" || pressed == "pgdown") {
+		var cmd tea.Cmd
+		m.detailViewport, cmd = m.detailViewport.Update(message)
+		return m, cmd
+	}
 	if m.searching {
-		switch pressed {
-		case "esc":
+		switch {
+		case keypkg.Matches(message, bindings.Cancel):
 			if !m.matchesAction(message, actionCancel) {
 				return m, nil
 			}
 			m.searching = false
+			m.searchInput.Blur()
+			m.focus = focusList
 			return m, nil
-		case "enter":
+		case keypkg.Matches(message, bindings.Enter):
 			if !m.matchesAction(message, actionEnter) {
 				return m, nil
 			}
@@ -628,20 +846,11 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			cmd, cancel := m.searchCmd()
 			m.opCancel = cancel
 			return m, cmd
-		case "backspace", "ctrl+h":
-			if m.query != "" {
-				_, size := utf8.DecodeLastRuneInString(m.query)
-				m.query = m.query[:len(m.query)-size]
-			}
-			return m, nil
 		default:
-			if utf8.RuneCountInString(pressed) == 1 {
-				r, _ := utf8.DecodeRuneInString(pressed)
-				if r >= ' ' && r != utf8.RuneError && len(m.query) < 128 {
-					m.query += pressed
-				}
-			}
-			return m, nil
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(message)
+			m.query = m.searchInput.Value()
+			return m, cmd
 		}
 	}
 
@@ -725,6 +934,9 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.screen = screenAvailable
 		m.searching = true
 		m.query = ""
+		m.searchInput.SetValue("")
+		m.searchInput.Focus()
+		m.focus = focusSearch
 		m.selected = 0
 		m.listOffset = 0
 	case m.matchesAction(message, actionInstalled):
@@ -852,10 +1064,15 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		visible := m.visibleApplications()
 		if len(visible) != 0 {
 			m.clearFeedback()
+			hadDetail := m.detail != nil
 			selected := visible[m.selected]
 			m.detail = &selected
 			m.returnTo = m.screen
 			m.screen = screenDetails
+			if !hadDetail {
+				return m, nil
+			}
+			return m.activateSelected()
 		}
 	case m.matchesAction(message, actionVersions):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
@@ -919,6 +1136,11 @@ func (m *model) moveSelection(delta int) {
 		m.selected = length - 1
 	}
 	m.clampViewport()
+	values := m.visibleApplications()
+	if m.selected >= 0 && m.selected < len(values) {
+		value := values[m.selected]
+		m.detail = &value
+	}
 }
 
 func (m *model) moveChannel(delta int) {
@@ -1473,14 +1695,18 @@ func (m model) listBoundsWithoutRows() (start, rows int) {
 	if m.upgradeAvailable {
 		start++
 	}
-	if m.screen == screenAvailable {
-		start++ // filter row
-		if m.searching || m.query != "" {
-			start++
+	if m.isListScreen() {
+		start++ /* Applications heading */
+		if m.screen == screenAvailable {
+			start++ /* collection filter */
 		}
-		start++ // blank before column heading
-	} else if m.screen == screenUpdates {
-		start += 2 // count and blank
+		start++ /* column heading */
+	}
+	if m.isListScreen() {
+		start--
+	}
+	if m.searching || m.query != "" {
+		start++
 	}
 	return start, 0
 }
@@ -1550,7 +1776,10 @@ func writeApplicationLinesWithSelection(destination *[]string, values []app.Appl
 
 func applicationColumns(width int, updateTable bool) string {
 	if viewWidth(width) < 60 {
-		return "  APPLICATION"
+		if updateTable {
+			return "  APPLICATION  INSTALLED  AVAILABLE"
+		}
+		return "  APPLICATION  VERSION  STATUS"
 	}
 	if updateTable {
 		return "  " + columnLayout("APPLICATION", "INSTALLED", "AVAILABLE", viewWidth(width))
@@ -1560,7 +1789,13 @@ func applicationColumns(width int, updateTable bool) string {
 
 func applicationRow(value app.Application, width int, updateTable bool) string {
 	if width < 60 {
-		return truncate(value.Name, max(1, width-2), "…")
+		label := value.Name
+		if value.UpdateAvailable {
+			label += "  ↑ Update available"
+		} else if value.InstalledVersion != "" {
+			label += "  ✓ Installed"
+		}
+		return truncate(label, max(1, width-2), "…")
 	}
 	name := value.Name
 	if updateTable {

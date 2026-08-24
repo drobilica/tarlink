@@ -40,7 +40,7 @@ func (t tuiTheme) render(value string, valueTone tone) string {
 type tuiKeyMap struct {
 	Up, Down, Left, Right, Enter, Search, Installed, Updates keypkg.Binding
 	Upgrade, Versions, Rollback, Uninstall                   keypkg.Binding
-	Cancel, Quit, CtrlC                                      keypkg.Binding
+	Cancel, Quit, CtrlC, Tab, Help                           keypkg.Binding
 }
 
 type contextualActionID uint8
@@ -70,9 +70,9 @@ type contextualAction struct {
 
 func newKeyMap() tuiKeyMap {
 	return tuiKeyMap{
-		Up:        keypkg.NewBinding(keypkg.WithKeys("up"), keypkg.WithHelp("↑", "Navigate")),
-		Down:      keypkg.NewBinding(keypkg.WithKeys("down"), keypkg.WithHelp("↓", "Navigate")),
-		Left:      keypkg.NewBinding(keypkg.WithKeys("left"), keypkg.WithHelp("←/→", "Filter")),
+		Up:        keypkg.NewBinding(keypkg.WithKeys("up", "k"), keypkg.WithHelp("↑/k", "Navigate")),
+		Down:      keypkg.NewBinding(keypkg.WithKeys("down", "j"), keypkg.WithHelp("↓/j", "Navigate")),
+		Left:      keypkg.NewBinding(keypkg.WithKeys("left", "h"), keypkg.WithHelp("←/h", "Filter")),
 		Right:     keypkg.NewBinding(keypkg.WithKeys("right")),
 		Enter:     keypkg.NewBinding(keypkg.WithKeys("enter"), keypkg.WithHelp("Enter", "Details")),
 		Search:    keypkg.NewBinding(keypkg.WithKeys("/"), keypkg.WithHelp("/", "Search")),
@@ -85,6 +85,8 @@ func newKeyMap() tuiKeyMap {
 		Cancel:    keypkg.NewBinding(keypkg.WithKeys("esc"), keypkg.WithHelp("Esc", "Back")),
 		Quit:      keypkg.NewBinding(keypkg.WithKeys("q"), keypkg.WithHelp("q", "Quit")),
 		CtrlC:     keypkg.NewBinding(keypkg.WithKeys("ctrl+c")),
+		Tab:       keypkg.NewBinding(keypkg.WithKeys("tab", "shift+tab"), keypkg.WithHelp("Tab", "Focus pane")),
+		Help:      keypkg.NewBinding(keypkg.WithKeys("?"), keypkg.WithHelp("?", "Help")),
 	}
 }
 
@@ -164,7 +166,11 @@ func (m model) contextualActionPolicy() []contextualAction {
 		return []contextualAction{action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
 	}
 	if m.isListScreen() {
-		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, "Open")}
+		enterLabel := "Open"
+		if m.detail != nil {
+			enterLabel = "Enter " + m.primaryActionLabel()
+		}
+		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, enterLabel)}
 		if len(m.selectedIDs) > 0 && m.screen == screenAvailable {
 			toggle := keypkg.NewBinding(keypkg.WithKeys(" "))
 			actions = append(actions, action(actionFilter, toggle, "Space Toggle"), action(actionInstalled, b.Installed, "i Install selected"))
@@ -181,6 +187,9 @@ func (m model) contextualActionPolicy() []contextualAction {
 		}
 		if m.screen != screenAvailable {
 			actions = append(actions, action(actionCancel, b.Cancel, "Esc Browse"))
+		}
+		if m.selectedInstalled() {
+			actions = append(actions, action(actionVersions, b.Versions, "v Versions"))
 		}
 		if m.upgradeAvailable {
 			actions = append([]contextualAction{action(actionUpgrade, b.Upgrade, "U Upgrade")}, actions...)

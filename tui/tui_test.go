@@ -236,6 +236,65 @@ func TestModelLoadsAndShowsApplications(t *testing.T) {
 	}
 }
 
+func TestWorkspaceKeepsListAndLiveDetailTogether(t *testing.T) {
+	values := []app.Application{
+		{ID: "one", Name: "One", RegistryVersion: "1.0"},
+		{ID: "two", Name: "Two", InstalledVersion: "2.0", UpdateAvailable: true, RegistryVersion: "2.1"},
+	}
+	m := model{screen: screenAvailable, available: values, selected: 0, width: 120, height: 40}
+	before := m.View().Content
+	if !strings.Contains(before, "Applications") || !strings.Contains(before, "Selected application") || !strings.Contains(before, "One") {
+		t.Fatalf("workspace omitted persistent panes: %q", before)
+	}
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "down"})
+	after := updated.(model).View().Content
+	if !strings.Contains(after, "Two") || !strings.Contains(after, "Installed") || !strings.Contains(after, "2.1") {
+		t.Fatalf("selection did not refresh live detail: %q", after)
+	}
+}
+
+func TestWorkspaceFocusHelpAndSearchUseComponents(t *testing.T) {
+	m := model{screen: screenAvailable, available: []app.Application{{ID: "one", Name: "One"}}, width: 80, height: 24}
+	updated, _ := m.Update(tea.KeyPressMsg{Text: "?"})
+	withHelp := updated.(model)
+	if !withHelp.helpOverlay || !strings.Contains(withHelp.View().Content, "Keyboard reference") {
+		t.Fatal("help overlay did not open")
+	}
+	updated, _ = withHelp.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	withoutHelp := updated.(model)
+	if withoutHelp.helpOverlay || withoutHelp.detail != nil {
+		t.Fatal("closing help changed application state")
+	}
+	updated, _ = withoutHelp.Update(tea.KeyPressMsg{Text: "/"})
+	search := updated.(model)
+	if search.focus != focusSearch || !search.searchInput.Focused() {
+		t.Fatal("search did not focus Bubbles textinput")
+	}
+	updated, _ = search.Update(tea.KeyPressMsg{Text: "é"})
+	if got := updated.(model).query; got != "é" {
+		t.Fatalf("search input value = %q", got)
+	}
+	updated, _ = updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyBackspace})
+	if got := updated.(model).query; got != "" {
+		t.Fatalf("search deletion = %q", got)
+	}
+}
+
+func TestWorkspaceResponsiveAndFooterAreStable(t *testing.T) {
+	for _, size := range [][2]int{{120, 40}, {80, 24}, {60, 18}} {
+		m := model{screen: screenAvailable, available: []app.Application{{ID: "one", Name: "One"}}, width: size[0], height: size[1]}
+		lines := strings.Split(strings.TrimSuffix(m.View().Content, "\n"), "\n")
+		for _, line := range lines {
+			if displaywidth.String(line) > size[0] {
+				t.Fatalf("%dx%d overflow: %q", size[0], size[1], line)
+			}
+		}
+		if got := strings.Count(m.View().Content, "[↑↓]"); got != 1 {
+			t.Fatalf("footer rendered %d times", got)
+		}
+	}
+}
+
 func TestPresentationUsesPanelAndSelectableControlLabels(t *testing.T) {
 	m := model{screen: screenAvailable, width: 80, available: []app.Application{{ID: "one", Name: "One"}}}
 	view := m.View().Content
