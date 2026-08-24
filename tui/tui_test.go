@@ -219,7 +219,7 @@ func TestModelLoadsAndShowsApplications(t *testing.T) {
 		updated, _ = updated.Update(message)
 	}
 	view := updated.(model).View()
-	if !strings.Contains(view.Content, "Blender") || !strings.Contains(view.Content, "APPLICATIONS") || !view.AltScreen {
+	if !strings.Contains(view.Content, "Blender") || !strings.Contains(view.Content, "APPLICATION") || !view.AltScreen {
 		t.Fatalf("unexpected view: %q", view.Content)
 	}
 }
@@ -235,7 +235,7 @@ func TestPresentationUsesPanelAndSelectableControlLabels(t *testing.T) {
 func TestGameDataRequirementIsShown(t *testing.T) {
 	value := app.Application{ID: "banjo", Name: "Banjo", Requirements: []string{"original-game-data"}}
 	m := model{screen: screenDetails, detail: &value, width: 80}
-	if !strings.Contains(m.View().Content, "Requires: Original game data") {
+	if !strings.Contains(m.View().Content, "Requires") || !strings.Contains(m.View().Content, "Original game data") {
 		t.Fatalf("details view = %q", m.View().Content)
 	}
 	if !strings.Contains(installedLabel(value), "Game data required") {
@@ -280,7 +280,7 @@ func TestMouseModeAndRenderedListHitTesting(t *testing.T) {
 	if view.MouseMode != tea.MouseModeCellMotion {
 		t.Fatalf("mouse mode = %v, want cell motion", view.MouseMode)
 	}
-	if !strings.Contains(view.Content, "UPDATE AVAILABLE 0.6.1 -> 0.6.2") || strings.Contains(view.Content, "[U]") {
+	if !strings.Contains(view.Content, "TarLink update available: 0.6.1 → 0.6.2") || !strings.Contains(view.Content, "[U] Upgrade") {
 		t.Fatalf("update banner missing from view: %q", view.Content)
 	}
 	start, _ := m.listBounds()
@@ -587,7 +587,7 @@ func TestUninstallRequiresConfirmation(t *testing.T) {
 		t.Fatalf("uninstall confirmation did not open: screen=%v command=%v", modelAfterKey.screen, command)
 	}
 	view := modelAfterKey.View().Content
-	if !strings.Contains(view, "UNINSTALL") || strings.Count(view, "Enter Confirm") != 1 || !strings.Contains(view, "Blender") {
+	if !strings.Contains(view, "Blender / Uninstall") || strings.Count(view, "[Enter] Confirm") != 1 || !strings.Contains(view, "Blender") {
 		t.Fatalf("confirmation view is unclear: %q", view)
 	}
 	if service.uninstalled != "" {
@@ -614,7 +614,7 @@ func TestInstallPathConflictRequiresConfirmation(t *testing.T) {
 		t.Fatalf("path conflict did not open confirmation: screen=%v command=%v", modelAfterCheck.screen, command)
 	}
 	view := modelAfterCheck.View().Content
-	if !strings.Contains(view, "PATH CONFLICT") || !strings.Contains(view, "shadow") || strings.Count(view, "Enter Install anyway") != 1 {
+	if !strings.Contains(view, "PATH conflicts") || !strings.Contains(view, "shadow") || strings.Count(view, "[Enter] Install anyway") != 1 {
 		t.Fatalf("path conflict view is unclear: %q", view)
 	}
 	// Cancelling returns to details without installing.
@@ -1429,7 +1429,7 @@ func TestResponsiveLayoutFitsAtRepresentativeSizes(t *testing.T) {
 		ID: "blender", Name: "Blender", Summary: "A 3D creation suite", Homepage: "https://blender.org",
 		Categories: []string{"graphics"}, RegistryVersion: "5.2.0", InstalledVersion: "5.1.0", UpdateAvailable: true,
 	}
-	for _, width := range []int{120, 80, 40, 24, 20} {
+	for _, width := range []int{120, 80, 60, 40, 24, 20} {
 		scenarios := []model{
 			{screen: screenAvailable, available: []app.Application{{ID: "a", Name: "Alpha"}}, width: width, height: 16},
 			{screen: screenInstalled, installed: []app.Application{{ID: "a", Name: "Alpha", InstalledVersion: "1.0"}}, width: width, height: 16},
@@ -1447,6 +1447,55 @@ func TestResponsiveLayoutFitsAtRepresentativeSizes(t *testing.T) {
 					t.Fatalf("width %d screen %d: line exceeds terminal width: %q", width, m.screen, line)
 				}
 			}
+		}
+	}
+}
+
+func TestModernShellScreenSemantics(t *testing.T) {
+	installed := app.Application{ID: "dino", Name: "Dinosaur Planet: Recompiled", Summary: "Native recompile", RegistryVersion: "0.3.0", InstalledVersion: "0.2.9", UpdateAvailable: true, Categories: []string{"games"}, Requirements: []string{"original-game-data"}, Homepage: "github.com/example/dino"}
+	for _, tc := range []struct {
+		name   string
+		model  model
+		want   []string
+		absent []string
+	}{
+		{"browse", model{screen: screenAvailable, available: []app.Application{installed}, width: 80, height: 20}, []string{"TarLink", "Browse", "APPLICATION", "VERSION", "STATUS"}, []string{"APPLICATIONS"}},
+		{"installed", model{screen: screenInstalled, installed: []app.Application{installed}, width: 80, height: 20}, []string{"Installed", "Dinosaur Planet", "Update available"}, []string{"INSTALLED"}},
+		{"updates", model{screen: screenUpdates, installed: []app.Application{installed}, width: 80, height: 20}, []string{"Updates", "1 updates available", "INSTALLED", "AVAILABLE"}, nil},
+		{"details", model{screen: screenDetails, detail: &installed, width: 80, height: 20}, []string{"Browse / Dinosaur Planet", "Native recompile", "Version", "Requires", "Original game data", "Homepage", "github.com/example/dino"}, []string{"APPLICATION DETAILS"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			content := tc.model.View().Content
+			for _, want := range tc.want {
+				if !strings.Contains(content, want) {
+					t.Errorf("missing %q in %q", want, content)
+				}
+			}
+			for _, absent := range tc.absent {
+				if strings.Contains(content, absent) {
+					t.Errorf("unexpected %q in %q", absent, content)
+				}
+			}
+			lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+			if len(lines) == 0 || !strings.Contains(lines[len(lines)-1], "[") {
+				t.Errorf("footer is not last physical row: %q", content)
+			}
+		})
+	}
+}
+
+func TestModernFooterIsOneRowAndFitsNarrowTerminals(t *testing.T) {
+	for _, width := range []int{120, 80, 60, 40, 24, 20} {
+		m := model{screen: screenAvailable, width: width, height: 8}
+		lines := strings.Split(strings.TrimSuffix(m.View().Content, "\n"), "\n")
+		if len(lines) != m.height {
+			t.Fatalf("width %d rendered %d rows, want %d", width, len(lines), m.height)
+		}
+		if got := displayWidth(lines[len(lines)-1]); got > width {
+			t.Fatalf("width %d footer overflows: %d", width, got)
+		}
+		if strings.Contains(strings.Join(lines[:len(lines)-1], "\n"), "[q] Quit") {
+			t.Fatalf("width %d put keyboard legend in body", width)
 		}
 	}
 }
@@ -1470,8 +1519,8 @@ func TestListBoundsMatchRenderedContent(t *testing.T) {
 		if len(lines) <= start {
 			t.Fatalf("%s: list start row %d but only %d lines rendered", sc.name, start, len(lines))
 		}
-		if !strings.Contains(lines[start], "Alpha") {
-			t.Fatalf("%s: first application not at computed row %d: %q", sc.name, start, lines[start])
+		if !strings.Contains(lines[start+1], "Alpha") {
+			t.Fatalf("%s: first application not at computed row %d: %q", sc.name, start+1, lines[start+1])
 		}
 		if sc.m.listRows() < 1 {
 			t.Fatalf("%s: listRows %d < 1", sc.name, sc.m.listRows())
