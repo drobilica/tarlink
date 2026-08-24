@@ -202,10 +202,7 @@ func (manager *Manager) reconcileExisting(item *manifest.Manifest, installed sta
 	if err != nil {
 		return Outcome{}, err
 	}
-	if err := integration.ValidateOwned(oldSpec); err != nil {
-		return Outcome{}, err
-	}
-	spec := integration.Spec{ID: item.ID, Name: item.Name, ApplicationRoot: filepath.Join(manager.Layout.Apps, item.ID), LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons, DesktopEnabled: item.Desktop.Enabled, DesktopCategories: item.Desktop.Categories, WorkingDirectory: item.Desktop.WorkingDirectory == "application-root", Icon: installed.Integration.IconSource, IconSize: installed.Integration.IconSize, IconSHA256: installed.Integration.IconSHA256, IconSourceRoot: filepath.Join(manager.Layout.Apps, item.ID, "current")}
+	spec := integration.Spec{ID: item.ID, Name: item.Name, ApplicationRoot: filepath.Join(manager.Layout.Apps, item.ID), LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons, DesktopEnabled: item.Desktop.Enabled, DesktopCategories: item.Desktop.Categories, WorkingDirectory: item.Desktop.WorkingDirectory == "application-root", Icon: installed.Integration.IconSource, IconSize: installed.Integration.IconSize, IconSHA256: installed.Integration.IconSHA256, IconSourceRoot: filepath.Join(manager.Layout.Apps, item.ID, installed.Current)}
 	for _, executable := range item.Application.Executables {
 		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path, CreateBinLink: executable.CreateBinLink})
 	}
@@ -213,9 +210,20 @@ func (manager *Manager) reconcileExisting(item *manifest.Manifest, installed sta
 	if spec.DesktopEnabled {
 		spec.DesktopSHA256 = integration.DesktopDigest(spec, "")
 	}
+	if ownershipErr := integration.ValidateOwned(oldSpec); ownershipErr != nil {
+		// A prior reconciliation may already have written the direct desktop
+		// entry while its older state digest still described the bin-link form.
+		// Accept that exact desired entry; all other ownership checks remain
+		// anchored to the persisted state and fail closed.
+		if desiredErr := integration.ValidateOwned(spec); desiredErr != nil {
+			return Outcome{}, ownershipErr
+		}
+		oldSpec.DesktopExecutable = spec.DesktopExecutable
+		oldSpec.DesktopSHA256 = spec.DesktopSHA256
+	}
 	paths, undo, err := integration.Update(spec, oldSpec)
 	if err != nil {
-		return Outcome{}, err
+		return Outcome{}, fmt.Errorf("reconcile integrations: %w", err)
 	}
 	committed := false
 	defer func() {

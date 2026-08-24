@@ -497,7 +497,7 @@ func ValidateOwned(spec Spec) error {
 			continue
 		}
 		if err := validateIntegrationParent(executable.Link); err != nil {
-			return err
+			return fmt.Errorf("executable %s: %w", executable.Name, err)
 		}
 		if err := validateSymlink(executable.Link, executable.Target); err != nil {
 			return err
@@ -505,7 +505,7 @@ func ValidateOwned(spec Spec) error {
 	}
 	if spec.DesktopEnabled {
 		if err := validateIntegrationParent(paths.DesktopEntry); err != nil {
-			return err
+			return fmt.Errorf("desktop: %w", err)
 		}
 		if err := validateDesktop(paths.DesktopEntry, spec.ID, spec.DesktopSHA256); err != nil {
 			return err
@@ -513,7 +513,7 @@ func ValidateOwned(spec Spec) error {
 	}
 	if spec.Icon != "" {
 		if err := validateIntegrationParent(paths.IconFile); err != nil {
-			return err
+			return fmt.Errorf("icon: %w", err)
 		}
 		if err := validateIcon(paths.IconFile, spec.IconSHA256); err != nil {
 			return err
@@ -589,7 +589,7 @@ func RemoveOwned(spec Spec) error {
 // the public name is therefore never selected for removal.
 func detachOwned(path string, validate func(string) error) error {
 	if err := validateIntegrationParent(path); err != nil && !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("detach %s: %w", path, err)
 	}
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		return nil

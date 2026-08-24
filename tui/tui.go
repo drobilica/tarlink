@@ -710,11 +710,13 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.listOffset = 0
 	case m.matchesAction(message, actionInstalled):
 		m.clearFeedback()
+		m.selectedIDs = nil
 		m.screen = screenInstalled
 		m.selected = 0
 		m.listOffset = 0
 	case m.matchesAction(message, actionUpdates):
 		m.clearFeedback()
+		m.selectedIDs = nil
 		m.screen = screenUpdates
 		m.selected = 0
 		m.listOffset = 0
@@ -742,6 +744,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.screen = screenAvailable
 			m.selected = 0
+			m.selectedIDs = nil
 		}
 	case m.matchesAction(message, actionEnter):
 		if m.screen == screenInstallChannel {
