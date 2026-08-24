@@ -93,6 +93,17 @@ func TestEnsureAndRemoveOwned(t *testing.T) {
 	}
 }
 
+func TestDesktopFileUsesDirectTargetAndApplicationRoot(t *testing.T) {
+	spec := Spec{ID: "banjo", Name: "Banjo: Recompiled", ApplicationRoot: "/home/test/.local/share/tarlink/apps/banjo", DesktopEnabled: true, WorkingDirectory: true, DesktopCategories: []string{"Game"}, DesktopExecutable: "/home/test/.local/share/tarlink/apps/banjo/current/BanjoRecompiled"}
+	content := string(DesktopFile(spec, "/home/test/.local/bin/BanjoRecompiled"))
+	if strings.Contains(content, "/.local/bin/") || !strings.Contains(content, "Exec=/home/test/.local/share/tarlink/apps/banjo/current/BanjoRecompiled\n") || !strings.Contains(content, "TryExec=/home/test/.local/share/tarlink/apps/banjo/current/BanjoRecompiled\n") || !strings.Contains(content, "Path=/home/test/.local/share/tarlink/apps/banjo/current\n") {
+		t.Fatalf("desktop content = %q", content)
+	}
+	if strings.Contains(content, `Exec="/`) {
+		t.Fatalf("normal executable path unnecessarily quoted: %q", content)
+	}
+}
+
 func TestEnsureRefusesUnrelatedFiles(t *testing.T) {
 	for _, kind := range []string{"executable", "desktop"} {
 		t.Run(kind, func(t *testing.T) {

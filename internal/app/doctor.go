@@ -67,9 +67,36 @@ func (core *Core) Doctor(ctx context.Context) (DoctorReport, error) {
 			}
 		}
 	}
+	binRequired := false
+	if stateRootHealthy {
+		if entries, readErr := os.ReadDir(core.layout.States); readErr == nil {
+			for _, entry := range entries {
+				if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || filepath.Ext(entry.Name()) != ".json" {
+					continue
+				}
+				value, loadErr := state.LoadForApp(core.layout, entry.Name()[:len(entry.Name())-5])
+				if loadErr != nil {
+					continue
+				}
+				for _, executable := range value.Executables {
+					if executable.WantsBinLink() {
+						binRequired = true
+						break
+					}
+				}
+				if binRequired {
+					break
+				}
+			}
+		}
+	}
 	binInfo, err := os.Lstat(core.layout.Bin)
 	if errors.Is(err, os.ErrNotExist) {
-		check(&report.Global, "~/.local/bin", "warning", "directory is missing")
+		status := "warning"
+		if !binRequired {
+			status = "ok"
+		}
+		check(&report.Global, "~/.local/bin", status, "directory is missing")
 	} else if err != nil {
 		return report, fmt.Errorf("inspect executable directory: %w", err)
 	} else if binInfo.Mode()&os.ModeSymlink != 0 || !binInfo.IsDir() {
@@ -192,7 +219,7 @@ func (core *Core) auditApplication(value state.State, add func(string, string, s
 	}
 	spec := integration.Spec{ID: value.App, ApplicationRoot: appRoot, LocalBinDirectory: core.layout.Bin, DesktopDirectory: core.layout.Desktop, IconDirectory: core.layout.Icons, DesktopEnabled: value.DesktopEnabled, DesktopSHA256: value.Integration.DesktopSHA256, Icon: value.Integration.IconSource, IconSHA256: value.Integration.IconSHA256, IconSize: value.Integration.IconSize}
 	for _, executable := range value.Executables {
-		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path})
+		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path, CreateBinLink: executable.CreateBinLink})
 	}
 	if err := integration.ValidateOwned(spec); err != nil {
 		add("integration", "error", err.Error())
@@ -200,6 +227,9 @@ func (core *Core) auditApplication(value state.State, add func(string, string, s
 		add("integration", "ok", "executables and desktop integration are owned")
 	}
 	for _, executable := range value.Executables {
+		if !executable.WantsBinLink() {
+			continue
+		}
 		conflicts := integration.CheckPath(integration.Spec{ID: value.App, Executables: []integration.ExecutableSpec{{Name: executable.Name}}, LocalBinDirectory: core.layout.Bin}, os.Getenv("PATH"))
 		for _, conflict := range conflicts {
 			add("PATH "+executable.Name, "warning", conflict.Type+" ("+conflict.Directory+")")

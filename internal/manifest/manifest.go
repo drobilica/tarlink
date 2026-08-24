@@ -92,14 +92,20 @@ type Application struct {
 }
 
 type Executable struct {
-	Name string `yaml:"name" json:"name"`
-	Path string `yaml:"path" json:"path"`
+	Name          string `yaml:"name,omitempty" json:"name,omitempty"`
+	Path          string `yaml:"path" json:"path"`
+	CreateBinLink *bool  `yaml:"create-bin-link,omitempty" json:"create_bin_link,omitempty"`
 }
 
+// WantsBinLink preserves the schema default: an omitted create-bin-link is true.
+func (e Executable) WantsBinLink() bool { return e.CreateBinLink == nil || *e.CreateBinLink }
+
 type Desktop struct {
-	Enabled    bool        `yaml:"enabled" json:"enabled"`
-	Categories []string    `yaml:"categories" json:"categories"`
-	Icon       DesktopIcon `yaml:"icon" json:"icon"`
+	Enabled          bool        `yaml:"enabled" json:"enabled"`
+	Executable       string      `yaml:"executable,omitempty" json:"executable,omitempty"`
+	WorkingDirectory string      `yaml:"working-directory,omitempty" json:"working_directory,omitempty"`
+	Categories       []string    `yaml:"categories" json:"categories"`
+	Icon             DesktopIcon `yaml:"icon" json:"icon"`
 }
 
 // DesktopIcon declares a desktop icon either as a path inside the extracted
@@ -148,6 +154,11 @@ func Parse(r io.Reader) (*Manifest, error) {
 	var result Manifest
 	if err := dec.Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode manifest: %w", err)
+	}
+	for index := range result.Application.Executables {
+		if result.Application.Executables[index].Name == "" {
+			result.Application.Executables[index].Name = path.Base(result.Application.Executables[index].Path)
+		}
 	}
 	var trailing any
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
@@ -254,11 +265,11 @@ func validateManifestShape(document *yaml.Node) error {
 		return errors.New("application.executables must be a non-empty sequence")
 	}
 	for index, value := range application["executables"].Content {
-		if _, err := requiredMapping(value, fmt.Sprintf("application.executables[%d]", index), []string{"name", "path"}, nil); err != nil {
+		if _, err := requiredMapping(value, fmt.Sprintf("application.executables[%d]", index), []string{"path"}, []string{"name", "create-bin-link"}); err != nil {
 			return err
 		}
 	}
-	desktop, err := requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories", "icon"})
+	desktop, err := requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories", "icon", "executable", "working-directory"})
 	if err != nil {
 		return err
 	}
@@ -422,6 +433,22 @@ func validateApplicationRelease(m Manifest, release Release) error {
 		if release.Archive == "appimage" && executable.Path != "appimage" {
 			return fmt.Errorf("AppImage executable %q must target appimage", executable.Name)
 		}
+	}
+	if m.Desktop.Executable != "" {
+		matched := 0
+		for _, executable := range m.Application.Executables {
+			if executable.Name == m.Desktop.Executable {
+				matched++
+			}
+		}
+		if matched != 1 {
+			return fmt.Errorf("desktop executable %q does not resolve uniquely", m.Desktop.Executable)
+		}
+	} else if m.Desktop.Enabled && len(m.Application.Executables) != 1 {
+		return errors.New("desktop executable is required when multiple executables are declared")
+	}
+	if m.Desktop.WorkingDirectory != "" && m.Desktop.WorkingDirectory != "application-root" {
+		return fmt.Errorf("unsupported desktop working-directory %q", m.Desktop.WorkingDirectory)
 	}
 	if release.Archive == "appimage" && m.Desktop.Icon.Path != "" {
 		return errors.New("AppImage releases cannot declare archive-contained desktop icons")

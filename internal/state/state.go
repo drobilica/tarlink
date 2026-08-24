@@ -24,6 +24,8 @@ type Integration struct {
 	Executables        []ExecutableIntegration `json:"executables,omitempty"`
 	DesktopEntry       string                  `json:"desktop_entry"`
 	DesktopSHA256      string                  `json:"desktop_sha256"`
+	DesktopExecutable  string                  `json:"desktop_executable,omitempty"`
+	WorkingDirectory   bool                    `json:"working_directory,omitempty"`
 	IconFile           string                  `json:"icon_file,omitempty"`
 	IconSHA256         string                  `json:"icon_sha256,omitempty"`
 	IconSize           int                     `json:"icon_size,omitempty"`
@@ -35,10 +37,11 @@ type Integration struct {
 }
 
 type ExecutableIntegration struct {
-	Name   string `json:"name"`
-	Path   string `json:"path"`
-	Link   string `json:"link"`
-	Target string `json:"target"`
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	Link          string `json:"link,omitempty"`
+	Target        string `json:"target"`
+	CreateBinLink *bool  `json:"create_bin_link,omitempty"`
 }
 
 type State struct {
@@ -60,9 +63,12 @@ type State struct {
 }
 
 type Executable struct {
-	Name string `json:"name"`
-	Path string `json:"path"`
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	CreateBinLink *bool  `json:"create_bin_link,omitempty"`
 }
+
+func (e Executable) WantsBinLink() bool { return e.CreateBinLink == nil || *e.CreateBinLink }
 
 var ErrCorrupt = errors.New("corrupt state")
 
@@ -123,9 +129,12 @@ func (s State) Validate() error {
 	if len(s.Integration.Executables) != len(s.Executables) {
 		return fmt.Errorf("%w: executable integration count mismatch", ErrCorrupt)
 	}
-	for _, integration := range s.Integration.Executables {
-		if integration.Name == "" || integration.Link == "" || integration.Target == "" {
+	for index, integration := range s.Integration.Executables {
+		if integration.Name == "" || integration.Target == "" || (integration.WantsBinLink() && integration.Link == "") {
 			return fmt.Errorf("%w: executable integration is incomplete", ErrCorrupt)
+		}
+		if index >= len(s.Executables) || integration.Name != s.Executables[index].Name || integration.WantsBinLink() != s.Executables[index].WantsBinLink() {
+			return fmt.Errorf("%w: executable integration does not match executable state", ErrCorrupt)
 		}
 	}
 	for name, path := range map[string]string{
@@ -212,6 +221,8 @@ func (s State) Validate() error {
 	return nil
 }
 
+func (e ExecutableIntegration) WantsBinLink() bool { return e.CreateBinLink == nil || *e.CreateBinLink }
+
 func validArtifact(value string) bool {
 	return value == "tar.gz" || value == "tar.xz" || value == "zip" || value == "appimage"
 }
@@ -238,6 +249,9 @@ func (s State) ValidateForLayout(l filesystem.Layout) error {
 	appRoot := filepath.Join(l.Apps, s.App)
 	for _, executable := range s.Integration.Executables {
 		expectedLink := filepath.Join(l.Bin, executable.Name)
+		if !executable.WantsBinLink() {
+			expectedLink = ""
+		}
 		expectedTarget := filepath.Join(appRoot, "current", filepath.FromSlash(executable.Path))
 		if executable.Link != expectedLink || executable.Target != expectedTarget {
 			return fmt.Errorf("%w: executable integration paths do not match canonical layout", ErrCorrupt)

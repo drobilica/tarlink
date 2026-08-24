@@ -30,10 +30,13 @@ release:
         source: <authoritative HTTPS checksum URL>
 application:
   executables:
-    - name: <command name>
+    - name: <optional logical command name>
       path: <canonical relative path>
+      create-bin-link: true
 desktop:
   enabled: true
+  executable: <logical executable name>
+  working-directory: application-root
   categories: [Development, Emulator, Game, Graphics, Utility]
   icon:
     path: <canonical relative path inside the extracted application>
@@ -47,6 +50,15 @@ without following symlinks or hardlinks, and its declared format is checked
 against magic bytes. AppImages cannot declare nested archives. Unknown fields,
 aliases, anchors, merge keys, multiple documents, malformed digests, and
 unsafe paths are rejected.
+
+Executable names default to the basename of `path`; explicit names remain
+valid, and resolved names must be unique. `create-bin-link` defaults to true.
+When false, TarLink does not manage a `~/.local/bin` link for that executable.
+Desktop `executable` selects the logical executable used by the desktop entry;
+when exactly one executable exists it may be omitted. The only supported
+desktop working directory is `application-root`, which resolves to the active
+application root. Desktop `Exec` and `TryExec` entries always target the active
+installed executable directly and are independent of PATH links.
 
 ## Desktop icon
 

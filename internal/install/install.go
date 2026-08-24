@@ -796,11 +796,12 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		ApplicationRoot: appRoot, LocalBinDirectory: manager.Layout.Bin,
 		DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons,
 		Icon: iconSource, IconSize: iconSize, IconSourceRoot: finalPath, DesktopEnabled: item.Desktop.Enabled,
-		DesktopCategories: item.Desktop.Categories,
+		DesktopCategories: item.Desktop.Categories, WorkingDirectory: item.Desktop.WorkingDirectory == "application-root",
 	}
 	for _, executable := range item.Application.Executables {
-		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path})
+		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path, CreateBinLink: executable.CreateBinLink})
 	}
+	spec.DesktopExecutable = filepath.Join(manager.Layout.Apps, item.ID, "current", desktopExecutablePath(item))
 	if spec.DesktopEnabled {
 		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
 	}
@@ -900,14 +901,17 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		}(), Pinned: pinned,
 		Executables: manifestExecutables(item.Application.Executables), Artifact: item.Release.Archive, DesktopEnabled: desktopEnabled,
 		Integration: state.Integration{
-			DesktopEntry:  desktopPath,
-			DesktopSHA256: spec.DesktopSHA256,
-			IconFile:      paths.IconFile, IconSHA256: spec.IconSHA256,
+			DesktopEntry:      desktopPath,
+			DesktopSHA256:     spec.DesktopSHA256,
+			DesktopExecutable: desktopExecutableName(item),
+			WorkingDirectory:  spec.WorkingDirectory,
+			IconFile:          paths.IconFile, IconSHA256: spec.IconSHA256,
 			IconSize: spec.IconSize, IconSource: iconSource,
 		},
 	}
 	for _, executable := range paths.Executables {
-		newState.Integration.Executables = append(newState.Integration.Executables, state.ExecutableIntegration{Name: executable.Name, Path: executablePath(item.Application.Executables, executable.Name), Link: executable.Link, Target: executable.Target})
+		value := findManifestExecutable(item.Application.Executables, executable.Name)
+		newState.Integration.Executables = append(newState.Integration.Executables, state.ExecutableIntegration{Name: executable.Name, Path: executablePath(item.Application.Executables, executable.Name), Link: executable.Link, Target: executable.Target, CreateBinLink: value.CreateBinLink})
 	}
 	if installed != nil && desktopEnabled {
 		newState.Integration.PreviousIconFile = installed.Integration.IconFile
@@ -1063,19 +1067,28 @@ func (manager *Manager) integrationSpec(installed state.State, name string, cate
 	spec := integration.Spec{
 		ID: installed.App, Name: name, ApplicationRoot: appRoot,
 		LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons,
-		DesktopEnabled: installed.DesktopEnabled, DesktopCategories: categories,
+		DesktopEnabled: installed.DesktopEnabled, DesktopCategories: categories, WorkingDirectory: installed.Integration.WorkingDirectory,
 		DesktopSHA256:  installed.Integration.DesktopSHA256,
 		IconSHA256:     installed.Integration.IconSHA256,
 		IconSize:       installed.Integration.IconSize,
 		IconSourceRoot: filepath.Join(appRoot, "current"), Icon: installed.Integration.IconSource,
 	}
 	for _, executable := range installed.Executables {
-		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path})
+		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path, CreateBinLink: executable.CreateBinLink})
+	}
+	expected := integration.ExpectedPaths(spec)
+	if installed.Integration.DesktopExecutable != "" {
+		spec.DesktopExecutable = filepath.Join(appRoot, "current", executablePathState(installed.Executables, installed.Integration.DesktopExecutable))
+	} else if len(expected.Executables) > 0 {
+		// State written before direct desktop targets used the bin link. Keep
+		// that historical ownership digest valid long enough for the update
+		// transaction to replace it with the new direct-target entry.
+		spec.DesktopExecutable = expected.Executables[0].Link
 	}
 	if spec.Icon == "" && installed.Integration.IconFile != "" {
 		spec.Icon = "icon" + filepath.Ext(installed.Integration.IconFile)
 	}
-	expected := integration.ExpectedPaths(spec)
+	expected = integration.ExpectedPaths(spec)
 	expectedDesktop := ""
 	if installed.DesktopEnabled {
 		expectedDesktop = expected.DesktopEntry
@@ -1095,9 +1108,38 @@ func (manager *Manager) integrationSpec(installed state.State, name string, cate
 func manifestExecutables(values []manifest.Executable) []state.Executable {
 	result := make([]state.Executable, 0, len(values))
 	for _, value := range values {
-		result = append(result, state.Executable{Name: value.Name, Path: value.Path})
+		result = append(result, state.Executable{Name: value.Name, Path: value.Path, CreateBinLink: value.CreateBinLink})
 	}
 	return result
+}
+
+func findManifestExecutable(values []manifest.Executable, name string) manifest.Executable {
+	for _, value := range values {
+		if value.Name == name {
+			return value
+		}
+	}
+	return manifest.Executable{}
+}
+
+func desktopExecutableName(item *manifest.Manifest) string {
+	if item.Desktop.Executable != "" {
+		return item.Desktop.Executable
+	}
+	return item.Application.Executables[0].Name
+}
+
+func desktopExecutablePath(item *manifest.Manifest) string {
+	return executablePath(item.Application.Executables, desktopExecutableName(item))
+}
+
+func executablePathState(values []state.Executable, name string) string {
+	for _, value := range values {
+		if value.Name == name {
+			return value.Path
+		}
+	}
+	return ""
 }
 func executablePath(values []manifest.Executable, name string) string {
 	for _, value := range values {
@@ -1112,7 +1154,7 @@ func sameExecutables(a []state.Executable, b []manifest.Executable) bool {
 		return false
 	}
 	for index := range a {
-		if a[index].Name != b[index].Name || a[index].Path != b[index].Path {
+		if a[index].Name != b[index].Name || a[index].Path != b[index].Path || a[index].WantsBinLink() != b[index].WantsBinLink() {
 			return false
 		}
 	}

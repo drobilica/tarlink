@@ -59,6 +59,35 @@ func TestParseValidManifest(t *testing.T) {
 	}
 }
 
+func TestExecutableIntegrationFields(t *testing.T) {
+	value := strings.Replace(validManifest, "    - name: blender\n      path: blender", "    - path: bin/blender", 1)
+	value = strings.Replace(value, "  categories:\n    - Graphics\n  icon:", "  executable: blender\n  working-directory: application-root\n  categories:\n    - Graphics\n  icon:", 1)
+	m, err := Parse(strings.NewReader(value))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if m.Application.Executables[0].Name != "blender" || !m.Application.Executables[0].WantsBinLink() {
+		t.Fatalf("derived executable = %#v", m.Application.Executables[0])
+	}
+	value = strings.Replace(validManifest, "      path: blender", "      path: blender\n      create-bin-link: false", 1)
+	value = strings.Replace(value, "  categories:\n    - Graphics\n  icon:", "  executable: blender\n  working-directory: application-root\n  categories:\n    - Graphics\n  icon:", 1)
+	m, err = Parse(strings.NewReader(value))
+	if err != nil || m.Application.Executables[0].CreateBinLink == nil || *m.Application.Executables[0].CreateBinLink != false || m.Desktop.Executable != "blender" {
+		t.Fatalf("explicit integration fields = %#v, %v", m, err)
+	}
+}
+
+func TestRejectsAmbiguousDesktopAndWorkingDirectory(t *testing.T) {
+	value := strings.Replace(validManifest, "    - name: blender\n      path: blender", "    - name: one\n      path: one\n    - name: two\n      path: two", 1)
+	if _, err := Parse(strings.NewReader(value)); err == nil {
+		t.Fatal("desktop with multiple executables accepted")
+	}
+	value = strings.Replace(validManifest, "  categories:\n    - Graphics", "  working-directory: /tmp\n  categories:\n    - Graphics", 1)
+	if _, err := Parse(strings.NewReader(value)); err == nil {
+		t.Fatal("arbitrary working directory accepted")
+	}
+}
+
 func remoteIconBlock(url string) string {
 	return "  icon:\n    url: " + url + "\n    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 }

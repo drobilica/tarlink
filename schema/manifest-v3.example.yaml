@@ -28,8 +28,11 @@ application:
   executables:
     - name: blender
       path: blender
+      create-bin-link: true
 desktop:
   enabled: true
+  executable: blender
+  working-directory: application-root
   icon:
     path: blender.svg
   categories: [Graphics]
