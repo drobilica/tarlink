@@ -107,6 +107,14 @@ implementing a security or artifact capability whose justification is
 onboarding candidates. A zero fully-unlocked result requires an independent
 explicit reason to proceed.
 
+## Registry icons
+
+`tarlink registry icons .` checks icon coverage without network access;
+`tarlink registry icons . --fix` performs bounded deterministic GitHub
+discovery and minimal manifest edits. It does not execute application
+binaries or permit icon sources outside the manifest icon contract. Review
+unresolved candidates, then run `tarlink registry validate .`.
+
 For several repositories, use the batch form of `registry inspect` documented
 by `tarlink registry inspect --help`; it invokes the same Task 1 inspection per
 repository and reports independent results. Batch input is ephemeral and is

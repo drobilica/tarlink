@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -30,8 +31,10 @@ import (
 const DiscoveryTTL = 24 * time.Hour
 const maxResponseBytes int64 = 4 << 20
 const maxArtifactBytes int64 = 8 << 30
+const MaxIconBytes int64 = 4 << 20
 
 var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+var gitObjectPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 type Repository string
 
@@ -134,6 +137,13 @@ func (c *Client) apiURL(repo Repository) string {
 	return APIURL(repo)
 }
 
+func (c *Client) repositoryAPIURL(repo Repository) string {
+	if c != nil && c.APIBase != "" {
+		return strings.TrimRight(c.APIBase, "/") + "/repos/" + string(repo)
+	}
+	return "https://api.github.com/repos/" + string(repo)
+}
+
 func (c *Client) apiGet(ctx context.Context, endpoint string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -141,6 +151,12 @@ func (c *Client) apiGet(ctx context.Context, endpoint string) (*http.Response, e
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "tarlink-registry-research")
+	// Maintainer tooling may use the conventional Actions credential to avoid
+	// unauthenticated API limits. Never persist, print, or include it in an
+	// error; runtime installation does not use this client.
+	if token := strings.TrimSpace(os.Getenv("GH_TOKEN")); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 	client := *c.httpClient()
 	origin, _ := url.Parse(endpoint)
 	client.CheckRedirect = func(r *http.Request, via []*http.Request) error {
@@ -375,6 +391,252 @@ func (c *Client) DiscoverRelease(ctx context.Context, raw, tag string) (Release,
 		_ = writeJSON(cache, discoveryFile{Version: 1, FetchedAt: c.now(), Releases: []Release{r}})
 	}
 	return r, nil
+}
+
+// RepositoryFile identifies one immutable regular file in a GitHub
+// repository. Commit is the exact commit selected by a release tag; URL is
+// therefore immutable even if the tag is later moved.
+type RepositoryFile struct {
+	Repository Repository `json:"repository"`
+	Tag        string     `json:"tag"`
+	Commit     string     `json:"commit"`
+	Path       string     `json:"path"`
+	Blob       string     `json:"blob"`
+	Size       int64      `json:"size"`
+	URL        string     `json:"url"`
+}
+
+type apiGitObject struct {
+	SHA  string `json:"sha"`
+	Type string `json:"type"`
+}
+
+type apiGitReference struct {
+	Ref    string       `json:"ref"`
+	Object apiGitObject `json:"object"`
+}
+
+type apiGitTag struct {
+	SHA    string       `json:"sha"`
+	Object apiGitObject `json:"object"`
+}
+
+type apiGitCommit struct {
+	SHA  string `json:"sha"`
+	Tree struct {
+		SHA string `json:"sha"`
+	} `json:"tree"`
+}
+
+type apiGitTree struct {
+	SHA       string `json:"sha"`
+	Truncated bool   `json:"truncated"`
+	Tree      []struct {
+		Path string `json:"path"`
+		Type string `json:"type"`
+		SHA  string `json:"sha"`
+		Size *int64 `json:"size,omitempty"`
+	} `json:"tree"`
+}
+
+// DiscoverRepositoryFile resolves an exact GitHub tag, dereferences annotated
+// tags, and walks non-recursive Git trees one path component at a time. This
+// avoids ambiguous branch/tag resolution and GitHub's truncated recursive-tree
+// responses while retaining strict response bounds.
+func (c *Client) DiscoverRepositoryFile(ctx context.Context, raw, tag, filePath string) (RepositoryFile, error) {
+	repo, err := ParseRepository(raw)
+	if err != nil {
+		return RepositoryFile{}, err
+	}
+	if tag == "" || strings.ContainsAny(tag, "?#") {
+		return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "invalid release tag"}
+	}
+	parts, err := repositoryPathParts(filePath)
+	if err != nil {
+		return RepositoryFile{}, err
+	}
+	base := c.repositoryAPIURL(repo)
+	var reference apiGitReference
+	if err := c.getAPIJSON(ctx, base+"/git/ref/tags/"+url.PathEscape(tag), &reference); err != nil {
+		return RepositoryFile{}, err
+	}
+	if reference.Ref != "refs/tags/"+tag || !validGitObject(reference.Object) {
+		return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub tag reference identity mismatch"}
+	}
+	object := reference.Object
+	seen := make(map[string]bool)
+	for depth := 0; object.Type == "tag"; depth++ {
+		if depth >= 8 || seen[object.SHA] {
+			return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub annotated tag chain is invalid"}
+		}
+		seen[object.SHA] = true
+		var annotated apiGitTag
+		if err := c.getAPIJSON(ctx, base+"/git/tags/"+object.SHA, &annotated); err != nil {
+			return RepositoryFile{}, err
+		}
+		if annotated.SHA != object.SHA || !validGitObject(annotated.Object) {
+			return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub annotated tag identity mismatch"}
+		}
+		object = annotated.Object
+	}
+	if object.Type != "commit" {
+		return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub tag does not resolve to a commit"}
+	}
+	commitSHA := object.SHA
+	var commit apiGitCommit
+	if err := c.getAPIJSON(ctx, base+"/git/commits/"+commitSHA, &commit); err != nil {
+		return RepositoryFile{}, err
+	}
+	if commit.SHA != commitSHA || !gitObjectPattern.MatchString(commit.Tree.SHA) {
+		return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub commit identity mismatch"}
+	}
+	treeSHA := commit.Tree.SHA
+	var blobSHA string
+	var size int64
+	for index, part := range parts {
+		var tree apiGitTree
+		if err := c.getAPIJSON(ctx, base+"/git/trees/"+treeSHA, &tree); err != nil {
+			return RepositoryFile{}, err
+		}
+		if tree.SHA != treeSHA || tree.Truncated {
+			return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub tree response is truncated or inconsistent"}
+		}
+		var selected *struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+			SHA  string `json:"sha"`
+			Size *int64 `json:"size,omitempty"`
+		}
+		for entryIndex := range tree.Tree {
+			entry := &tree.Tree[entryIndex]
+			if entry.Path == part {
+				if selected != nil {
+					return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub tree contains duplicate paths"}
+				}
+				selected = entry
+			}
+		}
+		if selected == nil || !gitObjectPattern.MatchString(selected.SHA) {
+			return RepositoryFile{}, &APIError{Kind: APIErrorNotFound, Message: fmt.Sprintf("repository file %q was not found at tag %q", filePath, tag)}
+		}
+		last := index == len(parts)-1
+		if !last {
+			if selected.Type != "tree" {
+				return RepositoryFile{}, &APIError{Kind: APIErrorNotFound, Message: fmt.Sprintf("repository path %q is not a directory", strings.Join(parts[:index+1], "/"))}
+			}
+			treeSHA = selected.SHA
+			continue
+		}
+		if selected.Type != "blob" || selected.Size == nil || *selected.Size < 0 {
+			return RepositoryFile{}, &APIError{Kind: APIErrorMalformed, Message: "repository icon is not a regular Git blob"}
+		}
+		blobSHA, size = selected.SHA, *selected.Size
+	}
+	escaped := make([]string, len(parts))
+	for i, part := range parts {
+		escaped[i] = url.PathEscape(part)
+	}
+	rawURL := "https://raw.githubusercontent.com/" + string(repo) + "/" + commitSHA + "/" + strings.Join(escaped, "/")
+	return RepositoryFile{Repository: repo, Tag: tag, Commit: commitSHA, Path: strings.Join(parts, "/"), Blob: blobSHA, Size: size, URL: rawURL}, nil
+}
+
+func repositoryPathParts(value string) ([]string, error) {
+	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, "\\") || strings.ContainsAny(value, "\x00\r\n") || !strings.EqualFold(path.Ext(value), ".png") {
+		return nil, fmt.Errorf("invalid repository PNG path %q", value)
+	}
+	parts := strings.Split(value, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return nil, fmt.Errorf("invalid repository PNG path %q", value)
+		}
+	}
+	return parts, nil
+}
+
+func validGitObject(object apiGitObject) bool {
+	return gitObjectPattern.MatchString(object.SHA) && (object.Type == "commit" || object.Type == "tag")
+}
+
+func (c *Client) getAPIJSON(ctx context.Context, endpoint string, destination any) error {
+	response, err := c.apiGet(ctx, endpoint)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return classifyStatus(response)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+	if err != nil {
+		return &APIError{Kind: APIErrorNetwork, Message: fmt.Sprintf("read GitHub API response: %v", err), Cause: err}
+	}
+	if int64(len(body)) > maxResponseBytes {
+		return &APIError{Kind: APIErrorMalformed, Message: "GitHub API response exceeds size limit"}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := decoder.Decode(destination); err != nil {
+		return &APIError{Kind: APIErrorMalformed, Message: fmt.Sprintf("decode GitHub API response: %v", err)}
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return &APIError{Kind: APIErrorMalformed, Message: "trailing GitHub API response data"}
+	}
+	return nil
+}
+
+// FetchRepositoryFile downloads one previously discovered immutable GitHub
+// blob through TarLink's bounded download client. The returned bytes are still
+// untrusted; callers must validate the expected format before recording them.
+func (c *Client) FetchRepositoryFile(ctx context.Context, file RepositoryFile) ([]byte, error) {
+	parts, err := repositoryPathParts(file.Path)
+	if err != nil {
+		return nil, err
+	}
+	repo, err := ParseRepository(string(file.Repository))
+	if err != nil || repo != file.Repository || !gitObjectPattern.MatchString(file.Commit) || !gitObjectPattern.MatchString(file.Blob) || file.Size < 0 || file.Size > MaxIconBytes {
+		return nil, errors.New("invalid immutable repository file identity")
+	}
+	escaped := make([]string, len(parts))
+	for i, part := range parts {
+		escaped[i] = url.PathEscape(part)
+	}
+	expectedURL := "https://raw.githubusercontent.com/" + string(repo) + "/" + file.Commit + "/" + strings.Join(escaped, "/")
+	if file.URL != expectedURL {
+		return nil, errors.New("immutable repository file URL does not match its identity")
+	}
+	directory, err := os.MkdirTemp(func() string {
+		if c != nil {
+			return c.TempRoot
+		}
+		return ""
+	}(), "tarlink-icon-research-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(directory)
+	destination := filepath.Join(directory, "icon.png")
+	client := download.NewClient()
+	if c != nil && c.HTTP != nil {
+		client.HTTP = c.HTTP
+	}
+	allowed := func(candidate *url.URL) bool {
+		return candidate != nil && candidate.Scheme == "https" && candidate.User == nil && strings.EqualFold(candidate.Host, "raw.githubusercontent.com") && candidate.EscapedPath() == func() string {
+			parsed, _ := url.Parse(expectedURL)
+			return parsed.EscapedPath()
+		}() && candidate.RawQuery == "" && candidate.Fragment == ""
+	}
+	result, err := client.FetchFile(ctx, download.FileRequest{URL: expectedURL, Destination: destination, MaxBytes: MaxIconBytes, AllowedURL: allowed})
+	if err != nil {
+		return nil, err
+	}
+	if result.Bytes != file.Size {
+		return nil, fmt.Errorf("repository file size mismatch: expected %d, got %d", file.Size, result.Bytes)
+	}
+	data, err := os.ReadFile(destination)
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func classifyStatus(resp *http.Response) error {

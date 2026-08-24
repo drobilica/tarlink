@@ -159,6 +159,12 @@ type BlockerService interface {
 	CapabilityPreflight(string) ([]research.CapabilityResult, error)
 }
 
+// RegistryIconService exposes the explicit maintainer workflow for auditing
+// and repairing missing registry icons.
+type RegistryIconService interface {
+	RegistryIcons(context.Context, RegistryIconOptions) (RegistryIconReport, error)
+}
+
 // PathConflict is an alias for integration.PathConflict, exposed through the
 // service API to keep the UI-independent boundary stable.
 type PathConflict = integration.PathConflict

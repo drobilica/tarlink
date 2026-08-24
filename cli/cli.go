@@ -59,6 +59,7 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry inspect --file <repositories.yaml> [--json]
   tarlink registry candidates [--changed] [--json]
   tarlink registry blockers [--capability <capability>] [--json]
+  tarlink registry icons <path> [--app <id>] [--fix] [--json]
 `
 
 var commandHelp = map[string]string{
@@ -83,6 +84,7 @@ var registryCommandHelp = map[string]string{
 	"provenance": "usage: tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]",
 	"inspect":    "usage: tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]",
 	"candidates": "usage: tarlink registry candidates [--changed] [--json]", "blockers": "usage: tarlink registry blockers [--capability <capability>] [--json]",
+	"icons": "usage: tarlink registry icons <path> [--app <id>] [--fix] [--json]",
 }
 
 type Runner struct {
@@ -338,7 +340,32 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			}
 			break
 		}
-		return r.invalid("usage: tarlink registry <validate|freshness|provenance|inspect|candidates|blockers> ...")
+		if arguments[1] == "icons" {
+			options, jsonOutput, parseErr := registryIconArguments(arguments[2:])
+			if parseErr != nil {
+				return r.invalid(registryCommandHelp["icons"])
+			}
+			service, ok := r.Service.(app.RegistryIconService)
+			if !ok {
+				return r.fail(errors.New("registry icon maintenance is unavailable"))
+			}
+			var report app.RegistryIconReport
+			report, err = service.RegistryIcons(ctx, options)
+			if err == nil {
+				if jsonOutput {
+					err = writeJSON(r.Stdout, report)
+				} else {
+					for _, result := range report.Results {
+						_, err = fmt.Fprintf(r.Stdout, "%-24s %-8s %s\n", result.App, result.Status, result.Error)
+						if err != nil {
+							break
+						}
+					}
+				}
+			}
+			break
+		}
+		return r.invalid("usage: tarlink registry <validate|freshness|provenance|inspect|candidates|blockers|icons> ...")
 	case "refresh":
 		if len(arguments) != 1 {
 			return r.invalid("usage: tarlink refresh")
@@ -708,6 +735,31 @@ func blockerArguments(a []string) (string, bool, error) {
 		}
 	}
 	return capability, jsonOut, nil
+}
+
+func registryIconArguments(arguments []string) (app.RegistryIconOptions, bool, error) {
+	if len(arguments) == 0 || strings.HasPrefix(arguments[0], "--") {
+		return app.RegistryIconOptions{}, false, errors.New("path required")
+	}
+	options := app.RegistryIconOptions{Root: arguments[0]}
+	jsonOutput := false
+	for i := 1; i < len(arguments); i++ {
+		switch arguments[i] {
+		case "--fix":
+			options.Fix = true
+		case "--json":
+			jsonOutput = true
+		case "--app":
+			if i+1 >= len(arguments) || strings.HasPrefix(arguments[i+1], "--") {
+				return app.RegistryIconOptions{}, false, errors.New("app required")
+			}
+			options.App = arguments[i+1]
+			i++
+		default:
+			return app.RegistryIconOptions{}, false, errors.New("unknown option")
+		}
+	}
+	return options, jsonOutput, nil
 }
 func batchInspectArguments(a []string) (string, bool, error) {
 	if len(a) == 0 {

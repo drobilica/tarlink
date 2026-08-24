@@ -68,6 +68,12 @@ Registry updates must use authoritative upstream HTTPS release and checksum-sour
 
 Platform availability is explicit. The client resolves its exact `GOOS`/`GOARCH` pair and fails when that variant is absent; it never substitutes another platform. For example, Blender is amd64-only when upstream has no Linux arm64 release, while Godot may publish both variants. Keep shared metadata identical across an application's platform manifests.
 
+For icon coverage, use `tarlink registry icons . --fix` before normal registry
+validation. Review unresolved candidates manually. Icons remain
+limited to an archive-contained path or a verified HTTPS PNG with its exact
+lowercase SHA-256; validate the resulting registry with
+`tarlink registry validate .`.
+
 ## Review expectations
 
 Reviewers should check path containment, symlink behavior, resource bounds, cancellation, atomicity, and deterministic output. A change that broadens the trust boundary needs an explicit design proposal before implementation.
