@@ -110,6 +110,7 @@ Registry validation tooling must reuse TarLink's production Go download, checksu
 * Artifact materialization targets only new or materially changed artifacts.
 * Registry checks must never execute third-party application binaries.
 * Full-registry artifact audits are explicit and are not a default per-change requirement.
+* When adding or modifying a desktop-enabled application, run `tarlink registry icons <registry-path>` first, then use `--fix` when explicitly repairing missing icons. Prefer this deterministic tooling over repeated manual GitHub icon research; investigate only unresolved or ambiguous cases, then run normal registry validation. It must not approve icon sources, execute application binaries, or widen the manifest icon trust contract.
 
 Security-sensitive changes require focused success, hostile-input, and failure-path tests plus a short explanation of the affected trust boundary.
 
