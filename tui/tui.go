@@ -34,6 +34,7 @@ const (
 	screenUpgrade
 	screenInstallConfirm
 	screenInstallChannel
+	screenUninstallConflictConfirm
 )
 
 type applicationFilter uint8
@@ -83,6 +84,7 @@ type operationMsg struct {
 	next         screen
 	move         bool
 	clearUpgrade bool
+	conflict     *app.UninstallConflict
 }
 
 type progressMsg struct {
@@ -142,6 +144,7 @@ type model struct {
 	upgradeAvailable    bool
 	cancel              context.CancelFunc
 	opCancel            context.CancelFunc
+	uninstallConflict   *app.UninstallConflict
 }
 
 // Run starts the terminal renderer. All application changes are delegated to
@@ -244,6 +247,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.resetProgress()
 		m.opCancel = nil
 		m.err = message.err
+		m.uninstallConflict = message.conflict
 		m.status = message.message
 		if errors.Is(message.err, context.Canceled) {
 			m.err = nil
@@ -396,6 +400,21 @@ func (m model) bodyLines() []string {
 			lines = append(lines, "")
 			add("Application files and desktop integration will be removed.")
 			add("User-owned application data will not be touched.")
+		}
+		if m.uninstallConflict != nil {
+			lines = append(lines, "")
+			add("Uninstall could not continue because this expected integration file was modified or replaced:")
+			add(m.uninstallConflict.Path)
+		}
+	case screenUninstallConflictConfirm:
+		if m.uninstallConflict != nil {
+			add("Remove conflicting integration file?")
+			lines = append(lines, "")
+			add(m.uninstallConflict.Path)
+			lines = append(lines, "")
+			add("This file no longer matches what TarLink installed.")
+			add("TarLink will remove this exact integration entry.")
+			add("This is necessary to continue uninstalling.")
 		}
 	case screenUpgrade:
 		add("TarLink")
@@ -724,7 +743,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.clearFeedback()
 		if m.screen == screenInstallChannel {
 			m.screen = screenDetails
-		} else if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm {
+		} else if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm || m.screen == screenUninstallConflictConfirm {
 			m.screen = m.confirmationTarget()
 			m.confirmSet = false
 			if m.screen != screenDetails {
@@ -783,9 +802,20 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 			if id := m.selectedID(); id != "" && m.selectedInstalled() {
+				m.uninstallConflict = nil
 				m.busy = "Uninstalling"
 				m.startOperation()
 				cmd, cancel := m.uninstallCmd(id)
+				m.opCancel = cancel
+				return m, cmd
+			}
+			return m, nil
+		}
+		if m.screen == screenUninstallConflictConfirm {
+			if m.uninstallConflict != nil {
+				m.busy = "Removing conflicting file"
+				m.startOperation()
+				cmd, cancel := m.removeUninstallConflictCmd(*m.uninstallConflict)
 				m.opCancel = cancel
 				return m, cmd
 			}
@@ -863,6 +893,12 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.confirmTo = m.screen
 			m.confirmSet = true
 			m.screen = screenUninstall
+		}
+	case m.matchesAction(message, actionRemoveConflict):
+		if m.screen == screenUninstall && m.uninstallConflict != nil {
+			m.confirmTo = screenUninstall
+			m.confirmSet = true
+			m.screen = screenUninstallConflictConfirm
 		}
 	}
 	m.clampSelection()
@@ -1226,7 +1262,37 @@ func (m model) uninstallCmd(id string) (tea.Cmd, context.CancelFunc) {
 		if next == screenVersions {
 			next = screenDetails
 		}
-		return operationMsg{message: "Uninstalled " + id, next: next, move: true}, err
+		result := operationMsg{message: "Uninstalled " + id, next: next, move: true}
+		var typed *app.UninstallConflictError
+		if errors.As(err, &typed) {
+			conflict := typed.Conflict
+			result.conflict = &conflict
+		}
+		return result, err
+	})
+}
+
+func (m model) removeUninstallConflictCmd(conflict app.UninstallConflict) (tea.Cmd, context.CancelFunc) {
+	recovery, ok := m.service.(app.UninstallRecoveryService)
+	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
+		if !ok {
+			return operationMsg{}, errors.New("uninstall conflict recovery is unavailable")
+		}
+		if err := recovery.RemoveUninstallConflict(ctx, conflict.AppID, conflict.Path); err != nil {
+			return operationMsg{}, err
+		}
+		err := m.service.Uninstall(ctx, conflict.AppID, sink)
+		next := m.confirmationTarget()
+		if next == screenVersions {
+			next = screenDetails
+		}
+		result := operationMsg{message: "Uninstalled " + conflict.AppID, next: next, move: true}
+		var typed *app.UninstallConflictError
+		if errors.As(err, &typed) {
+			nextConflict := typed.Conflict
+			result.conflict = &nextConflict
+		}
+		return result, err
 	})
 }
 

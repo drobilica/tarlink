@@ -96,6 +96,77 @@ type Paths struct {
 	IconFile     string
 }
 
+// RemovalConflicts returns only expected integration entries whose ownership
+// validation failed. Non-ownership failures are returned unchanged so callers
+// cannot turn an ordinary ownership failure into a recovery action.
+func RemovalConflicts(spec Spec) ([]string, error) {
+	paths := ExpectedPaths(spec)
+	var conflicts []string
+	check := func(path string, validate func(string) error) error {
+		if path == "" {
+			return nil
+		}
+		if err := validateIntegrationParent(path); err != nil {
+			return err
+		}
+		if err := validate(path); err != nil {
+			if errors.Is(err, ErrConflict) {
+				conflicts = append(conflicts, path)
+				return nil
+			}
+			return err
+		}
+		return nil
+	}
+	for _, executable := range paths.Executables {
+		if err := check(executable.Link, func(path string) error { return validateSymlinkForRemoval(path, executable.Target) }); err != nil {
+			return nil, err
+		}
+	}
+	if spec.DesktopEnabled {
+		if err := check(paths.DesktopEntry, func(path string) error { return validateDesktopForRemoval(path, spec.ID, spec.DesktopSHA256) }); err != nil {
+			return nil, err
+		}
+	}
+	if spec.Icon != "" {
+		if err := check(paths.IconFile, func(path string) error { return validateIconForRemoval(path, spec.IconSHA256) }); err != nil {
+			return nil, err
+		}
+	}
+	return conflicts, nil
+}
+
+// RemoveConflict removes one explicitly confirmed, expected integration
+// entry. The path must be one of the canonical paths derived from spec; it is
+// never treated as an arbitrary filesystem deletion request.
+func RemoveConflict(spec Spec, path string) error {
+	paths := ExpectedPaths(spec)
+	validator := func(string) error { return fmt.Errorf("%w: unexpected integration path", ErrConflict) }
+	matched := false
+	for _, executable := range paths.Executables {
+		if path == executable.Link {
+			matched = true
+			validator = func(value string) error { return validateSymlinkForRemoval(value, executable.Target) }
+			break
+		}
+	}
+	if !matched && path == paths.DesktopEntry && spec.DesktopEnabled {
+		matched = true
+		validator = func(value string) error { return validateDesktopForRemoval(value, spec.ID, spec.DesktopSHA256) }
+	}
+	if !matched && path == paths.IconFile && spec.Icon != "" {
+		matched = true
+		validator = func(value string) error { return validateIconForRemoval(value, spec.IconSHA256) }
+	}
+	if !matched {
+		return fmt.Errorf("%w: path is not an expected integration entry", ErrConflict)
+	}
+	if err := validateIntegrationParent(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return detachConflict(path, validator)
+}
+
 type Spec struct {
 	ID                string
 	Name              string
@@ -582,6 +653,52 @@ func RemoveOwned(spec Spec) error {
 		errs = appendIf(errs, detachOwned(paths.IconFile, func(path string) error { return validateIconForRemoval(path, spec.IconSHA256) }))
 	}
 	return errors.Join(errs...)
+}
+
+// detachConflict atomically detaches the selected directory entry before
+// validating it. A symlink is therefore unlinked as a symlink and its target
+// is never traversed. If the entry becomes owned before confirmation, it is
+// restored and not removed.
+func detachConflict(path string, validate func(string) error) error {
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".tarlink-conflict-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		_ = os.Remove(temporaryPath)
+		return err
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		return err
+	}
+	if err := os.Rename(path, temporaryPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	restore := func() error {
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			return os.Rename(temporaryPath, path)
+		}
+		_ = os.Remove(temporaryPath)
+		return fmt.Errorf("integration path changed during conflict recovery")
+	}
+	if err := validate(temporaryPath); err == nil {
+		return restore()
+	} else if !errors.Is(err, ErrConflict) {
+		return errors.Join(err, restore())
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		return errors.Join(err, restore())
+	}
+	return nil
 }
 
 // detachOwned moves the already-validated directory entry to a private

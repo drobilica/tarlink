@@ -192,6 +192,23 @@ type RegistryIconService interface {
 // service API to keep the UI-independent boundary stable.
 type PathConflict = integration.PathConflict
 
+type UninstallConflict struct {
+	AppID string
+	Path  string
+}
+
+type UninstallConflictError struct {
+	Conflict UninstallConflict
+	Err      error
+}
+
+func (e *UninstallConflictError) Error() string { return e.Err.Error() }
+func (e *UninstallConflictError) Unwrap() error { return e.Err }
+
+type UninstallRecoveryService interface {
+	RemoveUninstallConflict(context.Context, string, string) error
+}
+
 type ErrorCode string
 
 const (

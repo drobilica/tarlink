@@ -57,6 +57,7 @@ const (
 	actionVersions
 	actionRollback
 	actionUninstall
+	actionRemoveConflict
 	actionCancel
 	actionQuit
 )
@@ -125,12 +126,18 @@ func (m model) contextualActionPolicy() []contextualAction {
 	if m.searching {
 		return []contextualAction{action(actionEnter, b.Enter, "Enter Search"), action(actionCancel, b.Cancel, "Esc Cancel")}
 	}
-	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm {
+	if m.screen == screenUninstall && m.uninstallConflict != nil {
+		remove := keypkg.NewBinding(keypkg.WithKeys("d"), keypkg.WithHelp("d", "Remove conflicting file"))
+		return []contextualAction{action(actionRemoveConflict, remove, "d Remove conflicting file"), action(actionCancel, b.Cancel, "Esc Cancel"), action(actionQuit, b.Quit, "q Quit")}
+	}
+	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm || m.screen == screenUninstallConflictConfirm {
 		label := "Enter Confirm"
 		if m.screen == screenUpgrade {
 			label = "Enter Upgrade"
 		} else if m.screen == screenInstallConfirm {
 			label = "Enter Install anyway"
+		} else if m.screen == screenUninstallConflictConfirm {
+			label = "Enter Remove file"
 		}
 		return []contextualAction{action(actionEnter, b.Enter, label), action(actionCancel, b.Cancel, "Esc Cancel"), action(actionQuit, b.Quit, "q Quit")}
 	}

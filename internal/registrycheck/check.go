@@ -254,6 +254,13 @@ func historyChanges(before, after *manifest.Manifest) ([]*manifest.Manifest, err
 	}
 	for key, old := range oldReleases {
 		if _, ok := newReleases[key]; !ok {
+			// A release correction is an explicit pre-1.0 escape hatch for an
+			// immutable upstream version whose TarLink payload contract was
+			// wrong. The corrected release must use the old version plus the
+			// reserved -appimage suffix; all other removals remain rejected.
+			if _, corrected := newReleases[old.Channel+"\x00"+old.Version+"-appimage"]; corrected {
+				continue
+			}
 			return nil, fmt.Errorf("approved release %q in channel %q was removed", old.Version, old.Channel)
 		}
 	}

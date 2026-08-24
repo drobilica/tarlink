@@ -354,3 +354,19 @@ func TestChangedRejectsHistoricalReleaseMutationOrRemoval(t *testing.T) {
 		t.Fatal("removed approved release unexpectedly accepted")
 	}
 }
+
+func TestChangedAcceptsExplicitAppImageReleaseCorrection(t *testing.T) {
+	oldRoot := writeCheckerRegistry(t, checkerManifest)
+	corrected := strings.Replace(checkerManifest, `current: "1.0"`, `current: "1.0-appimage"`, 1)
+	corrected = strings.Replace(corrected, `version: "1.0"`, `version: "1.0-appimage"`, 1)
+	corrected = strings.Replace(corrected, "https://example.com/fixture.tar.gz", "https://example.com/fixture.AppImage", 1)
+	corrected = strings.Replace(corrected, "archive: tar.gz", "archive: appimage", 1)
+	corrected = strings.Replace(corrected, "path: fixture", "path: appimage", 1)
+	selection, err := Changed(writeCheckerRegistry(t, corrected), oldRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selection.Items) != 1 || selection.Items[0].Release.Version != "1.0-appimage" {
+		t.Fatalf("correction selection = %#v", selection.Items)
+	}
+}

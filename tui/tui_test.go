@@ -14,24 +14,26 @@ import (
 )
 
 type fakeService struct {
-	applications     []app.Application
-	installedValues  []app.Application
-	rolledBack       string
-	installedID      string
-	uninstalled      string
-	uninstallErr     error
-	installProgress  []app.Progress
-	tarlinkVersion   app.TarLinkVersion
-	blockOnCancel    bool
-	installStarted   chan struct{}
-	installCanceled  chan struct{}
-	blockSearch      bool
-	searchStarted    chan struct{}
-	searchCanceled   chan struct{}
-	blockVersions    bool
-	versionsStarted  chan struct{}
-	versionsCanceled chan struct{}
-	pathConflicts    []app.PathConflict
+	applications      []app.Application
+	installedValues   []app.Application
+	rolledBack        string
+	installedID       string
+	uninstalled       string
+	uninstallErr      error
+	uninstallConflict *app.UninstallConflict
+	recoveredConflict *app.UninstallConflict
+	installProgress   []app.Progress
+	tarlinkVersion    app.TarLinkVersion
+	blockOnCancel     bool
+	installStarted    chan struct{}
+	installCanceled   chan struct{}
+	blockSearch       bool
+	searchStarted     chan struct{}
+	searchCanceled    chan struct{}
+	blockVersions     bool
+	versionsStarted   chan struct{}
+	versionsCanceled  chan struct{}
+	pathConflicts     []app.PathConflict
 }
 
 // waitForCancel blocks until ctx is cancelled, signalling started/canceled via
@@ -125,6 +127,10 @@ func (f *fakeService) UpdateAll(context.Context, app.ProgressSink) (app.UpdateAl
 }
 func (f *fakeService) Uninstall(_ context.Context, id string, _ app.ProgressSink) error {
 	f.uninstalled = id
+	if f.uninstallConflict != nil {
+		conflict := *f.uninstallConflict
+		return &app.UninstallConflictError{Conflict: conflict, Err: errors.New("integration conflict")}
+	}
 	if f.uninstallErr != nil {
 		return f.uninstallErr
 	}
@@ -141,6 +147,12 @@ func (f *fakeService) Uninstall(_ context.Context, id string, _ app.ProgressSink
 			break
 		}
 	}
+	return nil
+}
+
+func (f *fakeService) RemoveUninstallConflict(_ context.Context, appID, path string) error {
+	f.recoveredConflict = &app.UninstallConflict{AppID: appID, Path: path}
+	f.uninstallConflict = nil
 	return nil
 }
 func (f *fakeService) UninstallAll(context.Context, app.ProgressSink) error {
@@ -781,6 +793,41 @@ func TestUninstallReportsErrorsWithoutLeavingConfirmation(t *testing.T) {
 	modelAfterError := updated.(model)
 	if command != nil || modelAfterError.screen != screenUninstall || !strings.Contains(modelAfterError.View().Content, "permission denied") {
 		t.Fatalf("uninstall error was not shown on confirmation screen: model=%#v command=%v", modelAfterError, command)
+	}
+}
+
+func TestUninstallConflictOffersNarrowRecoveryAndRetries(t *testing.T) {
+	conflict := &app.UninstallConflict{AppID: "blender", Path: "/tmp/applications/tarlink-blender.desktop"}
+	service := &fakeService{
+		applications:      []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}},
+		uninstallConflict: conflict,
+	}
+	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications}
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ = updated.(model).Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if command == nil {
+		t.Fatal("uninstall did not start")
+	}
+	operation := command()
+	updated, command = updated.(model).Update(operation)
+	modelAfterConflict := updated.(model)
+	if command != nil || modelAfterConflict.uninstallConflict == nil || !strings.Contains(modelAfterConflict.View().Content, conflict.Path) || !strings.Contains(modelAfterConflict.footer(), "d Remove conflicting file") {
+		t.Fatalf("conflict recovery was not presented: %#v", modelAfterConflict)
+	}
+	updated, command = modelAfterConflict.Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	if command != nil || updated.(model).screen != screenUninstallConflictConfirm {
+		t.Fatalf("recovery confirmation did not open: %#v", updated)
+	}
+	cancelled, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if command != nil || cancelled.(model).screen != screenUninstall || service.recoveredConflict != nil {
+		t.Fatalf("recovery cancellation changed state: %#v", cancelled)
+	}
+	updated, _ = cancelled.(model).Update(tea.KeyPressMsg{Code: 'd', Text: "d"})
+	updated, command = updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	operation = command()
+	if operation.(operationMsg).err != nil || service.recoveredConflict == nil {
+		t.Fatalf("confirmed recovery failed: %#v", operation)
 	}
 }
 

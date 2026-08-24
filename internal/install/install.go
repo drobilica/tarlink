@@ -31,6 +31,16 @@ var (
 	ErrConflict         = errors.New("unexpected filesystem conflict")
 )
 
+type UninstallConflictError struct {
+	Path string
+}
+
+func (e *UninstallConflictError) Error() string {
+	return fmt.Sprintf("integration path is occupied by a non-TarLink file: %s", e.Path)
+}
+
+func (e *UninstallConflictError) Unwrap() error { return integration.ErrConflict }
+
 const (
 	// remoteIconFile is the reserved relative path where a verified remote
 	// desktop icon is retained inside each version payload so activation,
@@ -323,6 +333,13 @@ func (manager *Manager) uninstallUnlocked(ctx context.Context, appID string, pro
 	if err != nil {
 		return err
 	}
+	conflicts, err := integration.RemovalConflicts(spec)
+	if err != nil {
+		return err
+	}
+	if len(conflicts) > 0 {
+		return &UninstallConflictError{Path: conflicts[0]}
+	}
 	if err := integration.ValidateOwnedForRemoval(spec); err != nil {
 		return err
 	}
@@ -346,6 +363,31 @@ func (manager *Manager) uninstallUnlocked(ctx context.Context, appID string, pro
 	}
 	manager.report(progress, "complete", 0, 0)
 	return nil
+}
+
+func (manager *Manager) RemoveUninstallConflict(ctx context.Context, appID, path string) error {
+	return manager.WithLifecycle(ctx, func() error {
+		lock, err := manager.lock(ctx, appID)
+		if err != nil {
+			return err
+		}
+		defer lock.Release()
+		installed, err := state.LoadForApp(manager.Layout, appID)
+		if os.IsNotExist(err) {
+			return ErrNotInstalled
+		}
+		if err != nil {
+			return err
+		}
+		if err := installed.ValidateForLayout(manager.Layout); err != nil {
+			return err
+		}
+		spec, err := manager.integrationSpec(installed, "", nil)
+		if err != nil {
+			return err
+		}
+		return integration.RemoveConflict(spec, path)
+	})
 }
 
 func (manager *Manager) UninstallLocked(ctx context.Context, appID string, progress Progress) error {
