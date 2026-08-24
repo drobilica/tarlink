@@ -158,7 +158,13 @@ func (m model) contextualActionPolicy() []contextualAction {
 	}
 	if m.isListScreen() {
 		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, "Open")}
-		if m.screen == screenAvailable {
+		if len(m.selectedIDs) > 0 && m.screen == screenAvailable {
+			toggle := keypkg.NewBinding(keypkg.WithKeys(" "))
+			actions = append(actions, action(actionFilter, toggle, "Space Toggle"), action(actionInstalled, b.Installed, "i Install selected"))
+		} else if len(m.selectedIDs) > 0 && m.screen == screenInstalled {
+			toggle := keypkg.NewBinding(keypkg.WithKeys(" "))
+			actions = append(actions, action(actionFilter, toggle, "Space Toggle"), action(actionUpdates, b.Updates, "u Uninstall selected"))
+		} else if m.screen == screenAvailable {
 			filter := keypkg.NewBinding(keypkg.WithKeys("left", "right"))
 			actions = append(actions, action(actionFilter, filter, "←/→ Filter"), action(actionSearch, b.Search, "/ Search"), action(actionInstalled, b.Installed, "i Installed"), action(actionUpdates, b.Updates, "u Updates"))
 		} else if m.screen == screenInstalled {

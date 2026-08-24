@@ -75,6 +75,11 @@ and can be refreshed explicitly with `tarlink refresh`. `tarlink list` shows the
 available catalog with installed state; use `--installed` or `--updates` to
 filter it.
 
+In the TUI, `Space` selects applications by ID. Available-app selections can be
+installed with `i`, and installed-app selections can be uninstalled with `u`;
+both operations show a complete confirmation set. Batch installs freeze each
+application's default channel and current version before mutation.
+
 ## Applications
 
 The live catalog is maintained in the [official TarLink registry](https://github.com/drobilica/tarlink-registry),

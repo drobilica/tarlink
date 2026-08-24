@@ -54,8 +54,31 @@ const (
 type Progress struct {
 	Stage      ProgressStage `json:"stage"`
 	AppID      string        `json:"app_id,omitempty"`
+	Item       int           `json:"item,omitempty"`
+	Total      int           `json:"total,omitempty"`
 	BytesDone  int64         `json:"bytes_done,omitempty"`
 	BytesTotal int64         `json:"bytes_total,omitempty"`
+}
+
+type BatchTarget struct {
+	AppID   string `json:"app_id"`
+	Name    string `json:"name"`
+	Channel string `json:"channel"`
+	Version string `json:"version"`
+}
+
+type BatchResult struct {
+	Completed []Result          `json:"completed"`
+	Failed    map[string]string `json:"failed"`
+	Canceled  bool              `json:"canceled,omitempty"`
+}
+
+// BatchService is optional on the presentation service boundary so existing
+// integrations can continue to provide the single-application API.
+type BatchService interface {
+	ResolveInstallBatch(context.Context, []string) ([]BatchTarget, error)
+	InstallBatch(context.Context, []string, ProgressSink) (BatchResult, error)
+	UninstallBatch(context.Context, []string, ProgressSink) (BatchResult, error)
 }
 
 type ProgressSink func(Progress)

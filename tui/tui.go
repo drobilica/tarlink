@@ -72,6 +72,11 @@ type pathCheckMsg struct {
 	err       error
 }
 
+type batchResolveMsg struct {
+	targets []app.BatchTarget
+	err     error
+}
+
 type operationMsg struct {
 	message      string
 	err          error
@@ -110,6 +115,10 @@ type model struct {
 	applicationFilter   applicationFilter
 	versions            []app.Version
 	selected            int
+	selectedIDs         map[string]bool
+	batchIDs            []string
+	batchTargets        []app.BatchTarget
+	batchUninstall      bool
 	channelSelected     int
 	channels            []string
 	listOffset          int
@@ -191,6 +200,16 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.startInstall(m.installSelector(message.appID))
+	case batchResolveMsg:
+		m.busy = ""
+		m.opCancel = nil
+		if message.err != nil {
+			m.err = message.err
+			return m, nil
+		}
+		m.batchTargets = message.targets
+		m.screen = screenInstallConfirm
+		return m, nil
 	case searchMsg:
 		m.busy = ""
 		m.opCancel = nil
@@ -229,6 +248,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if errors.Is(message.err, context.Canceled) {
 			m.err = nil
 			m.status = "Operation cancelled"
+			m.batchIDs, m.batchTargets = nil, nil
+			m.selectedIDs = nil
 			return m, nil
 		}
 		if message.err != nil {
@@ -244,6 +265,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.screen != screenDetails {
 				m.detail = nil
 			}
+			m.batchIDs, m.batchTargets = nil, nil
+			m.selectedIDs = nil
 		}
 		return m, m.loadCmd()
 	case progressMsg:
@@ -332,7 +355,7 @@ func (m model) bodyLines() []string {
 			lines = append(lines, "")
 		}
 		values := m.visibleApplications()
-		writeApplicationLines(&lines, values, m.selected, m.listOffset, m.listRows(), m.width, m.theme, m.screen == screenUpdates)
+		writeApplicationLinesWithSelection(&lines, values, m.selected, m.listOffset, m.listRows(), m.width, m.theme, m.screen == screenUpdates, m.selectedIDs)
 	case screenDetails:
 		if m.detail != nil {
 			add(m.style(m.detail.Name, accent))
@@ -358,6 +381,14 @@ func (m model) bodyLines() []string {
 			add("Roll back from " + m.detail.InstalledVersion + " to the retained previous version?")
 		}
 	case screenUninstall:
+		if len(m.batchIDs) > 0 {
+			add(fmt.Sprintf("Uninstall %d applications?", len(m.batchIDs)))
+			lines = append(lines, "")
+			for _, id := range m.batchIDs {
+				add("- " + id)
+			}
+			break
+		}
 		if m.detail != nil {
 			add(m.detail.Name)
 			lines = append(lines, "")
@@ -371,6 +402,14 @@ func (m model) bodyLines() []string {
 		lines = append(lines, "")
 		add("Upgrade from " + m.tarlinkVersion.Current + " to " + m.tarlinkVersion.Latest + "?")
 	case screenInstallConfirm:
+		if len(m.batchTargets) > 0 {
+			add(fmt.Sprintf("Install %d applications?", len(m.batchTargets)))
+			lines = append(lines, "")
+			for _, target := range m.batchTargets {
+				add(fmt.Sprintf("%-24s %s %s", target.Name, target.Channel, target.Version))
+			}
+			break
+		}
 		if m.detail != nil {
 			add(m.detail.Name)
 			lines = append(lines, "")
@@ -602,6 +641,30 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.isListScreen() && pressed == " " {
+		visible := m.visibleApplications()
+		if len(visible) > 0 && m.selected < len(visible) {
+			if m.selectedIDs == nil {
+				m.selectedIDs = map[string]bool{}
+			}
+			id := visible[m.selected].ID
+			if m.selectedIDs[id] {
+				delete(m.selectedIDs, id)
+			} else {
+				m.selectedIDs[id] = true
+			}
+		}
+		return m, nil
+	}
+	if m.screen == screenAvailable && len(m.selectedIDs) > 0 && pressed == "i" {
+		return m.startBatchInstall()
+	}
+	if m.screen == screenInstalled && len(m.selectedIDs) > 0 && pressed == "u" {
+		m.batchIDs = m.selectedIDsInOrder(m.installed)
+		m.batchUninstall = true
+		m.confirmTo, m.confirmSet, m.screen = screenInstalled, true, screenUninstall
+		return m, nil
+	}
 	switch {
 	case m.matchesAction(message, actionUpgrade):
 		if m.upgradeAvailable {
@@ -709,6 +772,13 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.screen == screenUninstall {
+			if len(m.batchIDs) > 0 {
+				m.busy = "Uninstalling selected applications"
+				m.startOperation()
+				cmd, cancel := m.batchUninstallCmd(m.batchIDs)
+				m.opCancel = cancel
+				return m, cmd
+			}
 			if id := m.selectedID(); id != "" && m.selectedInstalled() {
 				m.busy = "Uninstalling"
 				m.startOperation()
@@ -719,6 +789,13 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.screen == screenInstallConfirm {
+			if len(m.batchTargets) > 0 {
+				m.busy = "Installing selected applications"
+				m.startOperation()
+				cmd, cancel := m.batchInstallCmd(m.batchIDs)
+				m.opCancel = cancel
+				return m, cmd
+			}
 			if id := m.selectedID(); id != "" {
 				m.busy = "Installing " + id
 				m.startOperation()
@@ -876,6 +953,42 @@ func (m model) startInstall(id string) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m model) startBatchInstall() (tea.Model, tea.Cmd) {
+	service, ok := m.service.(app.BatchService)
+	if !ok {
+		m.err = errors.New("batch operations are unavailable")
+		return m, nil
+	}
+	m.batchIDs = m.selectedIDsInOrder(m.available)
+	m.busy = "Resolving selected applications"
+	cmd, cancel := m.cancellableCmd(func(ctx context.Context) tea.Msg {
+		targets, err := service.ResolveInstallBatch(ctx, m.batchIDs)
+		return batchResolveMsg{targets: targets, err: err}
+	}, batchResolveMsg{err: context.Canceled})
+	m.opCancel = cancel
+	return m, cmd
+}
+
+func (m model) selectedIDsInOrder(values []app.Application) []string {
+	result := make([]string, 0, len(m.selectedIDs))
+	seen := map[string]bool{}
+	for _, value := range values {
+		if m.selectedIDs[value.ID] {
+			result = append(result, value.ID)
+			seen[value.ID] = true
+		}
+	}
+	hidden := make([]string, 0)
+	for id := range m.selectedIDs {
+		if !seen[id] {
+			hidden = append(hidden, id)
+		}
+	}
+	sort.Strings(hidden)
+	result = append(result, hidden...)
+	return result
+}
+
 func (m model) pathCheckCmd(id string) (tea.Cmd, context.CancelFunc) {
 	return m.cancellableCmd(func(ctx context.Context) tea.Msg {
 		conflicts, err := m.service.CheckInstallPath(id)
@@ -930,6 +1043,14 @@ func (m model) installCmd(id string) (tea.Cmd, context.CancelFunc) {
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
 		result, err := m.service.Install(ctx, id, sink)
 		return operationMsg{message: resultMessage("Installed", result)}, err
+	})
+}
+
+func (m model) batchInstallCmd(ids []string) (tea.Cmd, context.CancelFunc) {
+	service := m.service.(app.BatchService)
+	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
+		result, err := service.InstallBatch(ctx, ids, sink)
+		return operationMsg{message: batchMessage("Installed", result), move: true, next: screenAvailable}, err
 	})
 }
 
@@ -1104,6 +1225,22 @@ func (m model) uninstallCmd(id string) (tea.Cmd, context.CancelFunc) {
 		}
 		return operationMsg{message: "Uninstalled " + id, next: next, move: true}, err
 	})
+}
+
+func (m model) batchUninstallCmd(ids []string) (tea.Cmd, context.CancelFunc) {
+	service := m.service.(app.BatchService)
+	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
+		result, err := service.UninstallBatch(ctx, ids, sink)
+		return operationMsg{message: batchMessage("Uninstalled", result), move: true, next: screenInstalled}, err
+	})
+}
+
+func batchMessage(verb string, result app.BatchResult) string {
+	message := fmt.Sprintf("%s: %d", verb, len(result.Completed))
+	if len(result.Failed) > 0 {
+		message += fmt.Sprintf(" · Failed: %d", len(result.Failed))
+	}
+	return message
 }
 
 func (m model) confirmationTarget() screen {
@@ -1303,6 +1440,10 @@ func writeApplications(destination *strings.Builder, values []app.Application, s
 }
 
 func writeApplicationLines(destination *[]string, values []app.Application, selected, offset, rows, width int, theme tuiTheme, updatesTable bool) {
+	writeApplicationLinesWithSelection(destination, values, selected, offset, rows, width, theme, updatesTable, nil)
+}
+
+func writeApplicationLinesWithSelection(destination *[]string, values []app.Application, selected, offset, rows, width int, theme tuiTheme, updatesTable bool, selectedIDs map[string]bool) {
 	if updatesTable {
 		*destination = append(*destination, applicationColumns(width, true))
 	} else {
@@ -1316,6 +1457,13 @@ func writeApplicationLines(destination *[]string, values []app.Application, sele
 	for index := offset; index < end; index++ {
 		value := values[index]
 		marker := "  "
+		if selectedIDs != nil {
+			if selectedIDs[value.ID] {
+				marker = "[x] "
+			} else {
+				marker = "[ ] "
+			}
+		}
 		if index == selected {
 			marker = "> "
 		}
@@ -1505,6 +1653,9 @@ func (m model) progressLine() string {
 		return m.style(stage, success)
 	}
 	line := stage
+	if m.progress.Item > 0 && m.progress.Total > 0 && m.progress.AppID != "" {
+		line = fmt.Sprintf("%s %d/%d · %s", stage, m.progress.Item, m.progress.Total, m.progress.AppID)
+	}
 	if m.progress.BytesTotal > 0 {
 		done := m.progress.BytesDone
 		if done < 0 {
