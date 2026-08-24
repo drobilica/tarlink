@@ -1,9 +1,12 @@
 package tui
 
 import (
+	"strings"
+
 	"charm.land/bubbles/v2/help"
 	keypkg "charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/progress"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
 
@@ -38,6 +41,30 @@ type tuiKeyMap struct {
 	Up, Down, Left, Right, Enter, Search, Installed, Updates keypkg.Binding
 	Upgrade, Versions, Rollback, Uninstall                   keypkg.Binding
 	Cancel, Quit, CtrlC                                      keypkg.Binding
+}
+
+type contextualActionID uint8
+
+const (
+	actionUp contextualActionID = iota
+	actionDown
+	actionFilter
+	actionEnter
+	actionSearch
+	actionInstalled
+	actionUpdates
+	actionUpgrade
+	actionVersions
+	actionRollback
+	actionUninstall
+	actionCancel
+	actionQuit
+)
+
+type contextualAction struct {
+	id      contextualActionID
+	binding keypkg.Binding
+	label   string
 }
 
 func newKeyMap() tuiKeyMap {
@@ -82,6 +109,84 @@ func (m model) keyMap() tuiKeyMap {
 	return b
 }
 
+// contextualActionPolicy is the sole source of truth for actions exposed by
+// the footer and accepted by the keyboard. Busy and search states are
+// intentionally exclusive so background operations cannot receive shortcuts.
+func (m model) contextualActionPolicy() []contextualAction {
+	b := newKeyMap()
+	action := func(id contextualActionID, binding keypkg.Binding, label string) contextualAction {
+		return contextualAction{id: id, binding: binding, label: label}
+	}
+	if m.busy != "" {
+		cancel := b.Cancel
+		cancel.SetHelp("Esc", "Cancel")
+		return []contextualAction{action(actionCancel, cancel, "Esc Cancel"), action(actionQuit, b.Quit, "q Quit")}
+	}
+	if m.searching {
+		return []contextualAction{action(actionEnter, b.Enter, "Enter Search"), action(actionCancel, b.Cancel, "Esc Cancel")}
+	}
+	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm {
+		label := "Enter Confirm"
+		if m.screen == screenUpgrade {
+			label = "Enter Upgrade"
+		} else if m.screen == screenInstallConfirm {
+			label = "Enter Install anyway"
+		}
+		return []contextualAction{action(actionEnter, b.Enter, label), action(actionCancel, b.Cancel, "Esc Cancel"), action(actionQuit, b.Quit, "q Quit")}
+	}
+	if m.screen == screenInstallChannel {
+		move := keypkg.NewBinding(keypkg.WithKeys("up", "down"))
+		return []contextualAction{action(actionUp, move, "↑/↓ Choose"), action(actionEnter, b.Enter, "Enter Select"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
+	}
+	if m.screen == screenDetails {
+		actions := make([]contextualAction, 0, 6)
+		if m.detail != nil {
+			if m.detail.InstalledVersion == "" {
+				actions = append(actions, action(actionEnter, b.Enter, "Enter Install"))
+			} else {
+				if !m.detail.Pinned && m.detail.UpdateAvailable {
+					actions = append(actions, action(actionEnter, b.Enter, "Enter Update"))
+				}
+				actions = append(actions, action(actionVersions, b.Versions, "v Versions"), action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"))
+			}
+		}
+		actions = append(actions, action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit"))
+		return actions
+	}
+	if m.screen == screenVersions {
+		return []contextualAction{action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
+	}
+	if m.isListScreen() {
+		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, "Open")}
+		if m.screen == screenAvailable {
+			filter := keypkg.NewBinding(keypkg.WithKeys("left", "right"))
+			actions = append(actions, action(actionFilter, filter, "←/→ Filter"), action(actionSearch, b.Search, "/ Search"), action(actionInstalled, b.Installed, "i Installed"), action(actionUpdates, b.Updates, "u Updates"))
+		} else if m.screen == screenInstalled {
+			actions = append(actions, action(actionSearch, b.Search, "/ Search"), action(actionUpdates, b.Updates, "u Updates"))
+		} else {
+			actions = append(actions, action(actionSearch, b.Search, "/ Search"), action(actionInstalled, b.Installed, "i Installed"))
+		}
+		if m.screen != screenAvailable {
+			actions = append(actions, action(actionCancel, b.Cancel, "Esc Browse"))
+		}
+		if m.upgradeAvailable {
+			actions = append([]contextualAction{action(actionUpgrade, b.Upgrade, "U Upgrade")}, actions...)
+		}
+		actions = append(actions, action(actionQuit, b.Quit, "q Quit"))
+		return actions
+	}
+	return []contextualAction{action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
+}
+
+func (m model) matchesAction(message tea.KeyPressMsg, id contextualActionID) bool {
+	for _, action := range m.contextualActionPolicy() {
+		if action.id == id && keypkg.Matches(message, action.binding) {
+			return true
+		}
+	}
+	return false
+}
+
 func newHelp(color bool) help.Model {
 	h := help.New()
 	h.ShortSeparator = "  "
@@ -95,37 +200,13 @@ func newHelp(color bool) help.Model {
 }
 
 func (m model) helpView() string {
-	h := m.help
-	if h.ShortSeparator == "" {
-		h.ShortSeparator = "  "
-	}
-	h.SetWidth(viewWidth(m.width))
-	b := m.keyMap()
-	if m.busy != "" {
-		// During an active operation Esc cancels (not "back"); reuse the same
-		// Cancel key binding, just relabeled, alongside q to quit.
-		cancel := b.Cancel
-		cancel.SetHelp("Esc", "Cancel")
-		return h.ShortHelpView([]keypkg.Binding{cancel, b.Quit})
-	}
-	if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm {
-		return h.ShortHelpView([]keypkg.Binding{b.Enter, b.Cancel, b.Quit})
-	}
-	if m.screen == screenDetails || m.screen == screenVersions {
-		return h.ShortHelpView([]keypkg.Binding{b.Cancel, b.Quit})
-	}
-	if m.upgradeAvailable {
-		bindings := []keypkg.Binding{b.Upgrade, b.Up, b.Down, b.Enter, b.Quit}
-		if m.screen == screenAvailable {
-			bindings = []keypkg.Binding{b.Upgrade, b.Up, b.Down, b.Left, b.Enter, b.Quit}
+	labels := make([]string, 0, len(m.contextualActionPolicy()))
+	for _, action := range m.contextualActionPolicy() {
+		if len(labels) == 0 || labels[len(labels)-1] != action.label {
+			labels = append(labels, action.label)
 		}
-		return h.ShortHelpView(bindings)
 	}
-	bindings := []keypkg.Binding{b.Up, b.Down, b.Enter, b.Search, b.Installed, b.Updates, b.Quit}
-	if m.screen == screenAvailable {
-		bindings = []keypkg.Binding{b.Up, b.Down, b.Left, b.Enter, b.Search, b.Installed, b.Updates, b.Quit}
-	}
-	return h.ShortHelpView(bindings)
+	return strings.Join(labels, "  ")
 }
 
 func newProgress(color bool) progress.Model {

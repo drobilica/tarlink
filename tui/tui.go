@@ -281,7 +281,7 @@ func (m model) View() tea.View {
 	}
 	line(m.theme.panel.Render("TarLink"))
 	if m.upgradeAvailable {
-		line(m.style("UPDATE AVAILABLE "+m.tarlinkVersion.Current+" -> "+m.tarlinkVersion.Latest+" [U] (press U to upgrade)", warning))
+		line(m.style("UPDATE AVAILABLE "+m.tarlinkVersion.Current+" -> "+m.tarlinkVersion.Latest, warning))
 	}
 	if m.busy != "" {
 		line(m.style(m.busy+"...", accent))
@@ -347,19 +347,6 @@ func (m model) View() tea.View {
 				line("Requires: Original game data")
 			}
 			line("Homepage: " + m.detail.Homepage)
-			if m.detail.InstalledVersion == "" {
-				body.WriteByte('\n')
-				line("Enter Install   Esc Back   q Quit")
-			} else if m.detail.Pinned {
-				body.WriteByte('\n')
-				line("Pinned — v Versions   r Rollback   x Uninstall   Esc Back   q Quit")
-			} else if m.detail.UpdateAvailable {
-				body.WriteByte('\n')
-				line("Enter Update   v Versions   r Rollback   x Uninstall")
-			} else {
-				body.WriteByte('\n')
-				line("v Versions   r Rollback   x Uninstall   Esc Back   q Quit")
-			}
 		}
 	case screenVersions:
 		line(m.theme.panel.Render("VERSIONS"))
@@ -372,8 +359,6 @@ func (m model) View() tea.View {
 		body.WriteByte('\n')
 		if m.detail != nil {
 			line("Switch " + m.detail.Name + " from " + m.detail.InstalledVersion + " to its retained previous version?")
-			body.WriteByte('\n')
-			line("Enter Confirm   Esc Cancel")
 		}
 	case screenUninstall:
 		line(m.theme.panel.Render("UNINSTALL"))
@@ -382,19 +367,14 @@ func (m model) View() tea.View {
 			line("Remove " + m.detail.Name + " (" + m.detail.ID + ") and its installed files?")
 			body.WriteByte('\n')
 			line("This action cannot be undone.")
-			body.WriteByte('\n')
-			line("Enter Confirm   Esc Cancel")
 		} else {
 			line("No installed application selected.")
-			body.WriteByte('\n')
-			line("Esc Cancel")
 		}
 	case screenUpgrade:
 		line(m.theme.panel.Render("TARLINK UPGRADE"))
 		body.WriteByte('\n')
 		line(m.tarlinkVersion.Current + " → " + m.tarlinkVersion.Latest)
 		body.WriteByte('\n')
-		line("Enter Upgrade   Esc Cancel")
 	case screenInstallConfirm:
 		line(m.theme.panel.Render("INSTALL PATH CONFLICT"))
 		body.WriteByte('\n')
@@ -410,7 +390,6 @@ func (m model) View() tea.View {
 				}
 			}
 			body.WriteByte('\n')
-			line("Enter Install anyway   Esc Cancel")
 		}
 	case screenInstallChannel:
 		line(m.theme.panel.Render("INSTALL CHANNEL"))
@@ -428,10 +407,10 @@ func (m model) View() tea.View {
 				line(row)
 			}
 			body.WriteByte('\n')
-			line("Enter Select   ↑/↓ Choose   Esc Back")
 		}
 	}
 
+	// Keep a visual spacer between screen content and the single-line footer.
 	body.WriteByte('\n')
 	footerContent := footerLines(m.footer(), m.width)
 	if m.height > 0 && len(footerContent) > m.height {
@@ -528,7 +507,7 @@ func (m model) listBounds() (start, rows int) {
 
 func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	pressed := message.String()
-	bindings := m.keyMap()
+	bindings := newKeyMap()
 	if keypkg.Matches(message, bindings.CtrlC) {
 		if m.opCancel != nil {
 			m.opCancel()
@@ -541,9 +520,15 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.searching {
 		switch pressed {
 		case "esc":
+			if !m.matchesAction(message, actionCancel) {
+				return m, nil
+			}
 			m.searching = false
 			return m, nil
 		case "enter":
+			if !m.matchesAction(message, actionEnter) {
+				return m, nil
+			}
 			m.searching = false
 			m.busy = "Searching"
 			cmd, cancel := m.searchCmd()
@@ -566,7 +551,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if keypkg.Matches(message, bindings.Quit) {
+	if m.matchesAction(message, actionQuit) {
 		if m.opCancel != nil {
 			m.opCancel()
 		}
@@ -576,61 +561,65 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	if m.busy != "" {
-		if keypkg.Matches(message, bindings.Cancel) && m.opCancel != nil {
+		if m.matchesAction(message, actionCancel) && m.opCancel != nil {
 			m.opCancel()
 		}
 		return m, nil
 	}
 	switch {
-	case keypkg.Matches(message, bindings.Upgrade):
+	case m.matchesAction(message, actionUpgrade):
 		if m.upgradeAvailable {
 			m.clearFeedback()
 			m.returnTo = m.screen
 			m.confirmSet = false
 			m.screen = screenUpgrade
 		}
-	case keypkg.Matches(message, bindings.Up):
+	case m.matchesAction(message, actionUp):
 		m.clearFeedback()
-		if m.screen == screenInstallChannel {
-			m.moveChannel(-1)
-		} else {
-			m.moveSelection(-1)
+		delta := -1
+		if keypkg.Matches(message, bindings.Down) {
+			delta = 1
 		}
-	case keypkg.Matches(message, bindings.Down):
+		if m.screen == screenInstallChannel {
+			m.moveChannel(delta)
+		} else {
+			m.moveSelection(delta)
+		}
+	case m.matchesAction(message, actionDown):
 		m.clearFeedback()
 		if m.screen == screenInstallChannel {
 			m.moveChannel(1)
 		} else {
 			m.moveSelection(1)
 		}
-	case keypkg.Matches(message, bindings.Left):
+	case m.matchesAction(message, actionFilter) && keypkg.Matches(message, bindings.Left):
 		if m.screen == screenAvailable {
 			m.clearFeedback()
 			m.changeFilter(-1)
 		}
-	case keypkg.Matches(message, bindings.Right):
+	case m.matchesAction(message, actionFilter) && keypkg.Matches(message, bindings.Right):
 		if m.screen == screenAvailable {
 			m.clearFeedback()
 			m.changeFilter(1)
 		}
-	case keypkg.Matches(message, bindings.Search):
+	case m.matchesAction(message, actionSearch):
 		m.clearFeedback()
 		m.screen = screenAvailable
 		m.searching = true
 		m.query = ""
 		m.selected = 0
 		m.listOffset = 0
-	case keypkg.Matches(message, bindings.Installed):
+	case m.matchesAction(message, actionInstalled):
 		m.clearFeedback()
 		m.screen = screenInstalled
 		m.selected = 0
 		m.listOffset = 0
-	case keypkg.Matches(message, bindings.Updates):
+	case m.matchesAction(message, actionUpdates):
 		m.clearFeedback()
 		m.screen = screenUpdates
 		m.selected = 0
 		m.listOffset = 0
-	case keypkg.Matches(message, bindings.Cancel):
+	case m.matchesAction(message, actionCancel):
 		m.clearFeedback()
 		if m.screen == screenInstallChannel {
 			m.screen = screenDetails
@@ -655,7 +644,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenAvailable
 			m.selected = 0
 		}
-	case keypkg.Matches(message, bindings.Enter):
+	case m.matchesAction(message, actionEnter):
 		if m.screen == screenInstallChannel {
 			if m.detail != nil && len(m.channels) > 0 && m.channelSelected < len(m.channels) {
 				m.clearFeedback()
@@ -722,7 +711,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.returnTo = m.screen
 			m.screen = screenDetails
 		}
-	case keypkg.Matches(message, bindings.Versions):
+	case m.matchesAction(message, actionVersions):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.clearFeedback()
 			m.setDetail(id)
@@ -737,7 +726,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.opCancel = cancel
 			return m, cmd
 		}
-	case keypkg.Matches(message, bindings.Rollback):
+	case m.matchesAction(message, actionRollback):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.clearFeedback()
 			m.setDetail(id)
@@ -748,7 +737,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.confirmSet = true
 			m.screen = screenRollback
 		}
-	case keypkg.Matches(message, bindings.Uninstall):
+	case m.matchesAction(message, actionUninstall):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.clearFeedback()
 			m.setDetail(id)
@@ -1256,14 +1245,7 @@ func (m model) listBoundsWithoutRows() (start, rows int) {
 }
 
 func (m model) footer() string {
-	if m.screen == screenInstallChannel {
-		return "↑/↓ Choose  Enter Select  Esc Back  • Click a channel"
-	}
-	footer := m.helpView()
-	if m.isListScreen() && m.busy == "" {
-		footer += "  • Click row to open"
-	}
-	return footer
+	return m.helpView()
 }
 
 func updates(values []app.Application) []app.Application {
@@ -1398,14 +1380,7 @@ func truncate(value string, width int, tail string) string {
 
 func footerLines(value string, width int) []string {
 	width = viewWidth(width)
-	if displaywidth.String(value) <= width {
-		return []string{value}
-	}
-	compact := "↑/↓ Select  Enter  Esc Back  q Quit"
-	if displaywidth.String(compact) <= width {
-		return []string{compact}
-	}
-	return []string{"↑/↓ Select  Enter  Esc Back", "q Quit"}
+	return []string{truncate(value, width, "…")}
 }
 
 func (m model) progressLine() string {

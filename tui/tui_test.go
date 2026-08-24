@@ -248,7 +248,7 @@ func TestTarLinkUpgradeNotificationAndBinding(t *testing.T) {
 	m := model{ctx: context.Background(), service: service, screen: screenAvailable}
 	updated, _ := m.Update(m.checkVersionCmd()())
 	modelAfterCheck := updated.(model)
-	if !modelAfterCheck.upgradeAvailable || !strings.Contains(modelAfterCheck.View().Content, "press U") {
+	if !modelAfterCheck.upgradeAvailable || strings.Contains(modelAfterCheck.View().Content, "press U") || !strings.Contains(modelAfterCheck.footer(), "U Upgrade") {
 		t.Fatal("upgrade notice was not rendered")
 	}
 	updated, command := modelAfterCheck.Update(tea.KeyPressMsg{Text: "U"})
@@ -280,7 +280,7 @@ func TestMouseModeAndRenderedListHitTesting(t *testing.T) {
 	if view.MouseMode != tea.MouseModeCellMotion {
 		t.Fatalf("mouse mode = %v, want cell motion", view.MouseMode)
 	}
-	if !strings.Contains(view.Content, "UPDATE AVAILABLE 0.6.1 -> 0.6.2 [U]") {
+	if !strings.Contains(view.Content, "UPDATE AVAILABLE 0.6.1 -> 0.6.2") || strings.Contains(view.Content, "[U]") {
 		t.Fatalf("update banner missing from view: %q", view.Content)
 	}
 	start, _ := m.listBounds()
@@ -327,10 +327,100 @@ func TestBusyFooterDoesNotExposeNavigationControls(t *testing.T) {
 	}
 }
 
+func TestContextualActionPolicyMatrices(t *testing.T) {
+	tests := []struct {
+		name   string
+		model  model
+		labels []string
+	}{
+		{"available list", model{screen: screenAvailable}, []string{"Navigate", "Open", "←/→ Filter", "/ Search", "i Installed", "u Updates", "q Quit"}},
+		{"installed list", model{screen: screenInstalled}, []string{"Navigate", "Open", "/ Search", "u Updates", "Esc Browse", "q Quit"}},
+		{"updates list", model{screen: screenUpdates}, []string{"Navigate", "Open", "/ Search", "i Installed", "Esc Browse", "q Quit"}},
+		{"versions", model{screen: screenVersions}, []string{"r Rollback", "x Uninstall", "Esc Back", "q Quit"}},
+		{"search", model{screen: screenAvailable, searching: true}, []string{"Enter Search", "Esc Cancel"}},
+		{"busy", model{screen: screenAvailable, busy: "Searching"}, []string{"Esc Cancel", "q Quit"}},
+		{"confirmation", model{screen: screenInstallConfirm}, []string{"Enter Install anyway", "Esc Cancel", "q Quit"}},
+		{"channel", model{screen: screenInstallChannel}, []string{"↑/↓ Choose", "Enter Select", "Esc Back", "q Quit"}},
+		{"rollback confirmation", model{screen: screenRollback}, []string{"Enter Confirm", "Esc Cancel", "q Quit"}},
+		{"uninstall confirmation", model{screen: screenUninstall}, []string{"Enter Confirm", "Esc Cancel", "q Quit"}},
+		{"upgrade confirmation", model{screen: screenUpgrade}, []string{"Enter Upgrade", "Esc Cancel", "q Quit"}},
+		{"details", model{screen: screenDetails, detail: &app.Application{InstalledVersion: "1.0", UpdateAvailable: true}}, []string{"Enter Update", "v Versions", "r Rollback", "x Uninstall", "Esc Back", "q Quit"}},
+		{"uninstalled details", model{screen: screenDetails, detail: &app.Application{}}, []string{"Enter Install", "Esc Back", "q Quit"}},
+		{"current details", model{screen: screenDetails, detail: &app.Application{InstalledVersion: "1.0"}}, []string{"v Versions", "r Rollback", "x Uninstall", "Esc Back", "q Quit"}},
+		{"pinned details", model{screen: screenDetails, detail: &app.Application{InstalledVersion: "1.0", Pinned: true, UpdateAvailable: true}}, []string{"v Versions", "r Rollback", "x Uninstall", "Esc Back", "q Quit"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := strings.Fields(test.model.helpView())
+			want := strings.Fields(strings.Join(test.labels, " "))
+			if len(got) != len(want) {
+				t.Fatalf("labels = %q, want %q", got, want)
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("labels = %q, want %q", got, want)
+				}
+			}
+		})
+	}
+}
+
+func TestFooterIsUniqueSingleRowAndFitsWidth(t *testing.T) {
+	for _, width := range []int{20, 24, 40, 60, 80, 120} {
+		value := (model{screen: screenAvailable, width: width}).footer()
+		lines := footerLines(value, width)
+		if len(lines) != 1 || displaywidth.String(lines[0]) > viewWidth(width) {
+			t.Fatalf("width %d footer lines = %#v", width, lines)
+		}
+		labels := strings.Fields((model{screen: screenAvailable}).helpView())
+		if len(labels) != len(strings.Fields(strings.Join([]string{"Navigate", "Open", "←/→ Filter", "/ Search", "i Installed", "u Updates", "q Quit"}, " "))) {
+			t.Fatal("footer policy unexpectedly duplicated an action")
+		}
+	}
+}
+
+func TestFooterIsOnlyKeyboardLegend(t *testing.T) {
+	views := []model{
+		{screen: screenDetails, detail: &app.Application{Name: "Dinosaur", InstalledVersion: "1.0"}, width: 80},
+		{screen: screenRollback, detail: &app.Application{Name: "Dinosaur", InstalledVersion: "1.0"}, width: 80},
+		{screen: screenUninstall, detail: &app.Application{Name: "Dinosaur", InstalledVersion: "1.0"}, width: 80},
+		{screen: screenInstallChannel, detail: &app.Application{Name: "Dinosaur"}, channels: []string{"stable"}, width: 80},
+	}
+	for _, m := range views {
+		content := m.View().Content
+		for _, legend := range []string{"Enter Confirm", "Esc Cancel", "Enter Select", "↑/↓ Choose", "v Versions", "r Rollback", "x Uninstall"} {
+			if strings.Count(content, legend) > 1 {
+				t.Fatalf("keyboard legend %q was duplicated: %q", legend, content)
+			}
+		}
+	}
+}
+
+func TestContextualPolicyBlocksHiddenShortcuts(t *testing.T) {
+	tests := []struct {
+		name  string
+		model model
+		key   tea.KeyPressMsg
+	}{
+		{"available uninstall", model{screen: screenAvailable}, tea.KeyPressMsg{Text: "x"}},
+		{"details search", model{screen: screenDetails}, tea.KeyPressMsg{Text: "/"}},
+		{"confirmation navigation", model{screen: screenUninstall}, tea.KeyPressMsg{Text: "i"}},
+		{"busy navigation", model{screen: screenAvailable, busy: "Installing"}, tea.KeyPressMsg{Code: tea.KeyDown}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			updated, command := test.model.Update(test.key)
+			if command != nil || updated.(model).screen != test.model.screen {
+				t.Fatalf("hidden key changed model: %#v command=%v", updated, command)
+			}
+		})
+	}
+}
+
 func TestHelpUsesContextRelevantBindings(t *testing.T) {
 	list := model{screen: screenAvailable, width: 120}
 	help := list.helpView()
-	for _, value := range []string{"Navigate", "Filter", "Details", "Search", "Installed", "Updates", "Quit"} {
+	for _, value := range []string{"Navigate", "Filter", "Open", "Search", "Installed", "Updates", "Quit"} {
 		if !strings.Contains(help, value) {
 			t.Fatalf("list help omitted %q: %q", value, help)
 		}
@@ -471,7 +561,8 @@ func TestNoColorThemeAndProgressRemainPlainText(t *testing.T) {
 func TestRollbackDelegatesToService(t *testing.T) {
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}}}
 	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications}
-	updated, command := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
 	if command != nil || updated.(model).screen != screenRollback {
 		t.Fatal("rollback confirmation did not open")
 	}
@@ -489,13 +580,14 @@ func TestUninstallRequiresConfirmation(t *testing.T) {
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}}}
 	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications}
 
-	updated, command := m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	modelAfterKey := updated.(model)
 	if command != nil || modelAfterKey.screen != screenUninstall {
 		t.Fatalf("uninstall confirmation did not open: screen=%v command=%v", modelAfterKey.screen, command)
 	}
 	view := modelAfterKey.View().Content
-	if !strings.Contains(view, "UNINSTALL") || !strings.Contains(view, "Enter Confirm") || !strings.Contains(view, "Blender") {
+	if !strings.Contains(view, "UNINSTALL") || strings.Count(view, "Enter Confirm") != 1 || !strings.Contains(view, "Blender") {
 		t.Fatalf("confirmation view is unclear: %q", view)
 	}
 	if service.uninstalled != "" {
@@ -522,7 +614,7 @@ func TestInstallPathConflictRequiresConfirmation(t *testing.T) {
 		t.Fatalf("path conflict did not open confirmation: screen=%v command=%v", modelAfterCheck.screen, command)
 	}
 	view := modelAfterCheck.View().Content
-	if !strings.Contains(view, "PATH CONFLICT") || !strings.Contains(view, "shadow") || !strings.Contains(view, "Enter Install anyway") {
+	if !strings.Contains(view, "PATH CONFLICT") || !strings.Contains(view, "shadow") || strings.Count(view, "Enter Install anyway") != 1 {
 		t.Fatalf("path conflict view is unclear: %q", view)
 	}
 	// Cancelling returns to details without installing.
@@ -550,11 +642,12 @@ func TestInstallPathConflictRequiresConfirmation(t *testing.T) {
 func TestUninstallCancellationDoesNotCallService(t *testing.T) {
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}}}
 	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications}
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ = updated.(model).Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	modelAfterCancel := updated.(model)
-	if command != nil || modelAfterCancel.screen != screenInstalled || modelAfterCancel.detail != nil {
-		t.Fatalf("cancel did not return to installed screen: model=%#v command=%v", modelAfterCancel, command)
+	if command != nil || modelAfterCancel.screen != screenDetails || modelAfterCancel.detail == nil {
+		t.Fatalf("cancel did not return to details screen: model=%#v command=%v", modelAfterCancel, command)
 	}
 	if service.uninstalled != "" {
 		t.Fatalf("cancel called uninstall for %q", service.uninstalled)
@@ -566,7 +659,8 @@ func TestUninstallDelegatesAndRefreshesState(t *testing.T) {
 	service := &fakeService{applications: available, installedValues: available}
 	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: available}
 
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ = updated.(model).Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	modelAfterConfirm := updated.(model)
 	if command == nil || modelAfterConfirm.busy != "Uninstalling" {
@@ -579,8 +673,8 @@ func TestUninstallDelegatesAndRefreshesState(t *testing.T) {
 
 	updated, command = modelAfterConfirm.Update(operation)
 	modelAfterOperation := updated.(model)
-	if command == nil || modelAfterOperation.screen != screenInstalled || modelAfterOperation.status != "Uninstalled blender" {
-		t.Fatalf("successful uninstall did not return to installed state: model=%#v", modelAfterOperation)
+	if command == nil || modelAfterOperation.screen != screenDetails || modelAfterOperation.status != "Uninstalled blender" {
+		t.Fatalf("successful uninstall did not return to details: model=%#v", modelAfterOperation)
 	}
 	updated, _ = modelAfterOperation.Update(command())
 	modelAfterRefresh := updated.(model)
@@ -679,7 +773,8 @@ func TestUninstallReportsErrorsWithoutLeavingConfirmation(t *testing.T) {
 		uninstallErr: errors.New("permission denied"),
 	}
 	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications}
-	updated, _ := m.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, _ = updated.(model).Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	operation := command()
 	updated, command = updated.(model).Update(operation)
@@ -757,9 +852,10 @@ func TestVersionsFromInstalledListEscapesToList(t *testing.T) {
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}}}
 	m := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications}
 
-	updated, command := m.Update(tea.KeyPressMsg{Code: 'v', Text: "v"})
-	if command == nil || updated.(model).screen != screenInstalled {
-		t.Fatalf("versions request did not start from installed list: model=%#v command=%v", updated, command)
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command := updated.(model).Update(tea.KeyPressMsg{Code: 'v', Text: "v"})
+	if command == nil || updated.(model).screen != screenDetails {
+		t.Fatalf("versions request did not start from installed details: model=%#v command=%v", updated, command)
 	}
 	updated, _ = updated.(model).Update(command())
 	modelAfterVersions := updated.(model)
@@ -768,6 +864,11 @@ func TestVersionsFromInstalledListEscapesToList(t *testing.T) {
 	}
 
 	updated, command = modelAfterVersions.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	modelAfterDetails := updated.(model)
+	if command != nil || modelAfterDetails.screen != screenDetails {
+		t.Fatalf("versions details back-navigation failed: model=%#v", modelAfterDetails)
+	}
+	updated, command = modelAfterDetails.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	modelAfterBack := updated.(model)
 	if command != nil || modelAfterBack.screen != screenInstalled || modelAfterBack.detail != nil {
 		t.Fatalf("versions list back-navigation failed: model=%#v command=%v", modelAfterBack, command)
@@ -1231,7 +1332,8 @@ func TestStaleFeedbackClearedOnNavigationAndNewOperation(t *testing.T) {
 
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", InstalledVersion: "5.2.0"}}}
 	start := model{ctx: context.Background(), service: service, screen: screenInstalled, installed: service.applications, err: errors.New("stale error")}
-	updated, command = start.Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
+	updated, _ = start.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	updated, command = updated.(model).Update(tea.KeyPressMsg{Code: 'x', Text: "x"})
 	modelAfterConfirm := updated.(model)
 	if command != nil || modelAfterConfirm.err != nil {
 		t.Fatalf("opening an operation did not clear stale error: %#v", modelAfterConfirm)
