@@ -60,9 +60,11 @@ set -eu
 [ -z "${CURL_ARGS_LOG:-}" ] || printf '%s\n' "$*" >> "$CURL_ARGS_LOG"
 output=
 url=
+write_out=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --output) output=$2; shift 2 ;;
+    --write-out) write_out=$2; shift 2 ;;
     --max-redirs|--connect-timeout|--max-time|--proto|--proto-redir) shift 2 ;;
     -q|--fail|--location|--silent|--show-error|--tlsv1.2) shift ;;
     *) url=$1; shift ;;
@@ -70,9 +72,17 @@ while [ "$#" -gt 0 ]; do
 done
 printf '%s\n' "$url" >> "$CURL_LOG"
 if [ "${FAIL_DOWNLOAD:-0}" = 1 ]; then
-  exit 22
+  case "$url" in
+    */releases/latest) ;;
+    *) exit 22 ;;
+  esac
 fi
 case "$url" in
+  */releases/latest)
+    location=${FAKE_LATEST_LOCATION:-https://github.com/drobilica/tarlink/releases/tag/v0.9.8}
+    [ "$write_out" = '%{url_effective}' ] || exit 1
+    printf '%s' "$location"
+    ;;
   */checksums.txt)
     checksum_asset=tarlink-linux-amd64
     case "${FAKE_UNAME_M:-x86_64}" in
@@ -187,14 +197,20 @@ mkdir -p "$latest_home"
 HOME=$latest_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$latest_log CURL_ARGS_LOG=$fixture/curl-args.log "$installer" >"$latest_stdout" 2>"$latest_stderr"
 assert_installed_binary "$latest_home"
 test -f "$latest_home/.local/state/tarlink/install.sha256"
-grep -F 'Installing TarLink version: latest' "$latest_stdout" >/dev/null
+grep -F 'Installing TarLink v0.9.8' "$latest_stdout" >/dev/null
 grep -F 'TarLink installed successfully.' "$latest_stdout" >/dev/null
-grep '/releases/latest/download/checksums.txt' "$latest_log" >/dev/null
-grep "/releases/latest/download/tarlink-linux-$latest_asset" "$latest_log" >/dev/null
+grep '/releases/download/v0.9.8/checksums.txt' "$latest_log" >/dev/null
+grep "/releases/download/v0.9.8/tarlink-linux-$latest_asset" "$latest_log" >/dev/null
 grep -F -- '-q --fail --location --max-redirs 5 --connect-timeout 15 --max-time 600' "$fixture/curl-args.log" >/dev/null
 grep -F 'Warning:' "$latest_stderr" >/dev/null
 HOME=$latest_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$latest_log "$installer" >"$fixture/repeat.stdout" 2>"$fixture/repeat.stderr"
 assert_installed_binary "$latest_home"
+grep -F 'TarLink v0.9.8 is already installed.' "$fixture/repeat.stdout" >/dev/null
+if grep -F '/releases/latest/download/tarlink-linux-' "$latest_log" >/dev/null; then
+  printf '%s\n' 'latest release unexpectedly used the unresolved download path' >&2
+  exit 1
+fi
+test "$(grep -c "/releases/download/v0.9.8/tarlink-linux-$latest_asset" "$latest_log")" = 1
 
 marker_failure_home=$fixture/marker-failure-home
 mkdir -p "$marker_failure_home/.local/bin"
@@ -262,10 +278,39 @@ if [ -n "$exact_assets" ]; then
 fi
 FAKE_UNAME_M=$explicit_machine HOME=$explicit_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$explicit_log "$installer" v9.9.9 >"$explicit_stdout" 2>"$explicit_stderr"
 assert_installed_binary "$explicit_home"
-grep -F 'Installing TarLink version: v9.9.9' "$explicit_stdout" >/dev/null
+grep -F 'Installing TarLink v9.9.9' "$explicit_stdout" >/dev/null
 grep -F 'TarLink installed successfully.' "$explicit_stdout" >/dev/null
 grep '/releases/download/v9.9.9/checksums.txt' "$explicit_log" >/dev/null
 grep "/releases/download/v9.9.9/tarlink-linux-$explicit_asset" "$explicit_log" >/dev/null
+if grep -F '/releases/latest' "$explicit_log" >/dev/null; then
+  printf '%s\n' 'explicit release unexpectedly performed latest discovery' >&2
+  exit 1
+fi
+
+for invalid_latest in \
+  'https://github.com/drobilica/other/releases/tag/v0.9.8' \
+  'https://github.com/drobilica/tarlink/releases/tag/latest'; do
+  invalid_latest_home=$fixture/invalid-latest-$(printf '%s' "$invalid_latest" | sha256sum | awk '{print substr($1,1,8)}')
+  mkdir -p "$invalid_latest_home"
+  if FAKE_LATEST_LOCATION=$invalid_latest HOME=$invalid_latest_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$invalid_latest_home.log" "$installer" >"$invalid_latest_home.stdout" 2>"$invalid_latest_home.stderr"; then
+    printf '%s\n' 'invalid latest redirect unexpectedly succeeded' >&2
+    exit 1
+  fi
+  grep -F 'latest TarLink release' "$invalid_latest_home.stderr" >/dev/null
+done
+
+ownership_mismatch_home=$fixture/ownership-mismatch-home
+mkdir -p "$ownership_mismatch_home/.local/bin"
+printf 'owned-binary\n' > "$ownership_mismatch_home/.local/bin/tarlink"
+chmod 0755 "$ownership_mismatch_home/.local/bin/tarlink"
+write_marker "$ownership_mismatch_home"
+printf '%064d\n' 0 > "$ownership_mismatch_home/.local/state/tarlink/install.sha256"
+if HOME=$ownership_mismatch_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$ownership_mismatch_home.log" "$installer" >"$ownership_mismatch_home.stdout" 2>"$ownership_mismatch_home.stderr"; then
+  printf '%s\n' 'ownership mismatch unexpectedly succeeded' >&2
+  exit 1
+fi
+grep -F 'ownership marker does not match' "$ownership_mismatch_home.stderr" >/dev/null
+test ! -e "$ownership_mismatch_home.log"
 
 failed_home=$fixture/failed-home
 mkdir -p "$failed_home/.local/bin"

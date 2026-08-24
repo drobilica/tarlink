@@ -111,6 +111,7 @@ verify_owned_target() {
 	read_marker_digest "$marker_path"
 	target_digest=$(sha256sum "$target_path" | awk '{print $1}') || fail "could not hash canonical TarLink binary: $target_path"
 	test "$target_digest" = "$marker_digest" || fail "TarLink ownership marker does not match $target_path"
+	installed_hash=$target_digest
 }
 
 if [ -e "$target" ] || [ -L "$target" ]; then
@@ -142,6 +143,21 @@ case "$release" in
 		;;
 esac
 
+if [ "$release" = latest ]; then
+	latest_location=$(curl -q --fail --location --max-redirs 5 --connect-timeout 15 --max-time 600 \
+		--silent --show-error --proto '=https' --proto-redir '=https' --tlsv1.2 \
+		--output /dev/null --write-out '%{url_effective}' "$repository/releases/latest") ||
+		fail 'could not resolve the latest TarLink release'
+	case "$latest_location" in
+		"$repository/releases/tag/"*) ;;
+		*) fail 'latest TarLink release redirect is not official' ;;
+	esac
+	release=${latest_location#"$repository/releases/tag/"}
+	if ! printf '%s\n' "$release" | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { found=1 } END { exit !found }'; then
+		fail 'latest TarLink release redirect has an invalid version'
+	fi
+fi
+
 case "$(uname -s)" in
 	Linux) ;;
 	*) fail 'Linux is the only supported operating system' ;;
@@ -161,7 +177,7 @@ else
 fi
 base_url="$repository/releases/$release_path"
 
-printf 'Installing TarLink version: %s\n' "$release"
+printf 'Installing TarLink %s\n' "$release"
 
 mkdir -p "$bin_dir"
 safe_path "$bin_dir" || fail "canonical TarLink binary path contains a symlink: $bin_dir"
@@ -174,6 +190,7 @@ new_binary_published=0
 marker_published=0
 preserve_tmp=0
 actual_hash=
+installed_hash=${installed_hash:-}
 
 remove_new_binary() {
 	if [ ! -e "$target" ] && [ ! -L "$target" ]; then
@@ -260,8 +277,6 @@ download() {
 checksums="$tmp_dir/checksums.txt"
 binary="$tmp_dir/$asset"
 download "$base_url/checksums.txt" "$checksums" || fail 'could not download checksums.txt'
-download "$base_url/$asset" "$binary" binary || fail "could not download $asset"
-test -s "$binary" || fail "downloaded $asset is empty"
 
 expected_hash=$(awk -v asset="$asset" '
 	NF == 2 && $2 == asset && length($1) == 64 && $1 !~ /[^0-9a-f]/ {
@@ -275,16 +290,19 @@ expected_hash=$(awk -v asset="$asset" '
 	}
 ' "$checksums") || fail "checksums.txt has no unique lowercase SHA-256 for $asset"
 
+if [ -n "$installed_hash" ] && [ "$installed_hash" = "$expected_hash" ]; then
+	printf 'TarLink %s is already installed.\n' "$release"
+	exit 0
+fi
+
+download "$base_url/$asset" "$binary" binary || fail "could not download $asset"
+test -s "$binary" || fail "downloaded $asset is empty"
+
 command -v sha256sum >/dev/null 2>&1 || fail 'sha256sum is required'
 actual_hash=$(sha256sum "$binary" | awk '{print $1}')
 test "$actual_hash" = "$expected_hash" || fail "SHA-256 verification failed for $asset"
 
 chmod 0755 "$binary"
-if [ -e "$target" ] || [ -L "$target" ]; then
-	verify_owned_target "$target" "$marker"
-elif [ -e "$marker" ] || [ -L "$marker" ]; then
-	fail "TarLink ownership marker exists without its canonical binary: $marker"
-fi
 
 mkdir -p -m 0700 "$marker_dir" || fail "could not create TarLink state directory: $marker_dir"
 safe_path "$marker" || fail "TarLink ownership marker path contains a symlink: $marker"
