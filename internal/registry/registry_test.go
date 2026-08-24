@@ -33,7 +33,7 @@ release:
         digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
         source: https://example.com/blender-checksums
 application: {executables: [{name: blender, path: blender}]}
-desktop: {enabled: true, categories: [Graphics]}
+desktop: {enabled: true, categories: [Graphics], icon: null}
 `
 
 func createRegistry(t *testing.T) string {

@@ -141,9 +141,6 @@ func changedFromCatalog(root, oldRoot string, _ *registry.Catalog) (Selection, e
 			if parseErr != nil {
 				return Selection{}, fmt.Errorf("parse changed manifest %s: %w", path, parseErr)
 			}
-			if err := requireChangedDesktopIcon(item); err != nil {
-				return Selection{}, fmt.Errorf("%s: %w", path, err)
-			}
 			for _, item := range releaseProjections(item) {
 				selected[projectionKeyForPath(currentPath, item)] = struct{}{}
 			}
@@ -166,9 +163,6 @@ func changedFromCatalog(root, oldRoot string, _ *registry.Catalog) (Selection, e
 				return Selection{}, fmt.Errorf("compare %s: %w", path, err)
 			}
 			if affectsMaterialization(before, after) {
-				if err := requireChangedDesktopIcon(after); err != nil {
-					return Selection{}, fmt.Errorf("%s: %w", path, err)
-				}
 				for _, item := range releaseProjections(after) {
 					selected[projectionKeyForPath(currentPath, item)] = struct{}{}
 				}
@@ -206,13 +200,6 @@ func changedFromCatalog(root, oldRoot string, _ *registry.Catalog) (Selection, e
 		return items[i].Release.Version < items[j].Release.Version
 	})
 	return Selection{Items: items}, nil
-}
-
-func requireChangedDesktopIcon(item *manifest.Manifest) error {
-	if item != nil && item.Desktop.Enabled && item.Desktop.Icon.IsZero() {
-		return errors.New("desktop integration is enabled but no icon is declared; run: tarlink registry icons . --fix --app " + item.ID)
-	}
-	return nil
 }
 
 func releaseProjections(item *manifest.Manifest) []*manifest.Manifest {

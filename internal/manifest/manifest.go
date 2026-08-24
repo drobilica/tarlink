@@ -262,7 +262,11 @@ func validateManifestShape(document *yaml.Node) error {
 	if err != nil {
 		return err
 	}
-	if icon, ok := desktop["icon"]; ok {
+	icon, hasIcon := desktop["icon"]
+	if desktop["enabled"].Tag == "!!bool" && desktop["enabled"].Value == "true" && !hasIcon {
+		return errors.New("desktop icon must be explicitly declared or null")
+	}
+	if hasIcon && icon.Tag != "!!null" {
 		iconMapping, mappingErr := requiredMapping(icon, "desktop.icon", nil, []string{"path", "url", "sha256"})
 		if mappingErr != nil {
 			return mappingErr

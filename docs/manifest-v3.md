@@ -50,6 +50,10 @@ unsafe paths are rejected.
 
 ## Desktop icon
 
+Desktop-enabled manifests must explicitly account for icons. The normal case
+is a bundled or verified remote icon; `icon: null` is allowed only after
+maintainer investigation found no acceptable icon. Run `tarlink registry icons
+. --fix` as the preferred discovery path before using null. When present,
 `desktop.icon` is a mapping that must declare exactly one of two forms. The
 `path` form references an icon inside the extracted application and keeps the
 extension-based hicolor sizing (`scalable` for SVG, otherwise `48x48`). The

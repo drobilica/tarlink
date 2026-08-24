@@ -331,10 +331,10 @@ func iconDimensionScore(size int) int {
 
 func addRemoteIcon(data []byte, icon fixedRegistryIcon) ([]byte, error) {
 	parsed, err := manifest.ParseBytes(data)
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "desktop icon must be explicitly declared or null") {
 		return nil, err
 	}
-	if !parsed.Desktop.Icon.IsZero() {
+	if parsed != nil && !parsed.Desktop.Icon.IsZero() {
 		return nil, errors.New("manifest icon is no longer missing")
 	}
 	lines := strings.SplitAfter(string(data), "\n")

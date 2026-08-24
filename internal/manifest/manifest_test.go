@@ -85,6 +85,22 @@ func TestParseAcceptsVerifiedRemoteIcon(t *testing.T) {
 	}
 }
 
+func TestParseRequiresExplicitDesktopIconDisposition(t *testing.T) {
+	omitted := strings.Replace(validManifest, "  icon:\n    path: icons/blender.png\n", "", 1)
+	if _, err := Parse(strings.NewReader(omitted)); err == nil || !strings.Contains(err.Error(), "desktop icon must be explicitly declared or null") {
+		t.Fatalf("omitted desktop icon error = %v", err)
+	}
+
+	accepted := strings.Replace(validManifest, "  icon:\n    path: icons/blender.png", "  icon: null", 1)
+	m, err := Parse(strings.NewReader(accepted))
+	if err != nil {
+		t.Fatalf("explicit null icon error = %v", err)
+	}
+	if !m.Desktop.Icon.IsZero() {
+		t.Fatalf("explicit null icon = %#v", m.Desktop.Icon)
+	}
+}
+
 func TestParseRejectsInvalidDesktopIcon(t *testing.T) {
 	tests := map[string]string{
 		"scalar":                  "  icon: icons/blender.png",
