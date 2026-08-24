@@ -13,8 +13,12 @@ import (
 
 func TestCheckTarLinkVersionFreshReportsNewRelease(t *testing.T) {
 	dir := t.TempDir()
-	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`[{"tag_name":"v2.0.0","assets":[{"name":"tarlink-linux-amd64","browser_download_url":"https://example.test/binary"},{"name":"checksums.txt","browser_download_url":"https://example.test/checksums"}]}]`))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/drobilica/tarlink/releases/tag/v2.0.0" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		http.Redirect(w, r, "/drobilica/tarlink/releases/tag/v2.0.0", http.StatusFound)
 	}))
 	defer server.Close()
 

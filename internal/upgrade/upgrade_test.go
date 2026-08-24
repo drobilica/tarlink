@@ -27,19 +27,53 @@ func TestStableVersionComparison(t *testing.T) {
 	}
 }
 
-func TestOfficialURLPolicy(t *testing.T) {
-	for _, value := range []string{
-		"http://api.github.com/repos/drobilica/tarlink/releases",
-		"https://evil.example/repos/drobilica/tarlink/releases",
-		"https://api.github.com/repos/drobilica/tarlink/releases?redirect=1",
-		"https://attacker@api.github.com/repos/drobilica/tarlink/releases",
-	} {
-		if officialURL(value, officialAPIURL) {
-			t.Errorf("unsafe URL accepted: %q", value)
-		}
+func TestLatestReleaseRedirectValidation(t *testing.T) {
+	cases := []struct {
+		name       string
+		location   string
+		statusCode int
+		want       string
+	}{
+		{name: "valid", location: "/drobilica/tarlink/releases/tag/v2.3.4", statusCode: http.StatusFound, want: "2.3.4"},
+		{name: "wrong host", location: "https://evil.example/releases/tag/v2.3.4"},
+		{name: "wrong repository", location: "/other-owner/other-repo/releases/tag/v2.3.4"},
+		{name: "invalid scheme", location: "http://github.com/drobilica/tarlink/releases/tag/v2.3.4"},
+		{name: "malformed version", location: "/releases/tag/v2.3.4-rc.1"},
+		{name: "query", location: "/releases/tag/v2.3.4?download=1"},
+		{name: "fragment", location: "/releases/tag/v2.3.4#assets"},
+		{name: "userinfo", location: "https://attacker@github.com/drobilica/tarlink/releases/tag/v2.3.4"},
+		{name: "missing redirect", statusCode: http.StatusOK},
 	}
-	if !officialURL(officialAPIURL, officialAPIURL) || !officialURL(officialReleaseBaseURL, officialReleaseBaseURL) {
-		t.Fatal("official HTTPS URLs were rejected")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/latest" {
+					w.WriteHeader(http.StatusOK)
+					return
+				}
+				if tc.statusCode == 0 {
+					http.Redirect(w, r, tc.location, http.StatusFound)
+					return
+				}
+				if tc.statusCode == http.StatusFound {
+					http.Redirect(w, r, tc.location, tc.statusCode)
+					return
+				}
+				w.WriteHeader(tc.statusCode)
+			}))
+			defer server.Close()
+			service := &Service{Client: &download.Client{HTTP: server.Client()}, testAPIURL: server.URL + "/latest", Current: "1.0.0"}
+			got, err := service.fetchLatest(context.Background())
+			if tc.want != "" {
+				if err != nil || got != tc.want {
+					t.Fatalf("latest=%q err=%v", got, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("unsafe redirect accepted: latest=%q", got)
+			}
+		})
 	}
 }
 
@@ -91,18 +125,18 @@ func TestUpdateCacheFreshnessAndCorruption(t *testing.T) {
 	}
 }
 
-func TestCheckFreshBypassesCacheAndFallsBackOffline(t *testing.T) {
+func TestCheckFreshUsesFreshCacheAndFallsBackOffline(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Unix(1000, 0)
 	service := &Service{Layout: filesystem.Layout{Cache: dir}, Current: "1.0.0", GOARCH: "amd64", Now: func() time.Time { return now }}
 	requests := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
-		if requests == 2 {
+		if requests == 1 {
 			http.Error(w, "offline", http.StatusServiceUnavailable)
 			return
 		}
-		_, _ = w.Write([]byte(`[{"tag_name":"v2.0.0","assets":[{"name":"tarlink-linux-amd64","browser_download_url":"https://example.test/binary"},{"name":"checksums.txt","browser_download_url":"https://example.test/checksums"}]}]`))
+		http.Redirect(w, r, "/drobilica/tarlink/releases/tag/v2.0.0", http.StatusFound)
 	}))
 	defer server.Close()
 	service.Client = &download.Client{HTTP: server.Client()}
@@ -112,12 +146,12 @@ func TestCheckFreshBypassesCacheAndFallsBackOffline(t *testing.T) {
 	}
 
 	value, err := service.CheckFresh(context.Background())
-	if err != nil || value.Latest != "2.0.0" || requests != 1 {
+	if err != nil || value.Latest != "1.1.0" || requests != 0 {
 		t.Fatalf("fresh check value=%#v err=%v requests=%d", value, err, requests)
 	}
 	now = now.Add(25 * time.Hour)
 	value, err = service.CheckFresh(context.Background())
-	if err != nil || value.Latest != "2.0.0" || requests != 2 {
+	if err != nil || value.Latest != "1.1.0" || requests != 1 {
 		t.Fatalf("offline fallback value=%#v err=%v requests=%d", value, err, requests)
 	}
 }
@@ -137,30 +171,67 @@ func TestCheckFreshHonorsCancellationBeforeCacheFallback(t *testing.T) {
 	}
 }
 
-func TestReleaseAssetMustBeUniqueAndNonEmpty(t *testing.T) {
-	item := release{Assets: []asset{{Name: "tarlink-linux-amd64", URL: "https://github.com/a"}}}
-	if !releaseHasAsset(item, "tarlink-linux-amd64") {
-		t.Fatal("valid asset was rejected")
+func TestUpgradeUsesRecentCurrentCacheWithoutDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Unix(1000, 0)
+	service := &Service{Layout: filesystem.Layout{Cache: dir}, Current: "2.0.0", Now: func() time.Time { return now }}
+	if err := writeCache(filepath.Join(dir, "update-check.json"), "2.0.0", now); err != nil {
+		t.Fatal(err)
 	}
-	item.Assets = append(item.Assets, item.Assets[0])
-	if releaseHasAsset(item, "tarlink-linux-amd64") {
-		t.Fatal("duplicate asset was accepted")
+	value, err := service.Upgrade(context.Background(), nil)
+	if err != nil || value.Latest != "2.0.0" {
+		t.Fatalf("value=%#v err=%v", value, err)
 	}
 }
 
-func TestSelectLatestFiltersUnsafeReleasesAndAssets(t *testing.T) {
-	makeAsset := func(name string) asset { return asset{Name: name, URL: "https://example.test/" + name} }
-	valid := func(tag string) release {
-		return release{TagName: tag, Assets: []asset{makeAsset("tarlink-linux-amd64"), makeAsset("checksums.txt")}}
+func TestUpgradeRefreshesCachedNewerVersionBeforeInstallation(t *testing.T) {
+	service, target, _, old := ownedService(t)
+	now := time.Unix(1000, 0)
+	service.Now = func() time.Time { return now }
+	if err := writeCache(filepath.Join(service.Layout.Cache, "update-check.json"), "2.0.0", now); err != nil {
+		t.Fatal(err)
 	}
-	releases := []release{valid("v1.0.0"), valid("v2.0.0-rc.1"), valid("v2.0.0")}
-	releases[1].Pre = true
-	releases = append(releases, release{TagName: "v9.0.0", Assets: []asset{makeAsset("checksums.txt")}}, release{TagName: "not-a-version", Assets: valid("v1.0.0").Assets})
-	if got, err := selectLatest(releases, "amd64"); err != nil || got != "2.0.0" {
-		t.Fatalf("latest=%q err=%v", got, err)
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/drobilica/tarlink/releases/tag/v1.0.0" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		requests++
+		http.Redirect(w, r, "/drobilica/tarlink/releases/tag/v1.0.0", http.StatusFound)
+	}))
+	defer server.Close()
+	service.Client = &download.Client{HTTP: server.Client()}
+	service.testAPIURL = server.URL + "/latest"
+	value, err := service.Upgrade(context.Background(), nil)
+	if err != nil || value.Latest != "1.0.0" || requests != 1 {
+		t.Fatalf("value=%#v err=%v requests=%d", value, err, requests)
 	}
-	if _, err := selectLatest(releases, "arm64"); !errors.Is(err, ErrNoRelease) {
-		t.Fatalf("missing arm64 asset err=%v", err)
+	got, readErr := os.ReadFile(target)
+	if readErr != nil || !bytes.Equal(got, old) {
+		t.Fatalf("binary changed: %q err=%v", got, readErr)
+	}
+}
+
+func TestUpgradeDiscoveryFailureDoesNotInstallCachedNewerVersion(t *testing.T) {
+	service, target, _, old := ownedService(t)
+	now := time.Unix(1000, 0)
+	service.Now = func() time.Time { return now }
+	if err := writeCache(filepath.Join(service.Layout.Cache, "update-check.json"), "2.0.0", now); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "offline", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	service.Client = &download.Client{HTTP: server.Client()}
+	service.testAPIURL = server.URL + "/latest"
+	if _, err := service.Upgrade(context.Background(), nil); err == nil {
+		t.Fatal("discovery failure unexpectedly succeeded")
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil || !bytes.Equal(got, old) {
+		t.Fatalf("binary changed after discovery failure: %q err=%v", got, readErr)
 	}
 }
 
@@ -346,11 +417,12 @@ func TestUpgradeDownloadsVerifiesAndReplacesCanonicalInstallation(t *testing.T) 
 	service, target, marker, _ := ownedService(t)
 	newBytes := []byte("new release")
 	digest := digestBytes(newBytes)
-	api := []byte(`[{"tag_name":"v2.0.0","draft":false,"prerelease":false,"assets":[{"name":"tarlink-linux-amd64","browser_download_url":"https://example.test/binary"},{"name":"checksums.txt","browser_download_url":"https://example.test/checksums"}]}]`)
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/releases":
-			_, _ = w.Write(api)
+			http.Redirect(w, r, "/drobilica/tarlink/releases/tag/v2.0.0", http.StatusFound)
+		case "/drobilica/tarlink/releases/tag/v2.0.0":
+			_, _ = w.Write([]byte("release"))
 		case "/download/v2.0.0/checksums.txt":
 			_, _ = w.Write([]byte(digest + "  tarlink-linux-amd64\n"))
 		case "/download/v2.0.0/tarlink-linux-amd64":

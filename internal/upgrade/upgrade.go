@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -23,10 +24,10 @@ import (
 )
 
 const (
-	officialAPIURL         = "https://api.github.com/repos/drobilica/tarlink/releases"
+	officialLatestURL      = "https://github.com/drobilica/tarlink/releases/latest"
 	officialReleaseBaseURL = "https://github.com/drobilica/tarlink/releases/download/v"
 	cacheMaxAge            = 24 * time.Hour
-	maxAPIBytes            = 4 << 20
+	upgradeCacheMaxAge     = 5 * time.Minute
 	maxBinary              = 256 << 20
 )
 
@@ -69,17 +70,6 @@ type Service struct {
 	testReleaseBaseURL string
 }
 
-type release struct {
-	TagName string  `json:"tag_name"`
-	Draft   bool    `json:"draft"`
-	Pre     bool    `json:"prerelease"`
-	Assets  []asset `json:"assets"`
-}
-type asset struct {
-	Name string `json:"name"`
-	URL  string `json:"browser_download_url"`
-}
-
 func (s *Service) Check(ctx context.Context) (Version, error) {
 	current := strings.TrimPrefix(strings.TrimSpace(s.Current), "v")
 	if current == "" || current == "development" {
@@ -107,8 +97,8 @@ func (s *Service) Check(ctx context.Context) (Version, error) {
 	return result, nil
 }
 
-// CheckFresh bypasses the normal cache age check for interactive startup. A
-// usable cache keeps the TUI notification available when the network is down.
+// CheckFresh uses the normal cache age check, while a stale usable cache keeps
+// the TUI notification available when the network is down.
 func (s *Service) CheckFresh(ctx context.Context) (Version, error) {
 	current := strings.TrimPrefix(strings.TrimSpace(s.Current), "v")
 	if current == "" || current == "development" {
@@ -123,6 +113,15 @@ func (s *Service) CheckFresh(ctx context.Context) (Version, error) {
 	}
 
 	cachePath := filepath.Join(s.Layout.Cache, "update-check.json")
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
+	}
+	if cached, ok := readCache(cachePath, s.clock()); ok {
+		result.Latest = cached.Latest
+		return result, nil
+	}
 	latest, err := s.fetchLatest(ctx)
 	if err == nil {
 		result.Latest = latest
@@ -146,11 +145,15 @@ func (s *Service) Upgrade(ctx context.Context, progress Progress) (Version, erro
 		return Version{Current: s.Current}, ErrDevelopment
 	}
 	current := normalizeVersion(s.Current)
+	cachePath := filepath.Join(s.Layout.Cache, "update-check.json")
+	if cached, ok := readCache(cachePath, s.clock()); ok && s.clock().Sub(cached.CheckedAt) <= upgradeCacheMaxAge && compare(current, cached.Latest) >= 0 {
+		return Version{Current: current, Latest: cached.Latest}, nil
+	}
 	latest, err := s.fetchLatest(ctx)
 	if err != nil {
 		return Version{Current: current}, err
 	}
-	_ = writeCache(filepath.Join(s.Layout.Cache, "update-check.json"), latest, s.clock())
+	_ = writeCache(cachePath, latest, s.clock())
 	if compare(current, latest) >= 0 {
 		return Version{Current: current, Latest: latest}, nil
 	}
@@ -161,64 +164,57 @@ func (s *Service) Upgrade(ctx context.Context, progress Progress) (Version, erro
 }
 
 func (s *Service) fetchLatest(ctx context.Context) (string, error) {
-	apiURL := officialAPIURL
+	latestURL := officialLatestURL
 	if s.testAPIURL != "" {
-		apiURL = s.testAPIURL
+		latestURL = s.testAPIURL
 	}
-	if s.testAPIURL == "" && !officialURL(apiURL, officialAPIURL) {
-		return "", errors.New("invalid official release API URL")
+	parsed, err := url.Parse(latestURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (s.testAPIURL == "" && !officialURL(latestURL, officialLatestURL)) {
+		return "", errors.New("invalid official latest release URL")
 	}
-	path := filepath.Join(s.Layout.Cache, ".upgrade-releases.json")
 	if s.Client == nil {
 		s.Client = download.NewClient()
 	}
-	result, err := s.Client.FetchFile(ctx, download.FileRequest{URL: apiURL, Destination: path, MaxBytes: maxAPIBytes, AllowedURL: sameHost(apiURL)})
+	if s.Client.HTTP == nil {
+		return "", errors.New("download client is not configured")
+	}
+	httpClient := *s.Client.HTTP
+	redirects := 0
+	var redirectTarget *url.URL
+	httpClient.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		redirects++
+		if redirects > 1 || len(via) > 1 || !discoveryURL(req.URL, parsed.Host) {
+			return errors.New("unexpected latest release redirect")
+		}
+		copy := *req.URL
+		redirectTarget = &copy
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create latest release request: %w", err)
 	}
-	data, err := os.ReadFile(result.Path)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("latest release discovery: %w", err)
 	}
-	var releases []release
-	if err := json.Unmarshal(data, &releases); err != nil {
-		return "", fmt.Errorf("decode release API: %w", err)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("latest release discovery: HTTP %d", resp.StatusCode)
 	}
-	arch := s.GOARCH
-	if arch == "" {
-		arch = runtime.GOARCH
+	if redirectTarget == nil || !discoveryURL(redirectTarget, parsed.Host) {
+		return "", errors.New("invalid latest release URL")
 	}
-	return selectLatest(releases, arch)
+	path := redirectTarget.Path
+	prefix := "/drobilica/tarlink/releases/tag/"
+	if !strings.HasPrefix(path, prefix) || !stableVersion.MatchString(strings.TrimPrefix(path, prefix)) || redirectTarget.RawPath != "" || redirectTarget.RawQuery != "" || redirectTarget.Fragment != "" {
+		return "", errors.New("latest release did not resolve to a stable TarLink release")
+	}
+	return normalizeVersion(strings.TrimPrefix(path, prefix)), nil
 }
 
-func selectLatest(releases []release, arch string) (string, error) {
-	best := ""
-	for _, item := range releases {
-		if item.Draft || item.Pre || !stableVersion.MatchString(item.TagName) || !releaseHasAsset(item, "tarlink-linux-"+arch) || !releaseHasAsset(item, "checksums.txt") {
-			continue
-		}
-		value := normalizeVersion(item.TagName)
-		if best == "" || compare(value, best) > 0 {
-			best = value
-		}
-	}
-	if best == "" {
-		return "", ErrNoRelease
-	}
-	return best, nil
-}
-
-func releaseHasAsset(item release, name string) bool {
-	found := false
-	for _, value := range item.Assets {
-		if value.Name == name {
-			if found || value.URL == "" {
-				return false
-			}
-			found = true
-		}
-	}
-	return found
+func discoveryURL(value *url.URL, host string) bool {
+	return value != nil && value.Scheme == "https" && value.Host == host && value.User == nil && value.RawQuery == "" && value.Fragment == "" && value.Opaque == "" && value.Path != ""
 }
 
 func (s *Service) replace(ctx context.Context, latest string, progress Progress) error {
