@@ -271,10 +271,42 @@ func TestParseApplicationCategories(t *testing.T) {
 	for _, category := range []string{"game-development", "emulation", "graphics", "development", "utilities", "games", "recompilation"} {
 		t.Run(category, func(t *testing.T) {
 			value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", "categories:\n  - "+category, 1)
+			if category == "games" || category == "recompilation" {
+				value = strings.Replace(value, "      path: blender", "      path: blender\n      create-bin-link: true", 1)
+			}
 			if _, err := Parse(strings.NewReader(value)); err != nil {
 				t.Fatalf("Parse() category %q error = %v", category, err)
 			}
 		})
+	}
+}
+
+func TestGameManifestRequiresExplicitBinLinkDecision(t *testing.T) {
+	for _, category := range []string{"games", "recompilation"} {
+		t.Run(category, func(t *testing.T) {
+			value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", "categories:\n  - "+category, 1)
+			if _, err := Parse(strings.NewReader(value)); err == nil || !strings.Contains(err.Error(), "create-bin-link must be explicit") {
+				t.Fatalf("manifest without explicit bin-link decision error = %v", err)
+			}
+			for _, decision := range []string{"true", "false"} {
+				t.Run(decision, func(t *testing.T) {
+					withDecision := strings.Replace(value, "      path: blender", "      path: blender\n      create-bin-link: "+decision, 1)
+					if _, err := Parse(strings.NewReader(withDecision)); err != nil {
+						t.Fatalf("explicit decision %s rejected: %v", decision, err)
+					}
+				})
+			}
+		})
+	}
+	value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", "categories:\n  - games", 1)
+	value = strings.Replace(value, "desktop:\n  enabled: true", "desktop:\n  enabled: true\n  executable: blender", 1)
+	value = strings.Replace(value, "      path: blender", "      path: blender\n      create-bin-link: true\n    - name: helper\n      path: helper\n      create-bin-link: false", 1)
+	m, err := Parse(strings.NewReader(value))
+	if err != nil {
+		t.Fatalf("independent bin-link decisions parse error = %v\nmanifest:\n%s", err, value)
+	}
+	if len(m.Application.Executables) != 2 || !m.Application.Executables[0].WantsBinLink() || m.Application.Executables[1].WantsBinLink() {
+		t.Fatalf("independent bin-link decisions = %#v, %v", m.Application.Executables, err)
 	}
 }
 

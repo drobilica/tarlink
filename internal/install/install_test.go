@@ -263,6 +263,48 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 }
 
+func TestUpdateReconcilesManagedBinLinkToDesktopOnly(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	initial := server.manifest("v1")
+	if _, err := manager.InstallWithOptions(context.Background(), initial, Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(layout.Bin, "run")
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("managed bin link after install: %v", err)
+	}
+
+	desktopOnly := server.manifest("v1")
+	createBinLink := false
+	desktopOnly.Application.Executables[0].CreateBinLink = &createBinLink
+	desktopOnly.Desktop.Executable = "run"
+	desktopOnly.Desktop.WorkingDirectory = "application-root"
+	updated, err := manager.UpdateWithOptions(context.Background(), desktopOnly, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("stale managed bin link remains after reconciliation: %v", err)
+	}
+	if updated.State.Integration.Executables[0].CreateBinLink == nil || *updated.State.Integration.Executables[0].CreateBinLink {
+		t.Fatalf("reconciled state bin-link decision = %#v", updated.State.Integration.Executables[0].CreateBinLink)
+	}
+	desktop, err := os.ReadFile(filepath.Join(layout.Desktop, "tarlink-fixture.desktop"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(desktop)
+	if !strings.Contains(content, "Exec="+filepath.Join(layout.Apps, "fixture", "current", "bin", "run")) || !strings.Contains(content, "Path="+filepath.Join(layout.Apps, "fixture", "current")) {
+		t.Fatalf("desktop-only launch configuration = %q", content)
+	}
+
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUpdateTogglesDesktopIntegrationAndRollsBackBeforeState(t *testing.T) {
 	layout := testLayout(t)
 	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
@@ -396,6 +438,145 @@ func TestUninstallIntegrationConflictPreservesInstallation(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(layout.Bin, "run")); err != nil {
 		t.Fatalf("executable integration removed after integration conflict: %v", err)
+	}
+}
+
+func TestUninstallConflictRecoveryRemovesModifiedDesktopAndCompletes(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	if _, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	desktop := filepath.Join(layout.Desktop, "tarlink-fixture.desktop")
+	if err := os.WriteFile(desktop, []byte("user-owned\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := manager.Uninstall(context.Background(), "fixture", nil)
+	var conflict *UninstallConflictError
+	if !errors.As(err, &conflict) || conflict.Path != desktop {
+		t.Fatalf("Uninstall() error = %v, conflict = %#v", err, conflict)
+	}
+	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", desktop); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatalf("retry uninstall: %v", err)
+	}
+	if _, err := os.Lstat(desktop); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("desktop entry remains: %v", err)
+	}
+}
+
+func TestUninstallConflictRecoveryCancellationAndArbitraryPathAreSafe(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	if _, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	desktop := filepath.Join(layout.Desktop, "tarlink-fixture.desktop")
+	original, err := os.ReadFile(desktop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(desktop, []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", filepath.Join(layout.Desktop, "other.desktop")); !errors.Is(err, integration.ErrConflict) {
+		t.Fatalf("arbitrary path error = %v", err)
+	}
+	if got, _ := os.ReadFile(desktop); string(got) != "changed\n" {
+		t.Fatalf("conflict file changed after rejected path: %q", got)
+	}
+	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", desktop); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(desktop); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("confirmed conflict remains: %v", err)
+	}
+	if string(original) == "changed\n" {
+		t.Fatal("fixture did not create a modified ownership conflict")
+	}
+	if _, err := state.LoadForApp(layout, "fixture"); err != nil {
+		t.Fatalf("installation was changed before uninstall retry: %v", err)
+	}
+}
+
+func TestUninstallConflictRecoveryRemovesSymlinkOnlyAndHandlesMultipleConflicts(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	if _, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	desktop := filepath.Join(layout.Desktop, "tarlink-fixture.desktop")
+	if err := os.Remove(desktop); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "untouched")
+	if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, desktop); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(layout.Bin, "run")
+	if err := os.Remove(bin); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, []byte("changed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := manager.Uninstall(context.Background(), "fixture", nil)
+	var first *UninstallConflictError
+	if !errors.As(err, &first) || first.Path != bin {
+		t.Fatalf("first conflict = %v, typed = %#v", err, first)
+	}
+	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", bin); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
+		t.Fatal("uninstall unexpectedly skipped remaining conflict")
+	} else {
+		var next *UninstallConflictError
+		if !errors.As(err, &next) || next.Path != desktop {
+			t.Fatalf("second conflict = %v, typed = %#v", err, next)
+		}
+	}
+	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", desktop); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "keep" {
+		t.Fatalf("symlink target was changed: %q", got)
+	}
+}
+
+func TestUninstallConflictRecoveryIsIdempotentWhenEntryDisappears(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	if _, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	desktop := filepath.Join(layout.Desktop, "tarlink-fixture.desktop")
+	if err := os.WriteFile(desktop, []byte("changed\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
+		t.Fatal("uninstall unexpectedly succeeded")
+	}
+	if err := os.Remove(desktop); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", desktop); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatal(err)
 	}
 }
 

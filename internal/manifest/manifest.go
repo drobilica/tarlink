@@ -434,6 +434,13 @@ func validateApplicationRelease(m Manifest, release Release) error {
 			return fmt.Errorf("AppImage executable %q must target appimage", executable.Name)
 		}
 	}
+	if hasCategory(m.Categories, "games") || hasCategory(m.Categories, "recompilation") {
+		for index, executable := range m.Application.Executables {
+			if executable.CreateBinLink == nil {
+				return fmt.Errorf("application.executables[%d].create-bin-link must be explicit for games and recompilations", index)
+			}
+		}
+	}
 	if m.Desktop.Executable != "" {
 		matched := 0
 		for _, executable := range m.Application.Executables {
@@ -471,6 +478,15 @@ func validateApplicationRelease(m Manifest, release Release) error {
 		return err
 	}
 	return nil
+}
+
+func hasCategory(categories []string, wanted string) bool {
+	for _, category := range categories {
+		if category == wanted {
+			return true
+		}
+	}
+	return false
 }
 
 func (i DesktopIcon) validate() error {

@@ -54,6 +54,10 @@ unsafe paths are rejected.
 Executable names default to the basename of `path`; explicit names remain
 valid, and resolved names must be unique. `create-bin-link` defaults to true.
 When false, TarLink does not manage a `~/.local/bin` link for that executable.
+Manifests categorized as `games` or `recompilation` must declare
+`create-bin-link` explicitly for every executable, so GUI-only applications do
+not accidentally acquire a meaningless CLI integration. This is an explicit
+per-executable decision; CLI-capable games may declare `true`.
 Desktop `executable` selects the logical executable used by the desktop entry;
 when exactly one executable exists it may be omitted. The only supported
 desktop working directory is `application-root`, which resolves to the active
