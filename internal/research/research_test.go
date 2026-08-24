@@ -75,6 +75,58 @@ func TestParseRepositoryRejectsHostileForms(t *testing.T) {
 	}
 }
 
+func TestDiscoverRepositoryIconCandidatesUsesCompleteRecursiveTree(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	tree := strings.Repeat("b", 40)
+	blob := strings.Repeat("c", 40)
+	c := &Client{APIBase: "https://api.example", HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/repos/o/r/git/ref/tags/v1":
+			return response(200, `{"ref":"refs/tags/v1","object":{"sha":"`+commit+`","type":"commit"}}`), nil
+		case "/repos/o/r/git/commits/" + commit:
+			return response(200, `{"sha":"`+commit+`","tree":{"sha":"`+tree+`"}}`), nil
+		case "/repos/o/r/git/trees/" + tree:
+			if r.URL.RawQuery != "recursive=1" {
+				t.Fatalf("tree query = %q", r.URL.RawQuery)
+			}
+			return response(200, `{"sha":"`+tree+`","truncated":false,"tree":[{"path":"icons/512.png","type":"blob","sha":"`+blob+`","size":4},{"path":"icons/512.svg","type":"blob","sha":"`+blob+`","size":4},{"path":"README.md","type":"blob","sha":"`+blob+`","size":4}]}`), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}}
+	files, err := c.DiscoverRepositoryIconCandidates(context.Background(), "O/R", "v1")
+	if err != nil || len(files) != 1 || files[0].Path != "icons/512.png" {
+		t.Fatalf("files=%#v err=%v", files, err)
+	}
+	if files[0].URL != "https://raw.githubusercontent.com/o/r/"+commit+"/icons/512.png" {
+		t.Fatalf("URL=%q", files[0].URL)
+	}
+}
+
+func TestDiscoverRepositoryIconCandidatesRejectsTruncatedTree(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	tree := strings.Repeat("b", 40)
+	c := &Client{APIBase: "https://api.example", HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/repos/o/r/git/ref/tags/v1":
+			return response(200, `{"ref":"refs/tags/v1","object":{"sha":"`+commit+`","type":"commit"}}`), nil
+		case "/repos/o/r/git/commits/" + commit:
+			return response(200, `{"sha":"`+commit+`","tree":{"sha":"`+tree+`"}}`), nil
+		case "/repos/o/r/git/trees/" + tree:
+			return response(200, `{"sha":"`+tree+`","truncated":true,"tree":[]}`), nil
+		default:
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}}
+	_, err := c.DiscoverRepositoryIconCandidates(context.Background(), "o/r", "v1")
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != APIErrorMalformed {
+		t.Fatalf("err=%v", err)
+	}
+}
+
 func TestProvenanceRejectsIncompleteAssetState(t *testing.T) {
 	a := Asset{ID: 2, ReleaseID: 1, Repository: "o/r", Digest: "sha256:" + strings.Repeat("a", 64), State: "created"}
 	p := EvaluateProvenance("o/r", Release{ID: 1, Repository: "o/r"}, a)

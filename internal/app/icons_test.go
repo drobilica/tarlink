@@ -63,3 +63,21 @@ func TestIconPathScorePrefersKnownApplicationPaths(t *testing.T) {
 		t.Fatal("Pixelorama-style score changed")
 	}
 }
+
+func TestFallbackIconRankingPrefers512InIcons(t *testing.T) {
+	if fallbackTreeScore("icons/512.png") <= fallbackTreeScore("logo.png") {
+		t.Fatal("explicit icons path did not outrank generic logo")
+	}
+	if fallbackIconScore("icons/512.png", 512) <= fallbackIconScore("icons/256.png", 256) {
+		t.Fatal("512 icon did not outrank 256 icon")
+	}
+}
+
+func TestFallbackIconCandidatesAreNarrow(t *testing.T) {
+	if fallbackTreeScore("screenshots/512.png") != 0 {
+		t.Fatal("unrelated PNG was treated as an icon")
+	}
+	if fallbackTreeScore("icons/512.svg") != 0 {
+		t.Fatal("non-PNG was treated as an icon")
+	}
+}

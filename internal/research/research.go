@@ -18,6 +18,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -437,6 +438,105 @@ type apiGitTree struct {
 		SHA  string `json:"sha"`
 		Size *int64 `json:"size,omitempty"`
 	} `json:"tree"`
+}
+
+// DiscoverRepositoryIconCandidates resolves an exact GitHub tag and returns
+// the small set of repository-tree paths that strongly resemble application
+// icons. The recursive tree is accepted only when GitHub returns it in full.
+func (c *Client) DiscoverRepositoryIconCandidates(ctx context.Context, raw, tag string) ([]RepositoryFile, error) {
+	repo, commitSHA, treeSHA, base, err := c.resolveRepositoryCommit(ctx, raw, tag)
+	if err != nil {
+		return nil, err
+	}
+	var tree apiGitTree
+	if err := c.getAPIJSON(ctx, base+"/git/trees/"+treeSHA+"?recursive=1", &tree); err != nil {
+		return nil, err
+	}
+	if tree.SHA != treeSHA || tree.Truncated {
+		return nil, &APIError{Kind: APIErrorMalformed, Message: "GitHub tree response is truncated or inconsistent"}
+	}
+	candidates := make([]RepositoryFile, 0)
+	for _, entry := range tree.Tree {
+		if entry.Type != "blob" || !gitObjectPattern.MatchString(entry.SHA) || entry.Size == nil || *entry.Size < 0 || !looksLikeIconPath(entry.Path) {
+			continue
+		}
+		parts, pathErr := repositoryPathParts(entry.Path)
+		if pathErr != nil {
+			continue
+		}
+		escaped := make([]string, len(parts))
+		for i, part := range parts {
+			escaped[i] = url.PathEscape(part)
+		}
+		candidates = append(candidates, RepositoryFile{
+			Repository: repo, Tag: tag, Commit: commitSHA, Path: strings.Join(parts, "/"), Blob: entry.SHA, Size: *entry.Size,
+			URL: "https://raw.githubusercontent.com/" + string(repo) + "/" + commitSHA + "/" + strings.Join(escaped, "/"),
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Path < candidates[j].Path })
+	return candidates, nil
+}
+
+func looksLikeIconPath(value string) bool {
+	if !strings.EqualFold(path.Ext(value), ".png") {
+		return false
+	}
+	parts := strings.Split(value, "/")
+	base := strings.ToLower(parts[len(parts)-1])
+	if base == "icon.png" || base == "logo.png" {
+		return true
+	}
+	for _, part := range parts[:len(parts)-1] {
+		if strings.EqualFold(part, "icon") || strings.EqualFold(part, "icons") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) resolveRepositoryCommit(ctx context.Context, raw, tag string) (Repository, string, string, string, error) {
+	repo, err := ParseRepository(raw)
+	if err != nil {
+		return "", "", "", "", err
+	}
+	if tag == "" || strings.ContainsAny(tag, "?#") {
+		return "", "", "", "", &APIError{Kind: APIErrorMalformed, Message: "invalid release tag"}
+	}
+	base := c.repositoryAPIURL(repo)
+	var reference apiGitReference
+	if err := c.getAPIJSON(ctx, base+"/git/ref/tags/"+url.PathEscape(tag), &reference); err != nil {
+		return "", "", "", "", err
+	}
+	if reference.Ref != "refs/tags/"+tag || !validGitObject(reference.Object) {
+		return "", "", "", "", &APIError{Kind: APIErrorMalformed, Message: "GitHub tag reference identity mismatch"}
+	}
+	object := reference.Object
+	seen := make(map[string]bool)
+	for depth := 0; object.Type == "tag"; depth++ {
+		if depth >= 8 || seen[object.SHA] {
+			return "", "", "", "", &APIError{Kind: APIErrorMalformed, Message: "GitHub annotated tag chain is invalid"}
+		}
+		seen[object.SHA] = true
+		var annotated apiGitTag
+		if err := c.getAPIJSON(ctx, base+"/git/tags/"+object.SHA, &annotated); err != nil {
+			return "", "", "", "", err
+		}
+		if annotated.SHA != object.SHA || !validGitObject(annotated.Object) {
+			return "", "", "", "", &APIError{Kind: APIErrorMalformed, Message: "GitHub annotated tag identity mismatch"}
+		}
+		object = annotated.Object
+	}
+	if object.Type != "commit" {
+		return "", "", "", "", &APIError{Kind: APIErrorMalformed, Message: "GitHub tag does not resolve to a commit"}
+	}
+	var commit apiGitCommit
+	if err := c.getAPIJSON(ctx, base+"/git/commits/"+object.SHA, &commit); err != nil {
+		return "", "", "", "", err
+	}
+	if commit.SHA != object.SHA || !gitObjectPattern.MatchString(commit.Tree.SHA) {
+		return "", "", "", "", &APIError{Kind: APIErrorMalformed, Message: "GitHub commit identity mismatch"}
+	}
+	return repo, object.SHA, commit.Tree.SHA, base, nil
 }
 
 // DiscoverRepositoryFile resolves an exact GitHub tag, dereferences annotated

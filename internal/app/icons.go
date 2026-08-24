@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/drobilica/tarlink/internal/manifest"
@@ -161,6 +162,35 @@ func (core *Core) fixRegistryIcon(ctx context.Context, root string, variants map
 		}
 	}
 	if len(valid) == 0 {
+		files, discoverErr := client.DiscoverRepositoryIconCandidates(ctx, repository, tag)
+		if discoverErr != nil {
+			return fixedRegistryIcon{}, discoverErr
+		}
+		sort.Slice(files, func(i, j int) bool {
+			si, sj := fallbackTreeScore(files[i].Path), fallbackTreeScore(files[j].Path)
+			if si != sj {
+				return si > sj
+			}
+			return files[i].Path < files[j].Path
+		})
+		// The tree is only a shortlist. Download and validate these bounded
+		// candidates before ranking them; the tree itself is untrusted metadata.
+		for _, file := range files {
+			if len(valid) >= maxIconCandidates {
+				break
+			}
+			data, fetchErr := client.FetchRepositoryFile(ctx, file)
+			if fetchErr != nil {
+				continue
+			}
+			size, sizeErr := manifest.IconSizeFromPNG(data)
+			if sizeErr != nil {
+				continue
+			}
+			valid = append(valid, candidate{file: file, data: data, score: fallbackIconScore(file.Path, size)})
+		}
+	}
+	if len(valid) == 0 {
 		return fixedRegistryIcon{}, errors.New("no valid PNG icon candidate found")
 	}
 	sort.Slice(valid, func(i, j int) bool {
@@ -231,6 +261,71 @@ func iconPathScore(value string) int {
 		return 90
 	default:
 		return 0
+	}
+}
+
+func fallbackIconScore(value string, size int) int {
+	parts := strings.Split(value, "/")
+	base := strings.ToLower(parts[len(parts)-1])
+	category := 0
+	if base == "icon.png" {
+		category = 3
+	} else {
+		for _, part := range parts[:len(parts)-1] {
+			if strings.EqualFold(part, "icon") || strings.EqualFold(part, "icons") {
+				category = 2
+				break
+			}
+		}
+		if category == 0 && base == "logo.png" {
+			category = 1
+		}
+	}
+	return category*100 + iconDimensionScore(size)
+}
+
+func fallbackTreeScore(value string) int {
+	if !strings.EqualFold(filepath.Ext(value), ".png") {
+		return 0
+	}
+	parts := strings.Split(value, "/")
+	base := strings.ToLower(parts[len(parts)-1])
+	category := 0
+	if base == "icon.png" {
+		category = 3
+	} else {
+		for _, part := range parts[:len(parts)-1] {
+			if strings.EqualFold(part, "icon") || strings.EqualFold(part, "icons") {
+				category = 2
+				break
+			}
+		}
+		if category == 0 && base == "logo.png" {
+			category = 1
+		}
+	}
+	if category == 0 {
+		return 0
+	}
+	dimension := 0
+	if strings.HasSuffix(base, ".png") {
+		if n, err := strconv.Atoi(strings.TrimSuffix(base, ".png")); err == nil {
+			dimension = iconDimensionScore(n)
+		}
+	}
+	return category*100 + dimension
+}
+
+func iconDimensionScore(size int) int {
+	switch size {
+	case 512:
+		return 4
+	case 256:
+		return 3
+	case 128:
+		return 2
+	default:
+		return 1
 	}
 }
 
