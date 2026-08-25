@@ -1640,6 +1640,86 @@ func TestModernFooterIsOneRowAndFitsNarrowTerminals(t *testing.T) {
 	}
 }
 
+func TestShellGeometryAndTransientLayers(t *testing.T) {
+	values := []app.Application{{ID: "alpha", Name: "Alpha", InstalledVersion: "1.0"}, {ID: "beta", Name: "Beta", InstalledVersion: "1.0"}}
+	for _, size := range [][2]int{{50, 18}, {80, 24}, {120, 32}, {180, 50}} {
+		width, height := size[0], size[1]
+		idle := model{screen: screenInstalled, installed: values, width: width, height: height}
+		busy := idle
+		busy.busy = "Installing alpha"
+		busy.progress = app.Progress{Stage: app.ProgressDownloading, BytesDone: 50, BytesTotal: 100}
+		idleLines := strings.Split(strings.TrimSuffix(idle.View().Content, "\n"), "\n")
+		busyLines := strings.Split(strings.TrimSuffix(busy.View().Content, "\n"), "\n")
+		if len(idleLines) != height || len(busyLines) != height {
+			t.Fatalf("%dx%d: shell height changed: idle=%d busy=%d", width, height, len(idleLines), len(busyLines))
+		}
+		for _, lines := range [][]string{idleLines, busyLines} {
+			for _, line := range lines {
+				if displaywidth.String(line) > width {
+					t.Fatalf("%dx%d: line exceeds width: %q", width, height, line)
+				}
+			}
+		}
+		start, _ := idle.listBoundsWithoutRows()
+		if idleLines[start+1] != busyLines[start+1] {
+			t.Fatalf("%dx%d: activity changed first application row", width, height)
+		}
+		if idleLines[height-1] == "" || busyLines[height-1] == "" {
+			t.Fatalf("%dx%d: footer moved or disappeared", width, height)
+		}
+	}
+}
+
+func TestModalComposesOverStableWorkspace(t *testing.T) {
+	value := app.Application{ID: "alpha", Name: "Alpha", InstalledVersion: "1.0"}
+	base := model{screen: screenInstalled, installed: []app.Application{value}, width: 80, height: 24}
+	modal := base
+	modal.detail = &value
+	modal.confirmTo = screenInstalled
+	modal.confirmSet = true
+	modal.screen = screenUninstall
+	base.initComponents()
+	modal.initComponents()
+	baseWorkspace := base.bodyLines()
+	modalWorkspace := modal.bodyLines()
+	baseWorkspace = baseWorkspace[chromeHeight : chromeHeight+base.workspaceHeight()]
+	modalWorkspace = modalWorkspace[chromeHeight : chromeHeight+modal.workspaceHeight()]
+	if strings.Join(baseWorkspace, "\n") != strings.Join(modalWorkspace, "\n") {
+		t.Fatal("opening modal changed the base workspace geometry")
+	}
+	lines := strings.Split(strings.TrimSuffix(modal.View().Content, "\n"), "\n")
+	borderRow := -1
+	for i, line := range lines {
+		if strings.Contains(line, "╭") || strings.Contains(line, "┌") {
+			borderRow = i
+			break
+		}
+	}
+	if borderRow <= chromeHeight || borderRow >= chromeHeight+modal.workspaceHeight() {
+		t.Fatalf("modal was not composited inside workspace: row=%d", borderRow)
+	}
+	if lines[len(lines)-1] == "" || !strings.Contains(modal.formattedFooter(), "Confirm") {
+		t.Fatal("modal footer does not expose its actions")
+	}
+	closed := modal
+	closed.screen = screenInstalled
+	closed.detail = nil
+	closedLines := closed.bodyLines()
+	closedLines = closedLines[chromeHeight : chromeHeight+closed.workspaceHeight()]
+	if strings.Join(closedLines, "\n") != strings.Join(baseWorkspace, "\n") {
+		t.Fatal("closing modal did not restore the base workspace")
+	}
+}
+
+func TestModalOwnsKeyboardFocus(t *testing.T) {
+	value := app.Application{ID: "alpha", Name: "Alpha", InstalledVersion: "1.0"}
+	m := model{screen: screenUninstall, installed: []app.Application{value}, detail: &value, selected: 0, width: 80, height: 24}
+	updated, command := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	if command != nil || updated.(model).screen != screenUninstall || updated.(model).selected != 0 {
+		t.Fatal("background navigation was accepted while modal owned focus")
+	}
+}
+
 func TestListBoundsMatchRenderedContent(t *testing.T) {
 	values := []app.Application{{ID: "a", Name: "Alpha"}, {ID: "b", Name: "Beta"}}
 	scenarios := []struct {

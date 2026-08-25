@@ -166,6 +166,19 @@ type model struct {
 	versionsViewport    viewport.Model
 }
 
+const (
+	chromeHeight   = 3 // header, tabs, separator
+	activityHeight = 2
+	footerHeight   = 1
+)
+
+func (m model) workspaceHeight() int {
+	if m.height <= 0 {
+		return 12
+	}
+	return max(0, m.height-chromeHeight-activityHeight-footerHeight)
+}
+
 // Run starts the terminal renderer. All application changes are delegated to
 // the same service API used by the CLI.
 func Run(ctx context.Context, service app.Service, input io.Reader, output io.Writer) error {
@@ -189,7 +202,7 @@ func (m model) Init() tea.Cmd { return tea.Batch(m.loadCmd(), m.checkVersionCmd(
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	m.initComponents()
 	if m.isListScreen() {
-		m.configureApplicationTable(m.visibleApplications(), max(28, (viewWidth(m.width)*46)/100), max(3, m.height-8))
+		m.configureApplicationTable(m.visibleApplications(), leftDetailWidth(m.width), m.listTableHeight())
 	}
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
@@ -335,17 +348,14 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 func (m model) View() tea.View {
 	m.initComponents()
 	m.setViewportSize()
-	body := m.bodyLines()
-	footer := m.style(fit(m.formattedFooter(), viewWidth(m.width)), muted)
-	if m.height > 0 {
-		available := max(0, m.height-1)
-		if len(body) > available {
-			body = body[:available]
-		}
-		body = append(body, make([]string, max(0, available-len(body)))...)
+	base := m.bodyLines()
+	if modal := m.modalLayer(); modal != nil {
+		base = m.composeLayer(base, modal)
 	}
-	lines := append(body, footer)
-	view := tea.NewView(strings.Join(lines, "\n") + "\n")
+	if m.helpOverlay {
+		base = m.composeLayer(base, m.helpLayer())
+	}
+	view := tea.NewView(strings.Join(base, "\n") + "\n")
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
@@ -355,50 +365,83 @@ func (m model) View() tea.View {
 // the footer and mouse coordinates agree with every screen's rendered layout.
 func (m model) bodyLines() []string {
 	lines := []string{m.headerLine(), m.tabsLine(), m.separator()}
-	add := func(value string) {
-		for _, part := range strings.Split(value, "\n") {
-			lines = append(lines, fit(part, m.width))
-		}
-	}
-	if m.status != "" {
-		add(m.style(m.status, success))
-		lines = append(lines, "")
-	}
-	if m.err != nil {
-		add(m.style("Operation failed", danger))
-		add(m.style(m.err.Error(), danger))
-		lines = append(lines, "")
-	}
-	if m.uninstallConflict != nil {
-		add("Conflicting integration: " + m.uninstallConflict.Path)
-	}
-	if m.busy != "" {
-		add(m.style(m.busy, accent))
-		if m.progress.Stage != "" {
-			add(m.progressLine())
-		}
-		lines = append(lines, "")
-	}
-	if m.upgradeAvailable {
-		add(m.style("TarLink update available: "+m.tarlinkVersion.Current+" → "+m.tarlinkVersion.Latest, warning))
-	}
 	workspace, _ := m.workspaceLines()
-	for _, line := range workspace {
-		lines = append(lines, fit(line, m.width))
+	lines = append(lines, workspace...)
+	activity := []string{"", ""}
+	if m.busy != "" {
+		activity[0] = m.style(m.busy, accent)
+		if m.progress.Stage != "" {
+			activity[1] = m.progressLine()
+		}
+	} else if m.err != nil {
+		activity[0] = m.style("Operation failed", danger)
+		activity[1] = m.style(m.err.Error(), danger)
+		if m.uninstallConflict != nil {
+			activity[1] = m.style("Conflicting integration: "+m.uninstallConflict.Path, danger)
+		}
+	} else if m.status != "" {
+		activity[0] = m.style(m.status, success)
+	} else if m.uninstallConflict != nil {
+		activity[0] = fit("Conflicting integration: "+m.uninstallConflict.Path, m.width)
+	} else if m.upgradeAvailable {
+		activity[0] = m.style("TarLink update available: "+m.tarlinkVersion.Current+" → "+m.tarlinkVersion.Latest, warning)
 	}
-	if m.isOverlay() {
-		lines = append(lines, "")
-		for _, line := range m.overlayLines() {
-			lines = append(lines, fit(line, m.width))
+	for i := range activity {
+		lines = append(lines, fit(activity[i], m.width))
+	}
+	lines = append(lines, m.style(fit(m.formattedFooter(), viewWidth(m.width)), muted))
+	return padLines(lines, viewWidth(m.width), max(m.height, len(lines)))
+}
+
+func padLines(lines []string, width, height int) []string {
+	result := make([]string, height)
+	for i := range result {
+		if i < len(lines) {
+			result[i] = fit(lines[i], width)
+		} else {
+			result[i] = ""
 		}
 	}
-	if m.helpOverlay {
-		lines = append(lines, "")
-		for _, line := range m.helpOverlayLines() {
-			lines = append(lines, fit(line, m.width))
-		}
+	return result
+}
+
+func (m model) composeLayer(base []string, overlay *lipgloss.Layer) []string {
+	width, height := viewWidth(m.width), max(m.height, len(base))
+	root := lipgloss.NewLayer(strings.Join(padLines(base, width, height), "\n"))
+	compositor := lipgloss.NewCompositor(root, overlay)
+	return padLines(strings.Split(compositor.Render(), "\n"), width, height)
+}
+
+func (m model) modalLayer() *lipgloss.Layer {
+	if !m.isOverlay() {
+		return nil
 	}
-	return lines
+	screenHeight := m.height
+	if screenHeight <= 0 {
+		screenHeight = chromeHeight + m.workspaceHeight() + activityHeight + footerHeight
+	}
+	width := min(64, max(10, viewWidth(m.width)-4))
+	content := m.overlayContent(width - 4)
+	box := lipgloss.NewStyle().Width(width-2).Border(lipgloss.RoundedBorder()).Padding(0, 1).Render(strings.Join(content, "\n"))
+	boxWidth, boxHeight := displaywidth.String(box), strings.Count(box, "\n")+1
+	x := max(0, min(viewWidth(m.width)-boxWidth, (viewWidth(m.width)-boxWidth)/2))
+	y := chromeHeight + max(0, (m.workspaceHeight()-boxHeight)/2)
+	y = max(0, min(max(0, screenHeight-boxHeight), y))
+	return lipgloss.NewLayer(box).ID("modal").X(x).Y(y).Z(10)
+}
+
+func (m model) helpLayer() *lipgloss.Layer {
+	screenHeight := m.height
+	if screenHeight <= 0 {
+		screenHeight = chromeHeight + m.workspaceHeight() + activityHeight + footerHeight
+	}
+	width := min(72, max(10, viewWidth(m.width)-4))
+	content := lipgloss.NewStyle().Width(width-2).Border(lipgloss.RoundedBorder()).Padding(0, 1).Render(strings.Join(m.helpOverlayLines(), "\n"))
+	boxWidth, boxHeight := displaywidth.String(content), strings.Count(content, "\n")+1
+	x := max(0, min(viewWidth(m.width)-boxWidth, (viewWidth(m.width)-boxWidth)/2))
+	y := chromeHeight + max(0, (m.workspaceHeight()-boxHeight)/2)
+	y = max(0, min(max(0, screenHeight-boxHeight), y))
+	return lipgloss.NewLayer(content).ID("help").X(x).Y(y).Z(10)
 }
 
 func (m *model) initComponents() {
@@ -425,7 +468,7 @@ func (m *model) initComponents() {
 
 func (m *model) setViewportSize() {
 	contentWidth := max(1, m.width-4)
-	contentHeight := max(1, m.height-7)
+	contentHeight := m.workspaceHeight()
 	m.detailViewport.SetWidth(contentWidth)
 	m.detailViewport.SetHeight(contentHeight)
 	m.versionsViewport.SetWidth(contentWidth)
@@ -437,6 +480,14 @@ func (m model) isOverlay() bool {
 }
 
 func (m model) workspaceLines() ([]string, int) {
+	// A modal is transient state: render the page it covers unchanged.
+	if m.isOverlay() {
+		target := m.confirmationTarget()
+		if m.screen == screenInstallChannel && target == screenAvailable && m.detail != nil {
+			target = screenDetails
+		}
+		m.screen = target
+	}
 	values := m.visibleApplications()
 	if m.detail == nil && len(values) > 0 && m.selected < len(values) {
 		value := values[m.selected]
@@ -445,9 +496,15 @@ func (m model) workspaceLines() ([]string, int) {
 	leftWidth := max(28, (viewWidth(m.width)*46)/100)
 	wide := viewWidth(m.width) >= 72
 	if m.isListScreen() {
-		m.configureApplicationTable(values, leftWidth, max(3, m.height-8))
+		m.configureApplicationTable(values, leftWidth, m.listTableHeight())
 	}
 	if !wide {
+		if !m.isListScreen() {
+			lines := []string{m.theme.panel.Render("Selected application")}
+			detail, _ := m.detailLines()
+			lines = append(lines, detail...)
+			return padLines(lines, viewWidth(m.width), m.workspaceHeight()), 0
+		}
 		lines := []string{m.theme.panel.Render("Applications")}
 		if m.screen == screenAvailable {
 			lines = append(lines, m.filterView())
@@ -456,10 +513,7 @@ func (m model) workspaceLines() ([]string, int) {
 			lines = append(lines, m.searchInput.View())
 		}
 		lines = append(lines, strings.Split(m.applicationTable.View(), "\n")...)
-		lines = append(lines, m.theme.panel.Render("Selected application"))
-		detail, _ := m.detailLines()
-		lines = append(lines, detail...)
-		return lines, 3
+		return padLines(lines, viewWidth(m.width), m.workspaceHeight()), 3
 	}
 
 	list := make([]string, 0)
@@ -486,7 +540,18 @@ func (m model) workspaceLines() ([]string, int) {
 		}
 		result[i] = fit(left, leftWidth) + " │ " + fit(right, max(1, viewWidth(m.width)-leftWidth-3))
 	}
-	return result, 3
+	return padLines(result, viewWidth(m.width), m.workspaceHeight()), 3
+}
+
+func (m model) listHeaderLines() int {
+	if m.screen == screenAvailable {
+		return 2 // Applications and filter
+	}
+	return 1 // Applications
+}
+
+func (m model) listTableHeight() int {
+	return max(2, m.workspaceHeight()-m.listHeaderLines())
 }
 
 func (m *model) configureApplicationTable(values []app.Application, width, height int) {
@@ -595,7 +660,7 @@ func (m model) primaryActionLabel() string {
 	return "Inspect"
 }
 
-func (m model) overlayLines() []string {
+func (m model) overlayContent(width int) []string {
 	title, message := "", ""
 	switch m.screen {
 	case screenRollback:
@@ -614,10 +679,10 @@ func (m model) overlayLines() []string {
 	if title == "" {
 		return nil
 	}
-	lines := []string{m.theme.panel.Render("┌─ " + title + " ─────────────────────────┐"), "│ " + message}
+	lines := []string{m.theme.panel.Render(fit(title, width)), fit(message, width)}
 	if m.screen == screenInstallConfirm {
 		for _, conflict := range m.pathConflicts {
-			lines = append(lines, "│ "+conflict.Type+": "+conflict.Directory+" "+conflict.Candidate)
+			lines = append(lines, fit(conflict.Type+": "+conflict.Directory+" "+conflict.Candidate, width))
 		}
 	}
 	if m.screen == screenInstallChannel {
@@ -626,15 +691,14 @@ func (m model) overlayLines() []string {
 			if i == m.channelSelected {
 				prefix = "> "
 			}
-			lines = append(lines, "│ "+prefix+channel)
+			lines = append(lines, fit(prefix+channel, width))
 		}
 	}
-	confirm := "Confirm"
+	confirm := "[ Cancel ]  [Enter] Confirm"
 	if m.screen == screenInstallConfirm {
-		confirm = "Install anyway"
+		confirm = "[ Cancel ]  [Enter] Install anyway"
 	}
-	lines = append(lines, "│", "│        [ Cancel ]  [Enter] "+confirm, "└──────────────────────────────────┘")
-	return lines
+	return append(lines, "", fit(confirm, width))
 }
 
 func (m model) helpOverlayLines() []string {
@@ -722,6 +786,9 @@ func detailName(value *app.Application) string {
 }
 
 func (m model) formattedFooter() string {
+	if m.helpOverlay {
+		return "Esc Close"
+	}
 	return m.helpView()
 }
 
@@ -778,8 +845,11 @@ func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) channelBounds() (start, rows int) {
-	workspace, _ := m.workspaceLines()
-	return 3 + len(workspace) + 3, len(m.channels)
+	layer := m.modalLayer()
+	if layer == nil {
+		return chromeHeight, len(m.channels)
+	}
+	return layer.GetY() + 3, len(m.channels)
 }
 
 func (m model) isListScreen() bool {
@@ -788,13 +858,10 @@ func (m model) isListScreen() bool {
 
 func (m model) listBounds() (start, rows int) {
 	start, _ = m.listBoundsWithoutRows()
+	start++ // table header occupies the row before the first application
 	rows = min(m.listRows(), len(m.visibleApplications())-m.listOffset)
 	if rows < 0 {
 		rows = 0
-	}
-	if m.height > 0 {
-		footerRows := len(footerLines(m.footer(), m.width))
-		rows = min(rows, max(0, m.height-footerRows-start-1))
 	}
 	return start, rows
 }
@@ -1676,44 +1743,12 @@ func (m *model) clampSelection() {
 }
 
 func (m model) listRows() int {
-	start, _ := m.listBoundsWithoutRows()
-	footerRows := len(footerLines(m.footer(), m.width))
-	rows := m.height - start - 1 - footerRows // trailing spacer before the footer
-	if rows < 1 {
-		return 1
-	}
-	return rows
+	return max(1, m.listTableHeight()-1)
 }
 
 func (m model) listBoundsWithoutRows() (start, rows int) {
-	start = 3 // header, breadcrumb, separator
-	if m.status != "" {
-		start += 2
-	}
-	if m.err != nil {
-		start += 3
-	}
-	if m.busy != "" {
-		start++
-		if m.progress.Stage != "" {
-			start++
-		}
-		start++
-	}
-	if m.upgradeAvailable {
-		start++
-	}
-	if m.isListScreen() {
-		start++ /* Applications heading */
-		if m.screen == screenAvailable {
-			start++ /* collection filter */
-		}
-		start++ /* column heading */
-	}
-	if m.isListScreen() {
-		start--
-	}
-	if m.searching || m.query != "" {
+	start = chromeHeight + m.listHeaderLines()
+	if m.searching {
 		start++
 	}
 	return start, 0
