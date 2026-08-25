@@ -57,6 +57,15 @@ const (
 	focusOverlay
 )
 
+type versionCheckState uint8
+
+const (
+	versionChecking versionCheckState = iota
+	versionCurrent
+	versionAvailable
+	versionUnavailable
+)
+
 type loadedMsg struct {
 	available []app.Application
 	installed []app.Application
@@ -155,10 +164,13 @@ type model struct {
 	progressBar         progress.Model
 	tarlinkVersion      app.TarLinkVersion
 	upgradeAvailable    bool
+	versionState        versionCheckState
+	versionCheckError   error
 	cancel              context.CancelFunc
 	opCancel            context.CancelFunc
 	uninstallConflict   *app.UninstallConflict
 	focus               paneFocus
+	previousFocus       paneFocus
 	helpOverlay         bool
 	componentsReady     bool
 	searchInput         textinput.Model
@@ -173,10 +185,7 @@ const (
 )
 
 func (m model) workspaceHeight() int {
-	if m.height <= 0 {
-		return 12
-	}
-	return max(0, m.height-chromeHeight-activityHeight-footerHeight)
+	return m.layout().Workspace.height
 }
 
 // Run starts the terminal renderer. All application changes are delegated to
@@ -187,7 +196,7 @@ func Run(ctx context.Context, service app.Service, input io.Reader, output io.Wr
 	}
 	operationContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	m := model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), theme: newTheme(colorEnabled(output)), help: newHelp(colorEnabled(output)), progressBar: newProgress(colorEnabled(output)), cancel: cancel}
+	m := model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), theme: newTheme(colorEnabled(output)), help: newHelp(colorEnabled(output)), progressBar: newProgress(colorEnabled(output)), cancel: cancel, versionState: versionChecking}
 	m.initComponents()
 	program := tea.NewProgram(
 		m,
@@ -202,7 +211,8 @@ func (m model) Init() tea.Cmd { return tea.Batch(m.loadCmd(), m.checkVersionCmd(
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	m.initComponents()
 	if m.isListScreen() {
-		m.configureApplicationTable(m.visibleApplications(), leftDetailWidth(m.width), m.listTableHeight())
+		bounds := m.layout().Applications
+		m.configureApplicationTable(m.visibleApplications(), max(1, bounds.width-2), max(1, bounds.height-2))
 	}
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
@@ -211,7 +221,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampSelection()
 		m.help.SetWidth(m.width)
 		m.progressBar.SetWidth(progressBarWidthFor(m.width))
-		m.searchInput.SetWidth(max(12, m.width-18))
+		m.searchInput.SetWidth(max(12, m.layout().Applications.width-8))
 		m.setViewportSize()
 		return m, nil
 	case loadedMsg:
@@ -232,9 +242,18 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampSelection()
 		return m, nil
 	case versionMsg:
-		if message.err == nil {
+		if message.err != nil {
+			m.versionState = versionUnavailable
+			m.versionCheckError = message.err
+		} else {
 			m.tarlinkVersion = message.value
 			m.upgradeAvailable = message.value.UpgradeAvailable
+			m.versionCheckError = nil
+			if message.value.UpgradeAvailable {
+				m.versionState = versionAvailable
+			} else {
+				m.versionState = versionCurrent
+			}
 		}
 		return m, nil
 	case pathCheckMsg:
@@ -246,7 +265,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.pathConflicts = message.conflicts
 		if len(message.conflicts) != 0 {
 			m.returnTo = m.screen
-			m.screen = screenInstallConfirm
+			m.openOverlay(screenInstallConfirm)
 			return m, nil
 		}
 		return m.startInstall(m.installSelector(message.appID))
@@ -258,7 +277,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.batchTargets = message.targets
-		m.screen = screenInstallConfirm
+		m.openOverlay(screenInstallConfirm)
 		return m, nil
 	case searchMsg:
 		m.busy = ""
@@ -309,6 +328,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if message.clearUpgrade {
 			m.upgradeAvailable = false
+			m.versionState = versionCurrent
 		}
 		if message.move {
 			m.screen = message.next
@@ -355,7 +375,11 @@ func (m model) View() tea.View {
 	if m.helpOverlay {
 		base = m.composeLayer(base, m.helpLayer())
 	}
-	view := tea.NewView(strings.Join(base, "\n") + "\n")
+	// Assign the already normalized frame directly. NewView/SetContent applies
+	// styled-string line normalization, which can expand block-composed ANSI
+	// rows and violates the shell's fixed geometry contract.
+	view := tea.NewView("")
+	view.Content = strings.Join(base, "\n") + "\n"
 	view.AltScreen = true
 	view.MouseMode = tea.MouseModeCellMotion
 	return view
@@ -416,32 +440,33 @@ func (m model) modalLayer() *lipgloss.Layer {
 	if !m.isOverlay() {
 		return nil
 	}
-	screenHeight := m.height
-	if screenHeight <= 0 {
-		screenHeight = chromeHeight + m.workspaceHeight() + activityHeight + footerHeight
-	}
-	width := min(64, max(10, viewWidth(m.width)-4))
-	content := m.overlayContent(width - 4)
-	box := lipgloss.NewStyle().Width(width-2).Border(lipgloss.RoundedBorder()).Padding(0, 1).Render(strings.Join(content, "\n"))
-	boxWidth, boxHeight := displaywidth.String(box), strings.Count(box, "\n")+1
-	x := max(0, min(viewWidth(m.width)-boxWidth, (viewWidth(m.width)-boxWidth)/2))
-	y := chromeHeight + max(0, (m.workspaceHeight()-boxHeight)/2)
-	y = max(0, min(max(0, screenHeight-boxHeight), y))
-	return lipgloss.NewLayer(box).ID("modal").X(x).Y(y).Z(10)
+	width := min(64, max(10, m.layout().Width-4))
+	return m.centeredOverlay(m.overlayContent(width-4), width, "modal")
 }
 
 func (m model) helpLayer() *lipgloss.Layer {
-	screenHeight := m.height
-	if screenHeight <= 0 {
-		screenHeight = chromeHeight + m.workspaceHeight() + activityHeight + footerHeight
+	width := min(72, max(10, m.layout().Width-4))
+	return m.centeredOverlay(m.helpOverlayLines(), width, "help")
+}
+
+func (m model) centeredOverlay(content []string, width int, id string) *lipgloss.Layer {
+	width = min(width, max(1, m.layout().Width))
+	inner := max(1, width-2)
+	lines := make([]string, len(content))
+	for i, line := range content {
+		lines[i] = fit(line, inner)
 	}
-	width := min(72, max(10, viewWidth(m.width)-4))
-	content := lipgloss.NewStyle().Width(width-2).Border(lipgloss.RoundedBorder()).Padding(0, 1).Render(strings.Join(m.helpOverlayLines(), "\n"))
-	boxWidth, boxHeight := displaywidth.String(content), strings.Count(content, "\n")+1
-	x := max(0, min(viewWidth(m.width)-boxWidth, (viewWidth(m.width)-boxWidth)/2))
-	y := chromeHeight + max(0, (m.workspaceHeight()-boxHeight)/2)
-	y = max(0, min(max(0, screenHeight-boxHeight), y))
-	return lipgloss.NewLayer(content).ID("help").X(x).Y(y).Z(10)
+	box := lipgloss.NewStyle().Width(inner).Border(lipgloss.RoundedBorder()).Padding(0, 1).Render(strings.Join(lines, "\n"))
+	boxWidth := 0
+	boxLines := strings.Split(box, "\n")
+	for _, line := range boxLines {
+		boxWidth = max(boxWidth, displaywidth.String(line))
+	}
+	boxHeight := len(boxLines)
+	l := m.layout()
+	x := max(0, (l.Width-boxWidth)/2)
+	y := max(0, (l.Height-boxHeight)/2)
+	return lipgloss.NewLayer(box).ID(id).X(x).Y(y).Z(10)
 }
 
 func (m *model) initComponents() {
@@ -467,12 +492,43 @@ func (m *model) initComponents() {
 }
 
 func (m *model) setViewportSize() {
-	contentWidth := max(1, m.width-4)
-	contentHeight := m.workspaceHeight()
-	m.detailViewport.SetWidth(contentWidth)
-	m.detailViewport.SetHeight(contentHeight)
-	m.versionsViewport.SetWidth(contentWidth)
-	m.versionsViewport.SetHeight(contentHeight)
+	l := m.layout()
+	m.detailViewport.SetWidth(max(1, l.Details.width-4))
+	m.detailViewport.SetHeight(max(1, l.Details.height-2))
+	m.versionsViewport.SetWidth(max(1, l.Details.width-4))
+	m.versionsViewport.SetHeight(max(1, l.Details.height-2))
+}
+
+func (m *model) setFocus(focus paneFocus) {
+	m.focus = focus
+	switch focus {
+	case focusList:
+		m.applicationTable.Focus()
+		m.searchInput.Blur()
+	case focusDetail:
+		m.applicationTable.Blur()
+		m.searchInput.Blur()
+	case focusSearch:
+		m.applicationTable.Blur()
+		m.searchInput.Focus()
+	default:
+		m.applicationTable.Blur()
+		m.searchInput.Blur()
+	}
+}
+
+func (m *model) openOverlay(screen screen) {
+	m.previousFocus = m.focus
+	m.screen = screen
+	m.setFocus(focusOverlay)
+}
+
+func (m *model) closeOverlay(target screen) {
+	m.screen = target
+	if m.previousFocus != focusList && m.previousFocus != focusDetail {
+		m.previousFocus = focusList
+	}
+	m.setFocus(m.previousFocus)
 }
 
 func (m model) isOverlay() bool {
@@ -480,6 +536,99 @@ func (m model) isOverlay() bool {
 }
 
 func (m model) workspaceLines() ([]string, int) {
+	// Resolve the covered route locally for rendering. The model remains in
+	// overlay state, so actions and input still belong exclusively to the
+	// overlay while the underlying workspace stays stable.
+	if m.isOverlay() {
+		m.screen = m.confirmationTarget()
+	}
+	l := m.layout()
+	if l.Workspace.height == 0 {
+		return nil, 0
+	}
+	values := m.visibleApplications()
+	if m.detail == nil && len(values) > 0 && m.selected < len(values) {
+		value := values[m.selected]
+		m.detail = &value
+	}
+	if m.isListScreen() {
+		m.configureApplicationTable(values, max(1, l.Applications.width-2), max(1, l.Applications.height-2))
+	}
+	list := m.applicationPanel(l.Applications)
+	if l.Mode == modeNarrow && !m.isListScreen() {
+		return strings.Split(m.panelBlock(l.Details, m.detailPanelContent(l.Details), m.focus == focusDetail), "\n"), 0
+	}
+	if l.Mode == modeNarrow {
+		return strings.Split(list, "\n"), 1
+	}
+	detail := m.panelBlock(l.Details, m.detailPanelContent(l.Details), m.focus == focusDetail)
+	return strings.Split(lipgloss.JoinHorizontal(lipgloss.Top, list, detail), "\n"), 1
+}
+
+func (m model) applicationPanel(bounds rect) string {
+	content := []string{m.panelTitle("Applications", m.focus == focusList)}
+	if m.screen == screenAvailable {
+		content = append(content, m.filterView())
+	}
+	if m.searching {
+		content = append(content, m.searchInput.View())
+	}
+	content = append(content, strings.Split(m.applicationTable.View(), "\n")...)
+	return m.panelBlock(bounds, content, m.focus == focusList)
+}
+
+func (m model) detailPanelContent(bounds rect) []string {
+	content := []string{m.panelTitle("Details · Selected application", m.focus == focusDetail)}
+	detail, _ := m.detailLines()
+	content = append(content, detail...)
+	return content
+}
+
+func (m model) panelTitle(label string, active bool) string {
+	if active {
+		return "▶ " + label
+	}
+	return "  " + label
+}
+
+func (m model) panelBlock(bounds rect, content []string, active bool) string {
+	if bounds.height <= 0 || bounds.width <= 0 {
+		return ""
+	}
+	innerWidth := max(1, bounds.width-2)
+	innerHeight := max(0, bounds.height-2)
+	lines := make([]string, 0, innerHeight)
+	if innerHeight > 0 {
+		for _, line := range content {
+			lines = append(lines, fit(line, innerWidth))
+			if len(lines) == innerHeight {
+				break
+			}
+		}
+	}
+	lines = padLines(lines, innerWidth, innerHeight)
+	for i, line := range lines {
+		if line == "" {
+			lines[i] = strings.Repeat(" ", innerWidth)
+		}
+	}
+	// The content is already normalized to the assigned height. Width is the
+	// only dimension Lip Gloss needs here; setting Height would add another
+	// minimum-height region around the already padded block.
+	panelBorder := lipgloss.Border{
+		Top: "─", Bottom: "─", Left: "│", Right: "│",
+		TopLeft: "╓", TopRight: "╖", BottomLeft: "╙", BottomRight: "╜",
+	}
+	style := lipgloss.NewStyle().Width(innerWidth).Height(innerHeight).Border(panelBorder)
+	rendered := style.Render(strings.Join(lines, "\n"))
+	// Border rendering can add rows at the edges. Normalize the final block
+	// back to its assigned rectangle so the shell cannot grow at small sizes.
+	return strings.Join(padLines(strings.Split(rendered, "\n"), bounds.width, bounds.height), "\n")
+}
+
+// workspaceLinesLegacy is retained only as a comparison point while the
+// layout contract is exercised by the renderer; it is not called.
+func (m model) workspaceLinesLegacy() ([]string, int) {
 	// A modal is transient state: render the page it covers unchanged.
 	if m.isOverlay() {
 		target := m.confirmationTarget()
@@ -629,12 +778,11 @@ func (m model) detailLines() ([]string, bool) {
 	}
 	lines := []string{m.theme.accent.Render(m.detail.Name)}
 	if m.screen == screenDetails {
-		lines = append([]string{m.breadcrumb()}, lines...)
+		lines = []string{m.breadcrumb() + " / " + m.detail.Name}
 	}
 	if m.detail.Summary != "" {
 		lines = append(lines, m.detail.Summary)
 	}
-	lines = append(lines, "")
 	addDetailFields(&lines, *m.detail, max(1, viewWidth(m.width)-leftDetailWidth(m.width)-3), m.theme)
 	if m.width > 0 && m.height > 0 {
 		m.detailViewport.SetContent(strings.Join(lines, "\n"))
@@ -712,10 +860,21 @@ func (m model) helpOverlayLines() []string {
 
 func (m model) headerLine() string {
 	left := m.theme.panel.Render("TarLink")
-	count := len(updates(m.installed))
-	right := fmt.Sprintf("Installed %d   Updates %d", len(m.installed), count)
+	right := ""
+	switch m.versionState {
+	case versionChecking:
+		right = "Checking for TarLink updates…"
+	case versionAvailable:
+		right = "TarLink " + m.tarlinkVersion.Latest + " available"
+	case versionUnavailable:
+		right = "TarLink update check unavailable"
+	default:
+		if m.tarlinkVersion.Current != "" {
+			right = "TarLink " + m.tarlinkVersion.Current
+		}
+	}
 	if viewWidth(m.width) < displaywidth.String(left)+displaywidth.String(right)+3 {
-		return fit(left, m.width)
+		return fit(left+" "+right, m.width)
 	}
 	return left + strings.Repeat(" ", viewWidth(m.width)-displaywidth.String(left)-displaywidth.String(right)) + right
 }
@@ -793,10 +952,27 @@ func (m model) formattedFooter() string {
 }
 
 func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Layers own the complete input surface while open. Nothing underneath a
+	// modal or help overlay is allowed to receive clicks or wheel events.
+	if m.helpOverlay || (m.isOverlay() && m.screen != screenInstallChannel) {
+		return m, nil
+	}
 	if m.searching || m.busy != "" {
 		return m, nil
 	}
 	mouse := message.Mouse()
+	l := m.layout()
+	if mouse.Button == tea.MouseLeft {
+		if l.Mode == modeWide && l.Details.contains(mouse.X, mouse.Y) {
+			m.focus = focusDetail
+			m.applicationTable.Blur()
+			return m, nil
+		}
+		if l.Applications.contains(mouse.X, mouse.Y) {
+			m.focus = focusList
+			m.applicationTable.Focus()
+		}
+	}
 	if m.focus == focusDetail && (mouse.Button == tea.MouseWheelUp || mouse.Button == tea.MouseWheelDown) {
 		var cmd tea.Cmd
 		m.detailViewport, cmd = m.detailViewport.Update(message)
@@ -847,7 +1023,7 @@ func (m model) updateMouse(message tea.MouseMsg) (tea.Model, tea.Cmd) {
 func (m model) channelBounds() (start, rows int) {
 	layer := m.modalLayer()
 	if layer == nil {
-		return chromeHeight, len(m.channels)
+		return m.layout().Workspace.y, len(m.channels)
 	}
 	return layer.GetY() + 3, len(m.channels)
 }
@@ -882,35 +1058,31 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if keypkg.Matches(message, bindings.Help) {
 		m.helpOverlay = !m.helpOverlay
 		if m.helpOverlay {
-			m.focus = focusOverlay
+			m.previousFocus = m.focus
+			m.setFocus(focusOverlay)
 		} else {
-			m.focus = focusList
-		}
-		if m.focus == focusDetail {
-			m.applicationTable.Blur()
-		} else {
-			m.applicationTable.Focus()
+			m.setFocus(m.previousFocus)
 		}
 		return m, nil
 	}
 	if m.helpOverlay {
 		if keypkg.Matches(message, bindings.Cancel) {
 			m.helpOverlay = false
-			m.focus = focusList
+			m.setFocus(m.previousFocus)
 		}
 		return m, nil
 	}
 	if keypkg.Matches(message, bindings.Tab) && !m.isOverlay() {
 		if pressed == "shift+tab" {
 			if m.focus == focusList {
-				m.focus = focusDetail
+				m.setFocus(focusDetail)
 			} else {
-				m.focus = focusList
+				m.setFocus(focusList)
 			}
 		} else if m.focus == focusList {
-			m.focus = focusDetail
+			m.setFocus(focusDetail)
 		} else {
-			m.focus = focusList
+			m.setFocus(focusList)
 		}
 		return m, nil
 	}
@@ -926,8 +1098,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.searching = false
-			m.searchInput.Blur()
-			m.focus = focusList
+			m.setFocus(focusList)
 			return m, nil
 		case keypkg.Matches(message, bindings.Enter):
 			if !m.matchesAction(message, actionEnter) {
@@ -961,7 +1132,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.isListScreen() && pressed == " " {
+	if m.isListScreen() && m.matchesAction(message, actionFilter) && pressed == " " {
 		visible := m.visibleApplications()
 		if len(visible) > 0 && m.selected < len(visible) {
 			if m.selectedIDs == nil {
@@ -976,10 +1147,10 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.screen == screenAvailable && len(m.selectedIDs) > 0 && pressed == "i" {
+	if m.screen == screenAvailable && len(m.selectedIDs) > 0 && m.matchesAction(message, actionInstalled) {
 		return m.startBatchInstall()
 	}
-	if m.screen == screenInstalled && len(m.selectedIDs) > 0 && pressed == "u" {
+	if m.screen == screenInstalled && len(m.selectedIDs) > 0 && m.matchesAction(message, actionUpdates) {
 		m.batchIDs = m.selectedIDsInOrder(m.installed)
 		m.batchUninstall = true
 		m.confirmTo, m.confirmSet, m.screen = screenInstalled, true, screenUninstall
@@ -991,7 +1162,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.clearFeedback()
 			m.returnTo = m.screen
 			m.confirmSet = false
-			m.screen = screenUpgrade
+			m.openOverlay(screenUpgrade)
 		}
 	case m.matchesAction(message, actionUp):
 		m.clearFeedback()
@@ -1028,7 +1199,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.query = ""
 		m.searchInput.SetValue("")
 		m.searchInput.Focus()
-		m.focus = focusSearch
+		m.setFocus(focusSearch)
 		m.selected = 0
 		m.listOffset = 0
 	case m.matchesAction(message, actionInstalled):
@@ -1046,9 +1217,9 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case m.matchesAction(message, actionCancel):
 		m.clearFeedback()
 		if m.screen == screenInstallChannel {
-			m.screen = screenDetails
+			m.closeOverlay(screenDetails)
 		} else if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm || m.screen == screenUninstallConflictConfirm {
-			m.screen = m.confirmationTarget()
+			m.closeOverlay(m.confirmationTarget())
 			m.confirmSet = false
 			if m.screen != screenDetails {
 				m.detail = nil
@@ -1146,7 +1317,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.detail != nil && m.detail.InstalledVersion == "" && len(m.detail.ChannelHeads) > 1 {
 				m.channels = channelNames(m.detail)
 				m.channelSelected = channelIndex(m.channels, m.detail.DefaultChannel)
-				m.screen = screenInstallChannel
+				m.openOverlay(screenInstallChannel)
 				return m, nil
 			}
 			m.channels = nil
@@ -1190,7 +1361,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.confirmTo = m.screen
 			m.confirmSet = true
-			m.screen = screenRollback
+			m.openOverlay(screenRollback)
 		}
 	case m.matchesAction(message, actionUninstall):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
@@ -1201,13 +1372,13 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.confirmTo = m.screen
 			m.confirmSet = true
-			m.screen = screenUninstall
+			m.openOverlay(screenUninstall)
 		}
 	case m.matchesAction(message, actionRemoveConflict):
 		if m.screen == screenUninstall && m.uninstallConflict != nil {
 			m.confirmTo = screenUninstall
 			m.confirmSet = true
-			m.screen = screenUninstallConflictConfirm
+			m.openOverlay(screenUninstallConflictConfirm)
 		}
 	}
 	m.clampSelection()
@@ -1751,6 +1922,9 @@ func (m model) listBoundsWithoutRows() (start, rows int) {
 	if m.searching {
 		start++
 	}
+	// The applications panel title occupies the first content row inside its
+	// border, before the table header.
+	start++
 	return start, 0
 }
 
