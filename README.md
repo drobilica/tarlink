@@ -75,9 +75,10 @@ and can be refreshed explicitly with `tarlink refresh`. `tarlink list` shows the
 available catalog with installed state; use `--installed` or `--updates` to
 filter it.
 
-In the TUI, `Space` selects applications by ID. Available-app selections can be
-installed with `i`, and installed-app selections can be uninstalled with `u`;
-both operations show a complete confirmation set. Batch installs freeze each
+In the TUI, use `↑`/`↓` or `j`/`k` to navigate and `Enter` to open details or
+review the current selection. `Space` selects applications by stable ID; move
+the cursor afterward without changing the selection. Confirming a batch shows
+the complete resolved set before mutation. Batch installs freeze each
 application's default channel and current version before mutation.
 
 ## Applications

@@ -40,7 +40,7 @@ func (t tuiTheme) render(value string, valueTone tone) string {
 type tuiKeyMap struct {
 	Up, Down, Left, Right, Enter, Search, Installed, Updates keypkg.Binding
 	Upgrade, Versions, Rollback, Uninstall                   keypkg.Binding
-	Cancel, Quit, CtrlC, Tab, Help                           keypkg.Binding
+	Cancel, Quit, CtrlC, Help                                keypkg.Binding
 }
 
 type contextualActionID uint8
@@ -85,31 +85,8 @@ func newKeyMap() tuiKeyMap {
 		Cancel:    keypkg.NewBinding(keypkg.WithKeys("esc"), keypkg.WithHelp("Esc", "Back")),
 		Quit:      keypkg.NewBinding(keypkg.WithKeys("q"), keypkg.WithHelp("q", "Quit")),
 		CtrlC:     keypkg.NewBinding(keypkg.WithKeys("ctrl+c")),
-		Tab:       keypkg.NewBinding(keypkg.WithKeys("tab", "shift+tab"), keypkg.WithHelp("Tab", "Focus pane")),
 		Help:      keypkg.NewBinding(keypkg.WithKeys("?"), keypkg.WithHelp("?", "Help")),
 	}
-}
-
-func (m model) keyMap() tuiKeyMap {
-	b := newKeyMap()
-	if m.busy != "" {
-		b.Up.SetEnabled(false)
-		b.Down.SetEnabled(false)
-		b.Left.SetEnabled(false)
-		b.Right.SetEnabled(false)
-		b.Enter.SetEnabled(false)
-		b.Search.SetEnabled(false)
-		b.Installed.SetEnabled(false)
-		b.Updates.SetEnabled(false)
-		b.Upgrade.SetEnabled(false)
-		b.Versions.SetEnabled(false)
-		b.Rollback.SetEnabled(false)
-		b.Uninstall.SetEnabled(false)
-	}
-	if !m.upgradeAvailable {
-		b.Upgrade.SetEnabled(false)
-	}
-	return b
 }
 
 // contextualActionPolicy is the sole source of truth for actions exposed by
@@ -148,35 +125,23 @@ func (m model) contextualActionPolicy() []contextualAction {
 		return []contextualAction{action(actionUp, move, "↑/↓ Choose"), action(actionEnter, b.Enter, "Enter Select"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
 	}
 	if m.screen == screenDetails {
-		actions := make([]contextualAction, 0, 6)
-		if m.detail != nil {
-			if m.detail.InstalledVersion == "" {
-				actions = append(actions, action(actionEnter, b.Enter, "Enter Install"))
-			} else {
-				if !m.detail.Pinned && m.detail.UpdateAvailable {
-					actions = append(actions, action(actionEnter, b.Enter, "Enter Update"))
-				}
-				actions = append(actions, action(actionVersions, b.Versions, "v Versions"), action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"))
-			}
+		actions := []contextualAction{action(actionEnter, b.Enter, "Enter Apply")}
+		if m.detail != nil && m.detail.InstalledVersion != "" {
+			actions = append(actions, action(actionVersions, b.Versions, "v Versions"), action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"))
 		}
-		actions = append(actions, action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit"))
-		return actions
+		return append(actions, action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit"))
 	}
 	if m.screen == screenVersions {
 		return []contextualAction{action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
 	}
 	if m.isListScreen() {
-		enterLabel := "Open"
-		if m.detail != nil {
-			enterLabel = "Enter " + m.primaryActionLabel()
-		}
-		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, enterLabel)}
+		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, "Enter Review")}
 		if len(m.selectedIDs) > 0 && m.screen == screenAvailable {
 			toggle := keypkg.NewBinding(keypkg.WithKeys(" "))
-			actions = append(actions, action(actionFilter, toggle, "Space Toggle"), action(actionInstalled, b.Installed, "i Install selected"))
+			actions = append(actions, action(actionFilter, toggle, "Space Toggle"))
 		} else if len(m.selectedIDs) > 0 && m.screen == screenInstalled {
 			toggle := keypkg.NewBinding(keypkg.WithKeys(" "))
-			actions = append(actions, action(actionFilter, toggle, "Space Toggle"), action(actionUpdates, b.Updates, "u Uninstall selected"))
+			actions = append(actions, action(actionFilter, toggle, "Space Toggle"))
 		} else if m.screen == screenAvailable {
 			filter := keypkg.NewBinding(keypkg.WithKeys("left", "right"))
 			actions = append(actions, action(actionFilter, filter, "←/→ Filter"), action(actionSearch, b.Search, "/ Search"), action(actionInstalled, b.Installed, "i Installed"), action(actionUpdates, b.Updates, "u Updates"))

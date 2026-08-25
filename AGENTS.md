@@ -63,6 +63,7 @@ Use workers for exploration, routine implementation, and testing. Assign only th
 ## Git
 
 * Worker/subagents may inspect, edit, and test their assigned scope, but must not commit, push, tag, publish releases, or change repository settings.
+* For validated pre-1.0 task changes, the orchestrator must commit before reporting successful completion unless the user explicitly requests no commit; task-created changes must not be left uncommitted, while unrelated pre-existing changes must never be included.
 * Before `v1.0.0`, the orchestrator should commit and push validated task changes directly to `main` unless the user says otherwise.
 * The change that prepares or targets `v1.0.0` must use a branch and pull request.
 * After `v1.0.0`, all changes to `main` must go through branches and pull requests.
