@@ -483,7 +483,7 @@ func (core *Core) installedStates() ([]state.State, error) {
 func applicationFrom(item *manifest.Manifest, installed *state.State) Application {
 	value := Application{
 		ID: item.ID, Name: item.Name, Summary: item.Summary, Homepage: item.Homepage,
-		Categories: append([]string(nil), item.Categories...), Requirements: append([]string(nil), item.Requirements...), RegistryVersion: item.Release.Version,
+		Categories: append([]string(nil), item.Categories...), Requirements: append([]string(nil), item.Requirements...), RegistryVersion: item.Release.Version, RegistryRevision: item.Revision,
 		DefaultChannel: item.ReleaseHistory.DefaultChannel,
 		ChannelHeads:   make(map[string]string, len(item.ReleaseHistory.Channels)),
 	}
@@ -500,10 +500,22 @@ func applicationFrom(item *manifest.Manifest, installed *state.State) Applicatio
 	}
 	if installed != nil {
 		value.InstalledVersion = installed.Current
+		value.InstalledRevision = installed.CurrentRevision
+		if value.InstalledRevision == 0 {
+			value.InstalledRevision = 1
+		}
 		value.PreviousVersion = installed.Previous
+		value.PreviousRevision = installed.PreviousRevision
+		if value.PreviousVersion != "" && value.PreviousRevision == 0 {
+			value.PreviousRevision = 1
+		}
 		value.InstalledChannel = installed.Channel
 		value.Pinned = installed.Pinned
-		value.UpdateAvailable = installed.Current != item.Release.Version
+		installedRevision := installed.CurrentRevision
+		if installedRevision == 0 {
+			installedRevision = 1
+		}
+		value.UpdateAvailable = installed.Current != item.Release.Version || installedRevision != item.Revision
 	}
 	return value
 }

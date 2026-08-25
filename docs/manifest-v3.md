@@ -5,8 +5,14 @@ platform-specific history of TarLink-approved releases. Each release may
 declare one explicit inner archive using `nested-archive`; extraction is
 bounded to exactly two layers and uses one cumulative resource budget.
 
+The optional positive `revision` identifies TarLink's packaging definition and
+defaults to `1`. Increment it when changing installation or integration
+metadata without changing the upstream release version. It is manifest-level,
+not part of release history.
+
 ```yaml
 schema: 3
+revision: 1
 id: <lowercase application id>
 name: <display name>
 summary: <short description>

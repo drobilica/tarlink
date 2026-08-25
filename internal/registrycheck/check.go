@@ -158,11 +158,17 @@ func changedFromCatalog(root, oldRoot string, _ *registry.Catalog) (Selection, e
 			continue
 		}
 		if beforeErr == nil {
+			if after.Revision < before.Revision {
+				return Selection{}, fmt.Errorf("package revision decreased for %s: current revision: %d, previous: %d", after.ID, after.Revision, before.Revision)
+			}
+			if affectsMaterialization(before, after) && after.Revision <= before.Revision {
+				return Selection{}, fmt.Errorf("package definition changed without revision bump: %s %s-%s current revision: %d required: >= %d", after.ID, after.Platform.Arch, after.Platform.OS, after.Revision, before.Revision+1)
+			}
 			added, err := historyChanges(before, after)
 			if err != nil {
 				return Selection{}, fmt.Errorf("compare %s: %w", path, err)
 			}
-			if affectsMaterialization(before, after) {
+			if affectsMaterialization(before, after) || after.Revision > before.Revision {
 				for _, item := range releaseProjections(after) {
 					selected[projectionKeyForPath(currentPath, item)] = struct{}{}
 				}
@@ -248,7 +254,7 @@ func historyChanges(before, after *manifest.Manifest) ([]*manifest.Manifest, err
 	for _, release := range after.ReleaseHistory.Releases {
 		key := release.Channel + "\x00" + release.Version
 		newReleases[key] = release
-		if old, ok := oldReleases[key]; ok && old != release {
+		if old, ok := oldReleases[key]; ok && old != release && after.Revision <= before.Revision {
 			return nil, fmt.Errorf("approved release %q in channel %q was mutated", release.Version, release.Channel)
 		}
 	}
@@ -260,6 +266,15 @@ func historyChanges(before, after *manifest.Manifest) ([]*manifest.Manifest, err
 			// reserved -appimage suffix; all other removals remain rejected.
 			if _, corrected := newReleases[old.Channel+"\x00"+old.Version+"-appimage"]; corrected {
 				continue
+			}
+			// The pre-revision registry used a synthetic -appimage suffix for
+			// this release correction. Permit the one-way return to the
+			// authoritative upstream version while retaining the normal
+			// immutable-release rule for all other removals.
+			if strings.HasSuffix(old.Version, "-appimage") {
+				if _, corrected := newReleases[old.Channel+"\x00"+strings.TrimSuffix(old.Version, "-appimage")]; corrected {
+					continue
+				}
 			}
 			return nil, fmt.Errorf("approved release %q in channel %q was removed", old.Version, old.Channel)
 		}
@@ -329,6 +344,9 @@ func affectsMaterialization(before, after *manifest.Manifest) bool {
 	return before.Platform != after.Platform ||
 		!reflect.DeepEqual(before.Application, after.Application) ||
 		before.Desktop.Enabled != after.Desktop.Enabled ||
+		before.Desktop.Executable != after.Desktop.Executable ||
+		before.Desktop.WorkingDirectory != after.Desktop.WorkingDirectory ||
+		!reflect.DeepEqual(before.Desktop.Categories, after.Desktop.Categories) ||
 		before.Desktop.Icon != after.Desktop.Icon
 }
 

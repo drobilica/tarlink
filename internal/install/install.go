@@ -192,13 +192,22 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	if err := manager.validateManagedApp(item.ID); err != nil {
 		return Outcome{}, err
 	}
-	if installed.Current == item.Release.Version {
+	itemRevision := item.Revision
+	if itemRevision == 0 {
+		itemRevision = 1
+	}
+	installedRevision := installed.CurrentRevision
+	if installedRevision == 0 {
+		installedRevision = 1
+	}
+	if installed.Current == item.Release.Version && installedRevision == itemRevision {
 		return manager.reconcileExisting(item, installed, options, progress)
 	}
-	if !sameExecutables(installed.Executables, item.Application.Executables) {
-		return Outcome{}, fmt.Errorf("%w: executable mappings changed during update", ErrConflict)
+	previousRevision := installed.PreviousRevision
+	if previousRevision == 0 {
+		previousRevision = 1
 	}
-	if installed.Previous == item.Release.Version {
+	if installed.Previous == item.Release.Version && previousRevision == itemRevision {
 		return manager.activateRetained(item.ID, installed, progress)
 	}
 	return manager.installVersion(ctx, item, &installed, options, progress)
@@ -212,7 +221,11 @@ func (manager *Manager) reconcileExisting(item *manifest.Manifest, installed sta
 	if err != nil {
 		return Outcome{}, err
 	}
-	spec := integration.Spec{ID: item.ID, Name: item.Name, ApplicationRoot: filepath.Join(manager.Layout.Apps, item.ID), LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons, DesktopEnabled: item.Desktop.Enabled, DesktopCategories: item.Desktop.Categories, WorkingDirectory: item.Desktop.WorkingDirectory == "application-root", Icon: installed.Integration.IconSource, IconSize: installed.Integration.IconSize, IconSHA256: installed.Integration.IconSHA256, IconSourceRoot: filepath.Join(manager.Layout.Apps, item.ID, installed.Current)}
+	currentPath, err := manager.Layout.PackagePath(item.ID, installed.Current, installed.CurrentRevision)
+	if err != nil {
+		return Outcome{}, err
+	}
+	spec := integration.Spec{ID: item.ID, Name: item.Name, ApplicationRoot: filepath.Join(manager.Layout.Apps, item.ID), LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons, DesktopEnabled: item.Desktop.Enabled, DesktopCategories: item.Desktop.Categories, WorkingDirectory: item.Desktop.WorkingDirectory == "application-root", Icon: installed.Integration.IconSource, IconSize: installed.Integration.IconSize, IconSHA256: installed.Integration.IconSHA256, IconSourceRoot: currentPath}
 	for _, executable := range item.Application.Executables {
 		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path, CreateBinLink: executable.CreateBinLink})
 	}
@@ -844,6 +857,10 @@ func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Mani
 // activateMaterialized publishes a validated staged application and commits
 // its integration, active version, state, and retention policy atomically.
 func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed *state.State, options Options, progress Progress, materialized materializedArtifact) (outcome Outcome, returnErr error) {
+	itemRevision := item.Revision
+	if itemRevision == 0 {
+		itemRevision = 1
+	}
 	applicationRoot := materialized.applicationRoot
 	iconSource := materialized.iconSource
 	iconSize := materialized.iconSize
@@ -867,7 +884,7 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 			_ = os.Remove(appRoot)
 		}
 	}()
-	finalPath, err := manager.Layout.AppPath(item.ID, item.Release.Version)
+	finalPath, err := manager.Layout.PackagePath(item.ID, item.Release.Version, itemRevision)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -875,6 +892,11 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		return Outcome{}, fmt.Errorf("%w: version directory already exists", ErrConflict)
 	} else if !os.IsNotExist(err) {
 		return Outcome{}, err
+	}
+	if parent := filepath.Dir(finalPath); parent != appRoot {
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return Outcome{}, err
+		}
 	}
 	manager.report(progress, "installing", 0, 0)
 	if err := os.Rename(applicationRoot, finalPath); err != nil {
@@ -961,7 +983,18 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		previousVersion = installed.Previous
 	}
 	manager.report(progress, "activating", 0, 0)
-	restore, err := switchCurrent(appRoot, oldVersion, item.Release.Version)
+	oldTarget := ""
+	if installed != nil {
+		oldTarget, err = manager.currentTarget(item.ID, installed.Current, installed.CurrentRevision)
+		if err != nil {
+			return Outcome{}, err
+		}
+	}
+	newTarget, err := manager.currentTarget(item.ID, item.Release.Version, itemRevision)
+	if err != nil {
+		return Outcome{}, err
+	}
+	restore, err := switchCurrent(appRoot, oldTarget, newTarget)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -993,7 +1026,16 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		pinned = *options.Pinned
 	}
 	newState := state.State{
-		Schema: state.Schema, App: item.ID, Current: item.Release.Version, Previous: oldVersion,
+		Schema: state.Schema, App: item.ID, Current: item.Release.Version, CurrentRevision: itemRevision, Previous: oldVersion,
+		PreviousRevision: func() int {
+			if installed != nil && installed.CurrentRevision > 0 {
+				return installed.CurrentRevision
+			}
+			if installed != nil {
+				return 1
+			}
+			return 0
+		}(),
 		PreviousArtifact: func() string {
 			if installed != nil {
 				return installed.Artifact
@@ -1041,9 +1083,9 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		return outcome, stateErr
 	}
 
-	if previousVersion != "" && previousVersion != newState.Current && previousVersion != newState.Previous {
+	if previousVersion != "" && (previousVersion != newState.Current || newState.PreviousRevision != newState.CurrentRevision) && (previousVersion != newState.Previous || newState.PreviousRevision != newState.CurrentRevision) {
 		manager.report(progress, "cleaning", 0, 0)
-		oldPath, pathErr := manager.Layout.AppPath(item.ID, previousVersion)
+		oldPath, pathErr := manager.Layout.PackagePath(item.ID, previousVersion, installed.PreviousRevision)
 		if pathErr != nil {
 			outcome.Warnings = append(outcome.Warnings, pathErr.Error())
 		} else if cleanupErr := filesystem.SafeRemove(appRoot, oldPath); cleanupErr != nil {
@@ -1076,7 +1118,15 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 		return Outcome{}, err
 	}
 	manager.report(progress, "activating", 0, 0)
-	restore, err := switchCurrent(appRoot, installed.Current, installed.Previous)
+	currentTarget, err := manager.currentTarget(appID, installed.Current, installed.CurrentRevision)
+	if err != nil {
+		return Outcome{}, err
+	}
+	previousTarget, err := manager.currentTarget(appID, installed.Previous, installed.PreviousRevision)
+	if err != nil {
+		return Outcome{}, err
+	}
+	restore, err := switchCurrent(appRoot, currentTarget, previousTarget)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -1090,7 +1140,11 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	// The previous version's payload is a real directory; the retained icon
 	// bytes live inside it so rollback needs no network. The switched current
 	// link itself is a symlink and is never used as an icon source root.
-	nextSpec.IconSourceRoot = filepath.Join(appRoot, installed.Previous)
+	nextSpec.IconSourceRoot, err = manager.Layout.PackagePath(appID, installed.Previous, installed.PreviousRevision)
+	if err != nil {
+		_ = restore()
+		return Outcome{}, err
+	}
 	iconRestore, err := integration.SwitchIcon(spec, nextSpec)
 	if err != nil {
 		_ = restore()
@@ -1107,6 +1161,7 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 		}
 	}()
 	installed.Current, installed.Previous = installed.Previous, installed.Current
+	installed.CurrentRevision, installed.PreviousRevision = installed.PreviousRevision, installed.CurrentRevision
 	installed.Artifact, installed.PreviousArtifact = installed.PreviousArtifact, installed.Artifact
 	installed.Channel, installed.PreviousChannel = installed.PreviousChannel, installed.Channel
 	installed.Integration.IconFile, installed.Integration.PreviousIconFile = installed.Integration.PreviousIconFile, installed.Integration.IconFile
@@ -1210,6 +1265,14 @@ func (manager *Manager) integrationSpec(installed state.State, name string, cate
 		}
 	}
 	return spec, nil
+}
+
+func (manager *Manager) currentTarget(appID, version string, revision int) (string, error) {
+	packagePath, err := manager.Layout.PackagePath(appID, version, revision)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Rel(filepath.Join(manager.Layout.Apps, appID), packagePath)
 }
 
 func manifestExecutables(values []manifest.Executable) []state.Executable {

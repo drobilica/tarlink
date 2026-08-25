@@ -121,13 +121,30 @@ func (l Layout) StatePath(appID string) (string, error) {
 
 // AppPath returns the installation directory for an application/version.
 func (l Layout) AppPath(appID, version string) (string, error) {
+	return l.PackagePath(appID, version, 1)
+}
+
+// PackagePath returns the canonical internal path for one TarLink package
+// identity. Revision one retains the original layout for existing installs;
+// later revisions live below a version directory and therefore cannot collide
+// with any valid upstream version string.
+func (l Layout) PackagePath(appID, version string, revision int) (string, error) {
 	if err := ValidateID(appID); err != nil {
 		return "", err
 	}
 	if err := ValidateVersion(version); err != nil {
 		return "", err
 	}
-	return filepath.Join(l.Apps, appID, version), nil
+	if revision == 0 {
+		revision = 1
+	}
+	if revision < 1 {
+		return "", errors.New("package revision must be positive")
+	}
+	if revision == 1 {
+		return filepath.Join(l.Apps, appID, version), nil
+	}
+	return filepath.Join(l.Apps, appID, version, fmt.Sprintf(".tarlink-revision-%d", revision)), nil
 }
 
 // ValidateID validates an application ID as a safe single path component.

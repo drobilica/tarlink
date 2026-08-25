@@ -355,9 +355,52 @@ func TestChangedRejectsHistoricalReleaseMutationOrRemoval(t *testing.T) {
 	}
 }
 
+func TestChangedAllowsSameVersionReleaseMutationOnlyWithRevisionBump(t *testing.T) {
+	oldRoot := writeCheckerRegistry(t, checkerManifest)
+	withoutBump := strings.Replace(checkerManifest, "https://example.com/fixture.tar.gz", "https://example.com/corrected.tar.gz", 1)
+	if _, err := Changed(writeCheckerRegistry(t, withoutBump), oldRoot); err == nil {
+		t.Fatal("same-version URL change without revision bump unexpectedly accepted")
+	}
+	withBump := strings.Replace(withoutBump, "schema: 3\n", "schema: 3\nrevision: 2\n", 1)
+	if selection, err := Changed(writeCheckerRegistry(t, withBump), oldRoot); err != nil || len(selection.Items) != 1 {
+		t.Fatalf("same-version URL change with revision bump: selection=%#v error=%v", selection.Items, err)
+	}
+
+	digestChange := strings.Replace(checkerManifest, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", 1)
+	if _, err := Changed(writeCheckerRegistry(t, digestChange), oldRoot); err == nil {
+		t.Fatal("same-version digest change without revision bump unexpectedly accepted")
+	}
+	digestBump := strings.Replace(digestChange, "schema: 3\n", "schema: 3\nrevision: 2\n", 1)
+	if _, err := Changed(writeCheckerRegistry(t, digestBump), oldRoot); err != nil {
+		t.Fatalf("same-version digest change with revision bump rejected: %v", err)
+	}
+}
+
+func TestRevisionBumpDoesNotBypassManifestValidation(t *testing.T) {
+	invalid := strings.Replace(checkerManifest, "schema: 3\n", "schema: 3\nrevision: 2\n", 1)
+	invalid = strings.Replace(invalid, "source: https://example.com/SHA256SUMS", "source: https://example.com/fixture.tar.gz", 1)
+	if _, err := manifest.ParseBytes([]byte(invalid)); err == nil {
+		t.Fatal("revision bump bypassed release provenance validation")
+	}
+}
+
+func TestChangedRejectsRevisionDecreaseAndAcceptsUnchangedBump(t *testing.T) {
+	old := strings.Replace(checkerManifest, "schema: 3\n", "schema: 3\nrevision: 2\n", 1)
+	oldRoot := writeCheckerRegistry(t, old)
+	decreased := strings.Replace(old, "revision: 2", "revision: 1", 1)
+	if _, err := Changed(writeCheckerRegistry(t, decreased), oldRoot); err == nil {
+		t.Fatal("revision decrease unexpectedly accepted")
+	}
+	bumped := strings.Replace(old, "revision: 2", "revision: 3", 1)
+	if _, err := Changed(writeCheckerRegistry(t, bumped), oldRoot); err != nil {
+		t.Fatalf("unchanged release revision bump rejected: %v", err)
+	}
+}
+
 func TestChangedAcceptsExplicitAppImageReleaseCorrection(t *testing.T) {
 	oldRoot := writeCheckerRegistry(t, checkerManifest)
 	corrected := strings.Replace(checkerManifest, `current: "1.0"`, `current: "1.0-appimage"`, 1)
+	corrected = strings.Replace(corrected, "schema: 3\n", "schema: 3\nrevision: 2\n", 1)
 	corrected = strings.Replace(corrected, `version: "1.0"`, `version: "1.0-appimage"`, 1)
 	corrected = strings.Replace(corrected, "https://example.com/fixture.tar.gz", "https://example.com/fixture.AppImage", 1)
 	corrected = strings.Replace(corrected, "archive: tar.gz", "archive: appimage", 1)

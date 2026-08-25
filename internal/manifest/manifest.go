@@ -30,7 +30,10 @@ const (
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 type Manifest struct {
-	Schema       int      `yaml:"schema" json:"schema"`
+	Schema int `yaml:"schema" json:"schema"`
+	// Revision identifies TarLink's package definition independently of the
+	// upstream release version. An omitted value is revision 1.
+	Revision     int      `yaml:"revision,omitempty" json:"revision,omitempty"`
 	ID           string   `yaml:"id" json:"id"`
 	Name         string   `yaml:"name" json:"name"`
 	Summary      string   `yaml:"summary" json:"summary"`
@@ -160,6 +163,9 @@ func Parse(r io.Reader) (*Manifest, error) {
 			result.Application.Executables[index].Name = path.Base(result.Application.Executables[index].Path)
 		}
 	}
+	if result.Revision == 0 {
+		result.Revision = 1
+	}
 	var trailing any
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
@@ -213,9 +219,18 @@ func validateManifestShape(document *yaml.Node) error {
 	}
 	root, err := requiredMapping(document.Content[0], "manifest", []string{
 		"schema", "id", "name", "summary", "homepage", "categories", "platform", "release", "application", "desktop",
-	}, []string{"requirements"})
+	}, []string{"requirements", "revision"})
 	if err != nil {
 		return err
+	}
+	if revision, ok := root["revision"]; ok {
+		if revision.Kind != yaml.ScalarNode || revision.Tag != "!!int" {
+			return errors.New("manifest revision must be a positive integer")
+		}
+		value := strings.TrimSpace(revision.Value)
+		if value == "" || strings.HasPrefix(value, "-") || value == "0" {
+			return errors.New("manifest revision must be a positive integer")
+		}
 	}
 	if _, err := requiredMapping(root["platform"], "platform", []string{"os", "arch"}, nil); err != nil {
 		return err
@@ -332,6 +347,13 @@ func requiredMapping(node *yaml.Node, label string, required, optional []string)
 func (m Manifest) Validate() error {
 	if m.Schema != SchemaV3 {
 		return fmt.Errorf("unsupported manifest schema %d", m.Schema)
+	}
+	if m.Revision < 0 {
+		return errors.New("manifest revision must be a positive integer")
+	}
+	if m.Revision == 0 {
+		// Zero is the in-memory representation of an omitted field.
+		m.Revision = 1
 	}
 	if !ValidID(m.ID) {
 		return fmt.Errorf("invalid application ID %q", m.ID)

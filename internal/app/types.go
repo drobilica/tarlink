@@ -84,21 +84,24 @@ type BatchService interface {
 type ProgressSink func(Progress)
 
 type Application struct {
-	ID               string            `json:"id"`
-	Name             string            `json:"name"`
-	Summary          string            `json:"summary"`
-	Homepage         string            `json:"homepage"`
-	Categories       []string          `json:"categories"`
-	Requirements     []string          `json:"requirements,omitempty"`
-	RegistryVersion  string            `json:"registry_version"`
-	InstalledVersion string            `json:"installed_version,omitempty"`
-	PreviousVersion  string            `json:"previous_version,omitempty"`
-	InstalledChannel string            `json:"installed_channel,omitempty"`
-	Pinned           bool              `json:"pinned"`
-	UpdateAvailable  bool              `json:"update_available"`
-	DefaultChannel   string            `json:"default_channel,omitempty"`
-	ChannelHeads     map[string]string `json:"channel_heads,omitempty"`
-	ApprovedReleases []Version         `json:"approved_releases,omitempty"`
+	ID                string            `json:"id"`
+	Name              string            `json:"name"`
+	Summary           string            `json:"summary"`
+	Homepage          string            `json:"homepage"`
+	Categories        []string          `json:"categories"`
+	Requirements      []string          `json:"requirements,omitempty"`
+	RegistryVersion   string            `json:"registry_version"`
+	RegistryRevision  int               `json:"registry_revision,omitempty"`
+	InstalledVersion  string            `json:"installed_version,omitempty"`
+	InstalledRevision int               `json:"installed_revision,omitempty"`
+	PreviousVersion   string            `json:"previous_version,omitempty"`
+	PreviousRevision  int               `json:"previous_revision,omitempty"`
+	InstalledChannel  string            `json:"installed_channel,omitempty"`
+	Pinned            bool              `json:"pinned"`
+	UpdateAvailable   bool              `json:"update_available"`
+	DefaultChannel    string            `json:"default_channel,omitempty"`
+	ChannelHeads      map[string]string `json:"channel_heads,omitempty"`
+	ApprovedReleases  []Version         `json:"approved_releases,omitempty"`
 }
 
 type Result struct {

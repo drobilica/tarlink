@@ -2,6 +2,7 @@
 # Blender 5.2.0 Linux amd64 release; this file is documentation, not a
 # second registry source.
 schema: 3
+revision: 1
 id: blender
 name: Blender
 summary: 3D creation suite
