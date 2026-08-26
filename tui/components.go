@@ -12,11 +12,11 @@ import (
 
 type tuiTheme struct {
 	accent, success, warning, danger, muted, selected lipgloss.Style
-	panel, control, controlSelected                   lipgloss.Style
+	panel, control, controlSelected, modal            lipgloss.Style
 }
 
 func newTheme(color bool) tuiTheme {
-	styles := tuiTheme{}
+	styles := tuiTheme{modal: lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1, 2)}
 	if !color {
 		return styles
 	}
@@ -191,6 +191,14 @@ func (m model) helpView() string {
 	if helper.ShortSeparator == "" {
 		helper = newHelp(m.color)
 	}
+	bindings := m.actionBindings()
+	helper.SetWidth(max(1, viewWidth(m.width)))
+	return helper.ShortHelpView(bindings)
+}
+
+// actionBindings keeps every action legend, including modal legends, tied to
+// the contextual action policy used by updateKey.
+func (m model) actionBindings() []keypkg.Binding {
 	bindings := make([]keypkg.Binding, 0, len(m.contextualActionPolicy()))
 	seen := make(map[string]bool)
 	for _, action := range m.contextualActionPolicy() {
@@ -205,8 +213,7 @@ func (m model) helpView() string {
 		binding.SetHelp(binding.Help().Key, strings.TrimPrefix(action.label, binding.Help().Key+" "))
 		bindings = append(bindings, binding)
 	}
-	helper.SetWidth(max(1, viewWidth(m.width)))
-	return helper.ShortHelpView(bindings)
+	return bindings
 }
 
 func newProgress(color bool) progress.Model {

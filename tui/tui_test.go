@@ -9,6 +9,7 @@ import (
 	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/clipperhouse/displaywidth"
 	"github.com/drobilica/tarlink/internal/app"
 )
 
@@ -141,6 +142,81 @@ func TestApplicationTableResizePreservesLayoutAndCursor(t *testing.T) {
 		}
 		assertTableLineAligned(t, width, m.applicationTable.Columns(), lines[0], lines[2])
 	}
+}
+
+func TestConfirmationOverlaysHaveOneResponsiveFrame(t *testing.T) {
+	longName := "A remarkably long application name with ANSI-safe geometry"
+	detail := &app.Application{ID: "godot", Name: longName}
+	variants := []model{
+		{screen: screenRollback, detail: detail},
+		{screen: screenUninstall, detail: detail},
+		{screen: screenUpgrade, tarlinkVersion: app.TarLinkVersion{Current: "0.11.1", Latest: "0.11.123456789"}},
+		{screen: screenInstallConfirm, detail: detail, pathConflicts: []app.PathConflict{{Type: "PATH", Directory: "/a/very/long/path/that/must/stay/inside/the/modal", Candidate: "godot"}}},
+		{screen: screenInstallChannel, channels: []string{"stable", "beta", "nightly", "long-lived-preview-channel"}},
+		{screen: screenUninstallConflictConfirm},
+	}
+	for _, width := range []int{50, 60, 80, 100, 120, 160} {
+		for _, m := range variants {
+			m.width, m.height, m.color = width, 24, false
+			m.theme = newTheme(false)
+			card := m.renderCard(m.overlayLines(), width)
+			lines := strings.Split(card, "\n")
+			if len(lines) < 3 || ansi.StringWidth(ansi.Strip(lines[0])) != ansi.StringWidth(ansi.Strip(lines[len(lines)-1])) {
+				t.Fatalf("width %d screen %d has unbalanced frame: %q", width, m.screen, card)
+			}
+			for _, line := range lines {
+				if ansi.StringWidth(ansi.Strip(line)) > width {
+					t.Fatalf("width %d screen %d line exceeds terminal: %q", width, m.screen, line)
+				}
+			}
+			if strings.Count(card, "╭") != 1 || strings.Count(card, "╰") != 1 || strings.Contains(card, "[ Cancel ]") {
+				t.Fatalf("width %d screen %d has nested/manual frame: %q", width, m.screen, card)
+			}
+		}
+	}
+}
+
+func TestConfirmationOverlayResizePreservesStateAndCentering(t *testing.T) {
+	m := model{screen: screenInstallConfirm, detail: &app.Application{Name: "Godot"}, pathConflicts: []app.PathConflict{{Type: "PATH", Directory: "/usr/local/bin", Candidate: "godot"}}, height: 24, theme: newTheme(false)}
+	for _, width := range []int{120, 80, 50, 160, 80} {
+		m.width = width
+		view := m.View().Content
+		lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
+		top, bottom := -1, -1
+		for i, line := range lines {
+			plain := ansi.Strip(line)
+			if strings.Contains(plain, "╭") {
+				top = i
+			}
+			if strings.Contains(plain, "╰") {
+				bottom = i
+			}
+		}
+		if top < 0 || bottom <= top {
+			t.Fatalf("width %d missing modal frame", width)
+		}
+		plainTop := ansi.Strip(lines[top])
+		leftByte := strings.Index(plainTop, "╭")
+		rightByte := strings.Index(plainTop, "╮")
+		if leftByte < 0 || rightByte < 0 {
+			t.Fatalf("width %d modal has incomplete top border: %q", width, plainTop)
+		}
+		left := displaywidth.String(plainTop[:leftByte])
+		right := displaywidth.String(plainTop[:rightByte])
+		if absInt(left-(width-right-1)) > 1 {
+			t.Fatalf("width %d modal not centered: left=%d right=%d", width, left, right)
+		}
+		if m.screen != screenInstallConfirm || m.detail.Name != "Godot" {
+			t.Fatal("resize changed confirmation state")
+		}
+	}
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func assertTableLineAligned(t *testing.T, terminalWidth int, columns []table.Column, header, row string) {

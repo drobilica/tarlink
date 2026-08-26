@@ -365,7 +365,7 @@ func (m model) bodyLines() []string {
 			content = m.overlayLines()
 		}
 		remaining := max(1, max(1, m.height)-len(lines)-1)
-		card := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).Padding(1).Render(strings.Join(content, "\n"))
+		card := m.renderCard(content, viewWidth(m.width))
 		placed := lipgloss.Place(viewWidth(m.width), remaining, lipgloss.Center, lipgloss.Center, card)
 		for _, line := range strings.Split(placed, "\n") {
 			lines = append(lines, fit(line, m.width))
@@ -580,10 +580,10 @@ func (m model) overlayLines() []string {
 	if title == "" {
 		return nil
 	}
-	lines := []string{m.theme.panel.Render("┌─ " + title + " ─────────────────────────┐"), "│ " + message}
+	lines := []string{m.theme.panel.Render(title), "", message}
 	if m.screen == screenInstallConfirm {
 		for _, conflict := range m.pathConflicts {
-			lines = append(lines, "│ "+conflict.Type+": "+conflict.Directory+" "+conflict.Candidate)
+			lines = append(lines, conflict.Type+": "+conflict.Directory+" "+conflict.Candidate)
 		}
 	}
 	if m.screen == screenInstallChannel {
@@ -592,22 +592,38 @@ func (m model) overlayLines() []string {
 			if i == m.channelSelected {
 				prefix = "> "
 			}
-			lines = append(lines, "│ "+prefix+channel)
+			lines = append(lines, prefix+channel)
 		}
 	}
-	confirm := "Confirm"
-	if m.screen == screenInstallConfirm {
-		confirm = "Install anyway"
-	}
-	lines = append(lines, "│", "│        [ Cancel ]  [Enter] "+confirm, "└──────────────────────────────────┘")
+	lines = append(lines, "", m.modalHelp(max(1, viewWidth(m.width)-8)))
 	return lines
 }
 
-func (m model) helpOverlayLines() []string {
-	bindings := make([]keypkg.Binding, 0, len(m.contextualActionPolicy()))
-	for _, action := range m.contextualActionPolicy() {
-		bindings = append(bindings, action.binding)
+func (m model) modalHelp(width int) string {
+	helper := m.help
+	if helper.ShortSeparator == "" {
+		helper = newHelp(m.color)
 	}
+	helper.SetWidth(width)
+	return helper.FullHelpView([][]keypkg.Binding{m.actionBindings()})
+}
+
+func (m model) renderCard(content []string, width int) string {
+	available := max(1, width-8)
+	contentWidth := min(72, available)
+	for _, line := range content {
+		contentWidth = max(contentWidth, displaywidth.Options{ControlSequences: true}.String(line))
+	}
+	contentWidth = min(contentWidth, available)
+	bounded := make([]string, len(content))
+	for i, line := range content {
+		bounded[i] = truncate(line, contentWidth, "…")
+	}
+	return m.theme.modal.Width(contentWidth).Render(strings.Join(bounded, "\n"))
+}
+
+func (m model) helpOverlayLines() []string {
+	bindings := m.actionBindings()
 	m.help.SetWidth(max(1, viewWidth(m.width)-4))
 	return []string{m.theme.panel.Render("Keyboard reference"), m.help.FullHelpView([][]keypkg.Binding{bindings})}
 }

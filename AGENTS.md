@@ -120,8 +120,7 @@ Documentation must describe implemented behavior or clearly marked plans; never 
 ## TUI architecture
 
 * TarLink's interactive TUI uses the Charm v2 stack: Bubble Tea v2 for event/state runtime, Bubbles v2 for reusable components, and Lip Gloss v2 for styling/layout.
-* Prefer established components over reimplementing generic viewport, progress, help/keymap, input, or styling primitives.
-* Keep TarLink-specific application state and lifecycle logic custom.
+* Prefer library-owned primitives over hand-rolled terminal UI behavior. Detailed rules for code under `tui/` live in `tui/AGENTS.md`.
 * Do not introduce another TUI framework without explicit authorization.
 * The TUI remains presentation-only and calls the same `internal/app` service as the CLI.
 
