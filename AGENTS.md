@@ -11,6 +11,12 @@ TarLink is a rootless, single-user Linux application manager. Preserve its narro
 * Do not edit `AGENTS.md` unless the task explicitly asks for it.
 * When acceptance criteria are met and validation passes, stop. Review the full diff and remove scope creep.
 
+## Instruction routing
+
+* These root rules apply repository-wide.
+* Before modifying a subtree, inspect the closest applicable nested `AGENTS.md`.
+* Nested files specialize these rules; do not duplicate repository-wide rules into them.
+
 ## Security contract
 
 * Production code remains pure Go and compatible with `CGO_ENABLED=0`.
@@ -105,50 +111,10 @@ go test -race ./...
 CGO_ENABLED=0 go build ./...
 ```
 
-Registry validation tooling must reuse TarLink's production Go download, checksum, archive, install, integration, state, and uninstall packages; never duplicate those implementations.
-
-* Full registry structural validation is always required.
-* Artifact materialization targets only new or materially changed artifacts.
-* Registry checks must never execute third-party application binaries.
-* Full-registry artifact audits are explicit and are not a default per-change requirement.
-* When adding or modifying a desktop-enabled application, run `tarlink registry icons <registry-path>` first, then use `--fix` when explicitly repairing missing icons. Prefer this deterministic tooling over repeated manual GitHub icon research; investigate only unresolved or ambiguous cases, then run normal registry validation. It must not approve icon sources, execute application binaries, or widen the manifest icon trust contract.
-
 Security-sensitive changes require focused success, hostile-input, and failure-path tests plus a short explanation of the affected trust boundary.
 
 Documentation must describe implemented behavior or clearly marked plans; never invent commands, registry entries, URLs, or hashes.
 
 ## TUI architecture
 
-* TarLink's interactive TUI uses the Charm v2 stack: Bubble Tea v2 for event/state runtime, Bubbles v2 for reusable components, and Lip Gloss v2 for styling/layout.
-* Prefer library-owned primitives over hand-rolled terminal UI behavior. Detailed rules for code under `tui/` live in `tui/AGENTS.md`.
-* Do not introduce another TUI framework without explicit authorization.
-* The TUI remains presentation-only and calls the same `internal/app` service as the CLI.
-
-## Registry candidate research
-
-For candidate or catalog work, fetch both repositories, then follow:
-
-```text
-./scripts/agent-context.sh
-        ↓
-tarlink registry candidates --changed
-        ↓
-consult registry-research/candidates.yaml
-        ↓
-inspect/provenance only for candidates requiring review
-        ↓
-manual research only for facts tooling cannot establish
-```
-
-The ledger is the durable record of previous decisions. Do not repeat
-artifact/provenance investigation for an unchanged immutable release. A
-`RECHECK` result requires investigation; it is not approval. Inspection and
-provenance output are advisory evidence only; the official registry remains
-the trust boundary. See `docs/registry-research.md` for mechanics.
-
-Before implementing a security or artifact capability primarily to unblock
-candidates, run `tarlink registry blockers --capability <capability>` and
-report the affected candidates, blockers removed, blockers remaining, and
-number fully unlocked. If it fully unlocks zero known candidates, do not begin
-implementation unless the task independently requires it or another concrete
-product requirement justifies it.
+* TUI work remains presentation-only; detailed architecture and rules for code under `tui/` live in `tui/AGENTS.md`.

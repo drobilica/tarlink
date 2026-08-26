@@ -1,5 +1,10 @@
 # TUI engineering policy
 
+TarLink's interactive TUI uses the Charm v2 stack: Bubble Tea v2 for event/state
+runtime, Bubbles v2 for reusable components, and Lip Gloss v2 for
+styling/layout. Do not introduce another TUI framework without explicit
+authorization.
+
 ## Charm ownership
 
 * Use Bubble Tea for event/state/update lifecycle.
