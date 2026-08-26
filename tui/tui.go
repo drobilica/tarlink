@@ -393,13 +393,17 @@ func (m *model) initComponents() {
 	m.searchInput.Placeholder = "Search applications"
 	m.searchInput.CharLimit = 128
 	m.applicationTable = table.New(table.WithFocused(true))
-	m.applicationTable.SetStyles(table.Styles{
-		Header:   m.theme.panel,
-		Cell:     lipgloss.NewStyle().PaddingRight(1),
-		Selected: m.theme.selected,
-	})
+	styles := table.DefaultStyles()
+	// Bubbles applies these styles outside each column's content width. Keep
+	// the header and cells on the same geometry so their contents align.
+	styles.Header = m.theme.panel.Padding(0, 1)
+	styles.Cell = applicationTableCellStyle
+	styles.Selected = m.theme.selected
+	m.applicationTable.SetStyles(styles)
 	m.componentsReady = true
 }
+
+var applicationTableCellStyle = lipgloss.NewStyle().Padding(0, 1)
 
 func (m model) isOverlay() bool {
 	return m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm || m.screen == screenInstallChannel || m.screen == screenUninstallConflictConfirm
@@ -425,13 +429,20 @@ func (m model) workspaceLines() ([]string, int) {
 }
 
 func (m *model) configureApplicationTable(values []app.Application, width, height int) {
-	usableWidth := max(1, width-5)
-	selectionWidth := 3
-	statusWidth := max(9, min(16, usableWidth/6))
-	installedWidth := max(9, min(15, usableWidth/6))
-	availableWidth := max(9, min(15, usableWidth/6))
-	channelWidth := max(8, min(12, usableWidth/8))
-	nameWidth := max(13, usableWidth-selectionWidth-statusWidth-installedWidth-availableWidth-channelWidth)
+	const columnCount = 6
+	// Column widths describe content. Bubbles adds the shared cell padding
+	// around every column, so reserve exactly that visible overhead here.
+	_, paddingRight, _, paddingLeft := applicationTableCellStyle.GetPadding()
+	contentWidth := max(1, width-columnCount*(paddingLeft+paddingRight))
+	selectionWidth := 1
+	statusWidth := 9 // longest status label is AVAILABLE
+	channelWidth := 8
+	nameWidth := 1
+	versionWidth := 15
+	versionBudget := max(2, contentWidth-nameWidth-selectionWidth-statusWidth-channelWidth)
+	installedWidth := min(versionWidth, max(1, versionBudget/2))
+	availableWidth := min(versionWidth, max(1, versionBudget-installedWidth))
+	nameWidth = max(1, contentWidth-selectionWidth-statusWidth-installedWidth-availableWidth-channelWidth)
 	rows := make([]table.Row, 0, len(values))
 	for _, value := range values {
 		marker := " "
@@ -466,7 +477,7 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 		{Title: "CHANNEL", Width: channelWidth},
 	}
 	if len(values) == 0 {
-		columns[1].Width = max(1, width-selectionWidth)
+		columns[1].Width = max(1, width-2*(paddingLeft+paddingRight)-selectionWidth)
 		columns = columns[:2]
 	}
 	m.applicationTable.SetColumns(columns)

@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/table"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/drobilica/tarlink/internal/app"
 )
 
@@ -100,6 +102,82 @@ func TestTableHasStablePackageManagerColumns(t *testing.T) {
 	if !strings.Contains(view, "UPDATE") || !strings.Contains(view, "5.1") || !strings.Contains(view, "5.2") {
 		t.Fatalf("table data missing from %q", view)
 	}
+}
+
+func TestApplicationTableColumnsStayAlignedAtTerminalWidths(t *testing.T) {
+	values := []app.Application{{
+		ID: "blender", Name: "A very long application name that must truncate", InstalledVersion: "1.5.5-appimage",
+		RegistryVersion: "1.5.6-appimage", DefaultChannel: "stable", UpdateAvailable: true,
+	}}
+	for _, width := range []int{60, 80, 100, 120, 160} {
+		m := model{screen: screenAvailable, available: values, width: width, height: 20}
+		m.initComponents()
+		m.configureApplicationTable(values, width-4, 12)
+		view := m.applicationTable.View()
+		lines := strings.Split(view, "\n")
+		if len(lines) < 2 {
+			t.Fatalf("width %d produced only %d table lines", width, len(lines))
+		}
+		assertTableLineAligned(t, width, m.applicationTable.Columns(), lines[0], lines[1])
+	}
+}
+
+func TestApplicationTableResizePreservesLayoutAndCursor(t *testing.T) {
+	values := []app.Application{
+		{ID: "one", Name: "A very long application name that must truncate", InstalledVersion: "1.5.5-appimage", RegistryVersion: "1.5.6-appimage", DefaultChannel: "stable"},
+		{ID: "two", Name: "Second application", InstalledVersion: "—", RegistryVersion: "1.0.0", DefaultChannel: "stable"},
+	}
+	m := model{screen: screenAvailable, available: values, cursorID: "two", width: 120, height: 20}
+	m.initComponents()
+	for _, width := range []int{120, 80, 160, 60, 120} {
+		m.width = width
+		m.configureApplicationTable(values, width-4, 12)
+		if got := m.applicationTable.Cursor(); got != 1 {
+			t.Fatalf("width %d moved cursor to %d", width, got)
+		}
+		lines := strings.Split(m.applicationTable.View(), "\n")
+		if len(lines) < 3 {
+			t.Fatalf("width %d rendered too few lines", width)
+		}
+		assertTableLineAligned(t, width, m.applicationTable.Columns(), lines[0], lines[2])
+	}
+}
+
+func assertTableLineAligned(t *testing.T, terminalWidth int, columns []table.Column, header, row string) {
+	t.Helper()
+	visibleHeader, visibleRow := ansi.Strip(header), ansi.Strip(row)
+	if ansi.StringWidth(visibleHeader) > terminalWidth-4 || ansi.StringWidth(visibleRow) > terminalWidth-4 {
+		t.Fatalf("table line exceeds allocated width %d: header=%d row=%d", terminalWidth-4, ansi.StringWidth(visibleHeader), ansi.StringWidth(visibleRow))
+	}
+	offset := 0
+	for index, column := range columns {
+		if column.Width <= 0 {
+			continue
+		}
+		contentStart := offset + applicationTableCellStyle.GetPaddingLeft()
+		if column.Title != "" {
+			if got := runeAtDisplayColumn(visibleHeader, contentStart); got == ' ' || got == 0 {
+				t.Fatalf("column %d header does not start at display column %d: %q", index, contentStart, header)
+			}
+		}
+		if index > 0 {
+			if got := runeAtDisplayColumn(visibleRow, contentStart); got == ' ' || got == 0 {
+				t.Fatalf("column %d row does not start at display column %d: %q", index, contentStart, row)
+			}
+		}
+		offset += column.Width + applicationTableCellStyle.GetPaddingLeft() + applicationTableCellStyle.GetPaddingRight()
+	}
+}
+
+func runeAtDisplayColumn(value string, column int) rune {
+	position := 0
+	for _, character := range value {
+		if position >= column {
+			return character
+		}
+		position += ansi.StringWidth(string(character))
+	}
+	return 0
 }
 
 func TestSelectionTracksApplicationIDAcrossFiltering(t *testing.T) {
