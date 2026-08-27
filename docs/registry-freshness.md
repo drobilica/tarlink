@@ -17,6 +17,7 @@ change the channel recorded in the registry.
 
 The result is advisory metadata. It does not contain trusted artifact URLs or
 checksums, does not modify registry files, and cannot approve or install a
-release. A maintainer must independently review an immutable artifact and its
-authoritative checksum provenance before adding a candidate to the official
-registry. There is no daemon or scheduled updater.
+release. A maintainer selects the exact official upstream HTTPS artifact,
+calculates and records its digest, and submits it for normal official-registry
+review. Upstream checksum publication is optional. There is no daemon or
+scheduled updater.

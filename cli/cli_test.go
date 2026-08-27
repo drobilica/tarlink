@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"testing"
+	"time"
 
 	"github.com/drobilica/tarlink/internal/app"
 	"github.com/drobilica/tarlink/internal/freshness"
@@ -61,9 +62,9 @@ func (f *fakeService) Search(context.Context, string) ([]app.Application, error)
 func (f *fakeService) Versions(context.Context, string) ([]app.Version, error) {
 	return []app.Version{{Version: "1", Status: "current"}}, nil
 }
-func (f *fakeService) SyncRegistry(context.Context, app.ProgressSink) error {
+func (f *fakeService) SyncRegistry(context.Context, app.ProgressSink) (time.Time, error) {
 	f.synced = true
-	return nil
+	return time.Date(2026, 8, 27, 12, 34, 56, 0, time.UTC), nil
 }
 func (f *fakeService) ValidateRegistry(_ context.Context, root string) error {
 	f.validatedRoot = root
@@ -99,6 +100,18 @@ type researchService struct {
 	result  app.ResearchResult
 	err     error
 	options app.ResearchOptions
+}
+
+type registryCheckService struct {
+	fakeService
+	options app.RegistryCheckOptions
+	result  app.RegistryCheckResult
+	err     error
+}
+
+func (f *registryCheckService) CheckRegistry(_ context.Context, options app.RegistryCheckOptions) (app.RegistryCheckResult, error) {
+	f.options = options
+	return f.result, f.err
 }
 
 func (f *researchService) Research(_ context.Context, options app.ResearchOptions) (app.ResearchResult, error) {
@@ -331,7 +344,7 @@ func TestRefreshAndScopedHelp(t *testing.T) {
 	service := &fakeService{}
 	var out bytes.Buffer
 	runner := Runner{Service: service, Stdout: &out, Stderr: io.Discard}
-	if code := runner.Run(context.Background(), []string{"refresh"}); code != 0 || !service.synced || out.String() != "Application catalog refreshed.\n" {
+	if code := runner.Run(context.Background(), []string{"refresh"}); code != 0 || !service.synced || out.String() != "Application catalog refreshed. Checked at 2026-08-27T12:34:56Z.\n" {
 		t.Fatalf("refresh code=%d synced=%t", code, service.synced)
 	}
 	out.Reset()
@@ -423,5 +436,33 @@ func TestRegistryValidateCommand(t *testing.T) {
 	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "validate", "/registry"})
 	if code != 0 || service.validatedRoot != "/registry" || out.String() != "Registry is valid\n" {
 		t.Fatalf("code=%d root=%q stdout=%q stderr=%q", code, service.validatedRoot, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryCheckHelpAndCommandHelp(t *testing.T) {
+	for _, args := range [][]string{{"registry", "--help"}, {"registry", "check", "--help"}} {
+		var out bytes.Buffer
+		code := (Runner{Stdout: &out, Stderr: io.Discard}).Run(context.Background(), args)
+		if code != 0 || !bytes.Contains(out.Bytes(), []byte("registry check")) {
+			t.Fatalf("args=%v code=%d output=%q", args, code, out.String())
+		}
+	}
+}
+
+func TestRegistryCheckCommandPassesScopeAndPrintsMaterializationCount(t *testing.T) {
+	service := &registryCheckService{result: app.RegistryCheckResult{Materialized: 3}}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry", "--old-root", "/previous"})
+	if code != 0 || service.options.Root != "/registry" || service.options.OldRoot != "/previous" || service.options.App != "" || service.options.AllArtifacts || out.String() != "Registry is valid; materialized 3 artifact(s)\n" {
+		t.Fatalf("code=%d options=%+v stdout=%q stderr=%q", code, service.options, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryCheckCommandRejectsAmbiguousScope(t *testing.T) {
+	service := &registryCheckService{}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry", "--app", "fixture", "--all-artifacts"})
+	if code == 0 || !bytes.Contains([]byte(errOut.String()), []byte("usage: tarlink registry check")) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }

@@ -165,47 +165,28 @@ jobs:
 
   registry-snapshot:
     name: Snapshot official registry
-    needs: assemble
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       sha: ${{ steps.snapshot.outputs.sha }}
     steps:
-      - name: Check out triggering commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.sha }}
-
-      - name: Read prepared registry commit
-        id: registry_ref
-        shell: bash
-        run: |
-          REGISTRY_SHA=$(tr -d '[:space:]' < .github/registry-commit)
-          if [[ ! "$REGISTRY_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "prepared registry commit must be exactly 40 lowercase hexadecimal characters" >&2
-            exit 1
-          fi
-          echo "sha=$REGISTRY_SHA" >> "$GITHUB_OUTPUT"
-
-      - name: Check out prepared official registry commit
+      - name: Resolve official registry main once
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: drobilica/tarlink-registry
-          ref: ${{ steps.registry_ref.outputs.sha }}
+          ref: main
           path: registry
           fetch-depth: 1
 
       - name: Record exact registry commit
         id: snapshot
         shell: bash
-        env:
-          EXPECTED_REGISTRY_SHA: ${{ steps.registry_ref.outputs.sha }}
         run: |
           actual_sha=$(git -C registry rev-parse HEAD)
-          test "$actual_sha" = "$EXPECTED_REGISTRY_SHA" || {
-            echo "prepared registry checkout differs from expected commit" >&2
+          if [[ ! "$actual_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "resolved registry commit is not a full lowercase SHA" >&2
             exit 1
-          }
+          fi
           echo "sha=$actual_sha" >> "$GITHUB_OUTPUT"
 
   validate:

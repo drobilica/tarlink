@@ -87,7 +87,11 @@ type ChannelHead struct {
 type Verification struct {
 	Algorithm string `yaml:"algorithm" json:"algorithm"`
 	Digest    string `yaml:"digest" json:"digest"`
-	Source    string `yaml:"source" json:"source"`
+	// Source records the official upstream release or artifact origin associated
+	// with the approved bytes. It is informational metadata, not proof that
+	// upstream published a separate checksum file, and is never fetched by
+	// TarLink at runtime.
+	Source string `yaml:"source" json:"source"`
 }
 
 type Application struct {
@@ -408,9 +412,6 @@ func validateRelease(m Release) error {
 	}
 	if err := validateHTTPSURL("release verification source", m.Verification.Source); err != nil {
 		return err
-	}
-	if m.Verification.Source == m.URL {
-		return errors.New("release verification source must be a separate checksum metadata URL")
 	}
 	if err := ValidateDigest(m.Verification.Algorithm, m.Verification.Digest); err != nil {
 		return err

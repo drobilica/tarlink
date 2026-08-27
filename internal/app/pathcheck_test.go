@@ -10,7 +10,7 @@ import (
 func TestCheckInstallPathDetectsShadowing(t *testing.T) {
 	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchive(t, "1.0")))
 	layout := core.layout
-	if err := core.SyncRegistry(context.Background(), nil); err != nil {
+	if _, err := core.SyncRegistry(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	home := t.TempDir()

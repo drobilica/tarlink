@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1012,6 +1013,27 @@ func TestInspectReverifiesBeforeParserHook(t *testing.T) {
 	a := Artifact{Path: p, Provenance: Provenance{Verdict: Acceptable, Algorithm: "sha256", Digest: hex.EncodeToString(sum[:])}}
 	if _, e := Inspect(context.Background(), a, "", ""); e == nil {
 		t.Fatal("corruption not rejected")
+	}
+}
+
+func TestInspectComputesDigestsForUnverifiedArtifact(t *testing.T) {
+	d := testDir(t)
+	data := []byte("locally verified artifact")
+	p := filepath.Join(d, "artifact")
+	if err := os.WriteFile(p, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := Inspect(context.Background(), Artifact{Path: p, Size: int64(len(data))}, "", "")
+	if err != nil {
+		t.Fatalf("Inspect() error = %v", err)
+	}
+	sha256Sum := sha256.Sum256(data)
+	sha512Sum := sha512.Sum512(data)
+	if got := inspection.ComputedDigests["sha256"]; got != hex.EncodeToString(sha256Sum[:]) {
+		t.Fatalf("computed SHA-256 = %q", got)
+	}
+	if got := inspection.ComputedDigests["sha512"]; got != hex.EncodeToString(sha512Sum[:]) {
+		t.Fatalf("computed SHA-512 = %q", got)
 	}
 }
 

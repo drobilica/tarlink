@@ -161,6 +161,14 @@ func registryResponse(payload []byte) roundTripFunc {
 	}
 }
 
+func registryRuntimeSetCheckedAt(t *testing.T, generation string, checkedAt time.Time) {
+	t.Helper()
+	metadata := `{"checked_at":"` + checkedAt.UTC().Format(time.RFC3339) + `"}`
+	if err := os.WriteFile(filepath.Join(generation, registry.GenerationMetadataFile), []byte(metadata), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCatalogAutomaticallyBootstrapsAndUsesFreshCache(t *testing.T) {
 	core, requests := registryRuntimeCore(t, registryResponse(registryRuntimeArchive(t, "1.0")))
 	applications, err := core.Search(context.Background(), "fixture")
@@ -190,9 +198,7 @@ func TestCatalogRefreshesStaleCache(t *testing.T) {
 	}
 	generation := filepath.Join(core.syncer.CacheRoot, current)
 	old := time.Now().Add(-registry.DefaultMaxAge - time.Hour)
-	if err := os.Chtimes(generation, old, old); err != nil {
-		t.Fatal(err)
-	}
+	registryRuntimeSetCheckedAt(t, generation, old)
 	applications, err := core.Search(context.Background(), "fixture")
 	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "2.0" {
 		t.Fatalf("refreshed Search() applications=%#v error=%v", applications, err)
@@ -219,9 +225,7 @@ func TestCatalogUsesValidStaleCacheWhenOffline(t *testing.T) {
 	}
 	generation := filepath.Join(core.syncer.CacheRoot, current)
 	old := time.Now().Add(-registry.DefaultMaxAge - time.Hour)
-	if err := os.Chtimes(generation, old, old); err != nil {
-		t.Fatal(err)
-	}
+	registryRuntimeSetCheckedAt(t, generation, old)
 	offline = true
 	applications, err := core.Search(context.Background(), "fixture")
 	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "1.0" {
@@ -273,9 +277,7 @@ func TestCatalogRejectsCorruptStaleCacheWhenOffline(t *testing.T) {
 			}
 			generation := filepath.Join(core.syncer.CacheRoot, current)
 			old := time.Now().Add(-registry.DefaultMaxAge - time.Hour)
-			if err := os.Chtimes(generation, old, old); err != nil {
-				t.Fatal(err)
-			}
+			registryRuntimeSetCheckedAt(t, generation, old)
 			corrupt(t, core.syncer.CacheRoot, generation)
 			offline = true
 			applications, err := core.Search(context.Background(), "fixture")
@@ -303,9 +305,7 @@ func TestCatalogDoesNotHideCancellationBehindStaleCache(t *testing.T) {
 	}
 	generation := filepath.Join(core.syncer.CacheRoot, current)
 	old := time.Now().Add(-registry.DefaultMaxAge - time.Hour)
-	if err := os.Chtimes(generation, old, old); err != nil {
-		t.Fatal(err)
-	}
+	registryRuntimeSetCheckedAt(t, generation, old)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := core.Search(ctx, "fixture"); !errors.Is(err, context.Canceled) {
@@ -324,14 +324,87 @@ func TestCatalogFailsOfflineWithoutCache(t *testing.T) {
 
 func TestExplicitRegistrySyncAlwaysFetches(t *testing.T) {
 	core, requests := registryRuntimeCore(t, registryResponse(registryRuntimeArchive(t, "1.0")))
-	if err := core.SyncRegistry(context.Background(), nil); err != nil {
+	if _, err := core.SyncRegistry(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := core.SyncRegistry(context.Background(), nil); err != nil {
+	if _, err := core.SyncRegistry(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if *requests != 2 {
 		t.Fatalf("registry requests = %d, want 2", *requests)
+	}
+}
+
+func TestRefreshRegistryPublishesImmediatelyAndRetainsCheckedAtOnFailure(t *testing.T) {
+	payload := registryRuntimeArchive(t, "1.0")
+	core, requests := registryRuntimeCore(t, func(request *http.Request) (*http.Response, error) {
+		if string(payload) == "invalid" {
+			return registryResponse([]byte("invalid"))(request)
+		}
+		return registryResponse(payload)(request)
+	})
+	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	core.now = func() time.Time { return clock }
+	checkedAt, err := core.SyncRegistry(context.Background(), nil)
+	if err != nil || !checkedAt.Equal(clock) {
+		t.Fatalf("initial refresh checked-at=%s error=%v", checkedAt, err)
+	}
+	payload = registryRuntimeArchive(t, "2.0")
+	clock = clock.Add(time.Hour)
+	checkedAt, err = core.SyncRegistry(context.Background(), nil)
+	if err != nil || !checkedAt.Equal(clock) {
+		t.Fatalf("second refresh checked-at=%s error=%v", checkedAt, err)
+	}
+	applications, err := core.Search(context.Background(), "fixture")
+	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "2.0" {
+		t.Fatalf("same-process Search() applications=%#v error=%v", applications, err)
+	}
+	payload = []byte("invalid")
+	clock = clock.Add(time.Hour)
+	if _, err := core.SyncRegistry(context.Background(), nil); err == nil {
+		t.Fatal("invalid refresh unexpectedly succeeded")
+	}
+	catalog, err := registry.Open(core.syncer.CacheRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catalog.FetchedAt.Equal(clock.Add(-time.Hour)) {
+		t.Fatalf("failed refresh advanced checked-at to %s", catalog.FetchedAt)
+	}
+	applications, err = core.Search(context.Background(), "fixture")
+	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "2.0" {
+		t.Fatalf("failed refresh replaced previous catalog: applications=%#v error=%v", applications, err)
+	}
+	if *requests != 3 {
+		t.Fatalf("registry requests=%d, want 3", *requests)
+	}
+}
+
+func TestCatalogUsesCheckedAtForTwentyFourHourFreshness(t *testing.T) {
+	payload := registryRuntimeArchive(t, "1.0")
+	core, requests := registryRuntimeCore(t, func(request *http.Request) (*http.Response, error) {
+		return registryResponse(payload)(request)
+	})
+	clock := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	core.now = func() time.Time { return clock }
+	if _, err := core.Search(context.Background(), "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(23 * time.Hour)
+	if _, err := core.Search(context.Background(), "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if *requests != 1 {
+		t.Fatalf("registry requests at 23 hours=%d, want 1", *requests)
+	}
+	payload = registryRuntimeArchive(t, "2.0")
+	clock = clock.Add(time.Hour)
+	applications, err := core.Search(context.Background(), "fixture")
+	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "2.0" {
+		t.Fatalf("24-hour Search() applications=%#v error=%v", applications, err)
+	}
+	if *requests != 2 {
+		t.Fatalf("registry requests at 24 hours=%d, want 2", *requests)
 	}
 }
 
@@ -370,7 +443,7 @@ func TestResolveMissingVariantReturnsTypedUnsupportedPlatform(t *testing.T) {
 
 func TestListDoesNotClaimRegistryDataWithoutRuntimeVariant(t *testing.T) {
 	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchive(t, "1.0")))
-	if err := core.SyncRegistry(context.Background(), nil); err != nil {
+	if _, err := core.SyncRegistry(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
@@ -390,7 +463,7 @@ func TestListDoesNotClaimRegistryDataWithoutRuntimeVariant(t *testing.T) {
 
 func TestListPrefersExactRuntimeVariant(t *testing.T) {
 	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchivePlatformVersions(t, "1.0", "2.0", true)))
-	if err := core.SyncRegistry(context.Background(), nil); err != nil {
+	if _, err := core.SyncRegistry(context.Background(), nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
@@ -422,9 +495,7 @@ func TestListUsesSharedRegistryFreshnessPolicy(t *testing.T) {
 	}
 	generation := filepath.Join(core.syncer.CacheRoot, current)
 	old := time.Now().Add(-registry.DefaultMaxAge - time.Hour)
-	if err := os.Chtimes(generation, old, old); err != nil {
-		t.Fatal(err)
-	}
+	registryRuntimeSetCheckedAt(t, generation, old)
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{Schema: state.Schema, App: "fixture", Current: "0.9", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}}, Integration: state.Integration{Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}}}}); err != nil {
 		t.Fatal(err)
 	}

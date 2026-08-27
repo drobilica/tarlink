@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/freshness"
@@ -149,7 +150,7 @@ type Service interface {
 	Info(context.Context, string) (Application, error)
 	Search(context.Context, string) ([]Application, error)
 	Versions(context.Context, string) ([]Version, error)
-	SyncRegistry(context.Context, ProgressSink) error
+	SyncRegistry(context.Context, ProgressSink) (time.Time, error)
 	ValidateRegistry(context.Context, string) error
 	CheckTarLinkVersion(context.Context) (TarLinkVersion, error)
 	CheckTarLinkVersionFresh(context.Context) (TarLinkVersion, error)

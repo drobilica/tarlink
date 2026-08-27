@@ -2,9 +2,9 @@ candidates:
   - id: starship
     upstream: HarbourMasters/Starship
     last_checked: {release_tag: v2.0.0, release_id: 220828885}
-    status: blocked
-    blockers: [NO_AUTHORITATIVE_DIGEST]
-    reconsider_when: [new-upstream-release, provenance-policy-change]
+    status: deferred
+    reconsider_when: [manual]
+    notes: Digest publication is no longer required; ordinary artifact and manifest review remains.
   - id: quest64-recomp
     upstream: Rainchus/Quest64-Recomp
     last_checked: {release_tag: v0.1, release_id: 275862525}
@@ -42,9 +42,9 @@ candidates:
   - id: moonlight
     upstream: moonlight-stream/moonlight-qt
     last_checked: {release_tag: v6.1.0, release_id: 175337682}
-    status: blocked
-    blockers: [NO_AUTHORITATIVE_DIGEST]
-    reconsider_when: [new-upstream-release, provenance-policy-change]
+    status: deferred
+    reconsider_when: [manual]
+    notes: Digest publication is no longer required; ordinary artifact and manifest review remains.
   - id: antimicrox
     upstream: AntiMicroX/antimicrox
     last_checked: {release_tag: 3.6.1, release_id: 328173210}
@@ -70,6 +70,6 @@ candidates:
   - id: chameleon-twist-1-jp-recomp
     upstream: Rainchus/ChameleonTwist1-JP-Recomp
     last_checked: {release_tag: v0.1, release_id: 190757282}
-    status: blocked
-    blockers: [NO_AUTHORITATIVE_DIGEST]
-    reconsider_when: [new-upstream-release, provenance-policy-change]
+    status: deferred
+    reconsider_when: [manual]
+    notes: Digest publication is no longer required; ordinary artifact and manifest review remains.

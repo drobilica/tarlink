@@ -26,8 +26,8 @@ Run `tarlink` without a command to open the interactive TUI.
 
 - **Rootless and user-owned.** Everything TarLink manages stays in your user
   environment; no `sudo`, daemon, or system package is required.
-- **Verified upstream artifacts.** Registry manifests identify exact upstream
-  releases and require an authoritative SHA-256 or SHA-512 digest.
+- **Verified upstream artifacts.** Registry manifests identify exact official
+  upstream releases and require a registry-approved SHA-256 or SHA-512 digest.
 - **Safe, versioned lifecycle.** Downloads are staged, installs are activated
   atomically, and the current version plus one previous version are retained
   for rollback.
@@ -71,9 +71,10 @@ tarlink self-update
 ```
 
 Use `tarlink` for the TUI. The registry is refreshed automatically when needed
-and can be refreshed explicitly with `tarlink refresh`. `tarlink list` shows the
-available catalog with installed state; use `--installed` or `--updates` to
-filter it.
+and can be refreshed explicitly with `tarlink refresh`. Explicit refresh always
+checks the current official registry and reports the successful UTC check time.
+`tarlink list` shows the available catalog with installed state; use
+`--installed` or `--updates` to filter it.
 
 In the TUI, use `↑`/`↓` or `j`/`k` to navigate and `Enter` to open details or
 review the current selection. `Space` selects applications by stable ID; move

@@ -101,7 +101,10 @@ func (core *Core) Research(ctx context.Context, options ResearchOptions) (Resear
 	if options.Inspect {
 		result.Status = "READY_FOR_REVIEW"
 	}
-	if result.Provenance.Verdict != research.Acceptable {
+	// A missing or unsupported upstream digest is advisory evidence. Inspection
+	// can still fetch the exact HTTPS asset and compute local digests; only
+	// mechanical inspection blockers should prevent review of that result.
+	if !options.Inspect && result.Provenance.Verdict != research.Acceptable {
 		result.Status = "BLOCKED"
 	}
 	verification := result.Provenance
@@ -126,10 +129,6 @@ func (core *Core) Research(ctx context.Context, options ResearchOptions) (Resear
 			return result, classified
 		}
 		result.Inspection = &inspection
-		if result.Provenance.ReasonCode == "NO_AUTHORITATIVE_DIGEST" && !containsString(inspection.Blockers, "NO_AUTHORITATIVE_DIGEST") {
-			inspection.Blockers = append(inspection.Blockers, "NO_AUTHORITATIVE_DIGEST")
-			result.Inspection = &inspection
-		}
 		if len(inspection.Blockers) != 0 {
 			result.Status = "BLOCKED"
 		}

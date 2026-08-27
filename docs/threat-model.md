@@ -20,13 +20,13 @@
 - The active and previous managed application versions.
 - The integrity of downloaded application bytes.
 - The integrity and continuity of the canonical TarLink executable.
-- The identity and provenance of registry manifests.
+- The identity and approved integrity metadata of registry manifests.
 - Approved historical release and channel-selection metadata.
 - Local state and cache integrity.
 
 ## Adversaries
 
-1. A malicious or compromised release host, checksum host, or redirect target.
+1. A malicious or compromised release host or redirect target.
 2. A malicious archive attempting traversal, unsafe links, special files, or resource exhaustion.
 3. A concurrent TarLink process racing integration, state, staging, activation, or purge paths.
 4. Accidental state corruption or a user file occupying a TarLink-managed name.
@@ -35,9 +35,9 @@
 
 | Threat | Control |
 | --- | --- |
-| Wrong application release bytes | Strict SHA-256 or SHA-512 digest from reviewed upstream checksum provenance |
+| Wrong application release bytes | Exact SHA-256 or SHA-512 digest approved in the trusted official registry and verified before materialization |
 | Unapproved historical/channel target | Exact-version and channel resolution are limited to version-3 releases and explicit channel heads in the validated official registry; local retention remains current-plus-one-previous |
-| Weak or ambiguous verification | Explicit SHA-256 or SHA-512 algorithm, fixed digest length, lowercase hex, HTTPS source; other algorithms rejected |
+| Weak or ambiguous verification | Explicit SHA-256 or SHA-512 algorithm, fixed digest length, lowercase hex, official HTTPS artifact and informational origin; other algorithms rejected |
 | Alternate registry substitution | Exact compiled HTTPS source, bounded staged archive, direct manifest validation, normalized immutable generation |
 | Offline or failed refresh | Previously validated cache remains active; absent/invalid cache cannot fall back |
 | Zip-slip / tar traversal | UTF-8 canonical relative paths with depth and length limits |
@@ -53,4 +53,4 @@
 
 ## Outside the boundary
 
-TarLink does not sandbox installed applications. After activation, an application runs with the user's permissions. A malicious process already running as the same user can mutate that user's TarLink directories and is outside the local-attacker boundary; the ownership checks are designed for accidental state corruption, unexpected objects, and cooperating TarLink concurrency. The mutable official registry is trusted and not signed: compromise of that registry alone can replace both an artifact URL and its digest. Self-upgrade similarly trusts the official GitHub release channel but never installs without checksum verification and ownership validation. Runtime fetching of `verification.source` and signed registry metadata would require separate designs.
+TarLink does not sandbox installed applications. After activation, an application runs with the user's permissions. A malicious process already running as the same user can mutate that user's TarLink directories and is outside the local-attacker boundary; the ownership checks are designed for accidental state corruption, unexpected objects, and cooperating TarLink concurrency. The mutable official registry is trusted and not signed: compromise of that registry alone can replace both an artifact URL and its digest. Self-upgrade similarly trusts the official GitHub release channel but never installs without checksum verification and ownership validation. Informational `verification.source` metadata is not an independent authenticity guarantee; signed registry metadata would require a separate design.

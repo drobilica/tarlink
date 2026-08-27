@@ -59,6 +59,24 @@ func TestParseValidManifest(t *testing.T) {
 	}
 }
 
+func TestParseAcceptsLocallyVerifiedReleasePageSource(t *testing.T) {
+	value := strings.Replace(validManifest, "source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256", "source: https://www.blender.org/download/releases/5-2", 1)
+	m, err := Parse(strings.NewReader(value))
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if m.Release.Verification.Source != "https://www.blender.org/download/releases/5-2" {
+		t.Fatalf("verification source = %q", m.Release.Verification.Source)
+	}
+}
+
+func TestParseTreatsVerificationSourceAsInformational(t *testing.T) {
+	value := strings.Replace(validManifest, "source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256", "source: https://download.blender.org/release/Blender5.2/blender.tar.xz", 1)
+	if _, err := Parse(strings.NewReader(value)); err != nil {
+		t.Fatalf("Parse() informational source error = %v", err)
+	}
+}
+
 func TestExecutableIntegrationFields(t *testing.T) {
 	value := strings.Replace(validManifest, "    - name: blender\n      path: blender", "    - path: bin/blender", 1)
 	value = strings.Replace(value, "  categories:\n    - Graphics\n  icon:", "  executable: blender\n  working-directory: application-root\n  categories:\n    - Graphics\n  icon:", 1)
@@ -385,6 +403,9 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 		"missing verification": func(s string) string {
 			return strings.Replace(s, "      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
 		},
+		"missing verification source": func(s string) string {
+			return strings.Replace(s, "        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
+		},
 		"malformed digest": func(s string) string {
 			return strings.Replace(s, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "xyz", 1)
 		},
@@ -399,9 +420,6 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 		},
 		"verification source credentials": func(s string) string {
 			return strings.Replace(s, "source: https://download.blender.org", "source: https://user:pass@download.blender.org", 1)
-		},
-		"verification source is release": func(s string) string {
-			return strings.Replace(s, "source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256", "source: https://download.blender.org/release/Blender5.2/blender.tar.xz", 1)
 		},
 		"HTTP URL": func(s string) string {
 			return strings.Replace(s, "https://download.blender.org", "http://download.blender.org", 1)

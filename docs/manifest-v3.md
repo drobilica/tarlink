@@ -33,7 +33,7 @@ release:
       verification:
         algorithm: sha256 | sha512
         digest: <lowercase hexadecimal digest>
-        source: <authoritative HTTPS checksum URL>
+        source: <official upstream release or artifact-origin HTTPS URL>
 application:
   executables:
     - name: <optional logical command name>
@@ -56,6 +56,17 @@ without following symlinks or hardlinks, and its declared format is checked
 against magic bytes. AppImages cannot declare nested archives. Unknown fields,
 aliases, anchors, merge keys, multiple documents, malformed digests, and
 unsafe paths are rejected.
+
+`verification.digest` pins the exact artifact bytes approved by the official
+registry. A maintainer may calculate that digest locally from the selected
+official upstream HTTPS artifact; upstream does not need to publish a separate
+checksum file. `verification.source` remains required in schema v3 so the live
+registry stays consumable by existing v0.11.x clients. It records an honest
+official upstream release page or artifact-origin location as informational
+metadata, not independent checksum provenance, and TarLink never fetches or
+cryptographically binds it at runtime. While v0.11.x remains on the live path,
+use a distinct official release-page or artifact-origin metadata URL rather
+than repeating the artifact URL. Do not fabricate a checksum URL.
 
 Executable names default to the basename of `path`; explicit names remain
 valid, and resolved names must be unique. `create-bin-link` defaults to true.

@@ -1,6 +1,7 @@
 # Repository instructions
 
-TarLink is a rootless, single-user Linux application manager. Preserve its narrow architecture, trust model, and security boundaries.
+TarLink is a rootless, single-user Linux application manager. Preserve its
+narrow architecture, trust model, and security boundaries.
 
 ## Scope and authority
 
@@ -17,17 +18,20 @@ TarLink is a rootless, single-user Linux application manager. Preserve its narro
 * Before modifying a subtree, inspect the closest applicable nested `AGENTS.md`.
 * Nested files specialize these rules; do not duplicate repository-wide rules into them.
 
-## Security contract
+## Repository boundaries
 
-* Production code remains pure Go and compatible with `CGO_ENABLED=0`.
-* Do not import `os/exec`, `unsafe`, `plugin`, or `C`, and do not execute external commands.
-* Only the compiled official registry and official TarLink GitHub releases are trusted. Release sources remain HTTPS and verified according to the current manifest/release contract.
-* Preserve archive/path/resource limits, safe extraction, same-directory regular-file symlink-chain policy, atomic activation/state, locking, ownership checks, and current-plus-one-previous retention.
+* `tarlink` owns the application manager, official-registry consumer, and registry validator/maintainer tooling.
+* `tarlink-registry` remains declarative application metadata only.
+* `tarlink-data` remains the separate external user-selected application-data resolver. Do not move its recipes, data hashes, copyrighted-data mappings, or source configuration here.
+
+## Security invariants
+
+* Only the compiled official registry and official TarLink GitHub releases are trusted; network sources remain HTTPS and exact downloaded bytes remain digest-verified.
+* Preserve bounded safe extraction, confined path/link behavior, atomic activation/state, locking, ownership checks, and current-plus-one-previous retention.
 * Do not add hardlinks, hooks, scripts, arbitrary commands/arguments, custom install destinations, plugins, telemetry, daemons, automatic installation, system-wide installation, package-manager integration, or system dependencies.
 * Explicit self-upgrade is permitted only through the canonical TarLink-owned binary and verified official release assets.
-* Manifest-declared external desktop icons are an explicitly supported narrow verified resource under the manifest icon contract; this does not authorize arbitrary resource downloads.
-* A task does not implicitly authorize widening a trust or security boundary. Such changes require explicit user authorization and a deliberate design change.
-* Treat `docs/architecture.md`, `docs/security-model.md`, and `docs/threat-model.md` as canonical design references.
+* Manifest-declared external desktop icons remain the only narrow verified external resource exception; this does not authorize arbitrary downloads.
+* Trust-boundary changes require explicit authorization and deliberate design. Treat `docs/architecture.md`, `docs/security-model.md`, and `docs/threat-model.md` as canonical.
 
 ## Pre-1.0 policy
 
@@ -36,15 +40,11 @@ TarLink is a rootless, single-user Linux application manager. Preserve its narro
 
 ## Agent workflow
 
-Use the configured `orchestrator`, `worker`, and `specialist` roles.
-
-* In Codex, the primary thread is the orchestrator; in OpenCode, the configured orchestrator fills that role. It owns planning, delegation, integration, final review, and user communication.
-* Default implementation, repository exploration, testing, and routine debugging to workers.
-* Use the specialist only for genuinely difficult implementation, debugging, refactoring, or when a worker is blocked.
-* Keep delegated scopes focused. Parallelize only independent work.
-* Do not spawn redundant agents merely to satisfy a multi-agent workflow.
-* The orchestrator should not perform long implementation/test-fix loops when they can reasonably be delegated.
-* The orchestrator must review delegated results and the final diff before completion.
+The primary thread is the orchestrator and owns scope, delegation, integration,
+final review, Git actions, releases, and user communication. Default routine
+implementation, exploration, testing, and debugging to workers. Use the
+specialist only for genuinely difficult architecture, security, lifecycle, or
+debugging work. Keep scopes narrow and concurrency small.
 
 ### Effort levels
 
@@ -52,69 +52,40 @@ Use the configured `orchestrator`, `worker`, and `specialist` roles.
 
 `orchestrator → worker → orchestrator review`
 
-Use one worker. Escalate only if blocked.
-
 **Effort 2 — normal engineering work**
 
-`orchestrator → worker(s) → orchestrator integration`
-
-Scope the task first. Delegate independent implementation, investigation, and testing. Use the specialist only for difficult portions.
+`orchestrator → focused worker(s) → orchestrator integration`
 
 **Effort 3 — difficult or high-risk**
 
 `orchestrator → workers + specialist as needed → orchestrator final review`
 
-Use workers for exploration, routine implementation, and testing. Assign only the genuinely difficult portion to the specialist. The orchestrator owns final integration and regression review.
+**Effort 4 — major coordinated change**
+
+`Sol xhigh orchestrator → Luna high implementation/testing workers → Sol xhigh independent reviewer → Sol xhigh orchestrator integration`
+
+Use Effort 4 only when explicitly requested or clearly warranted by broad,
+high-impact work; it is not the default. Start the primary session with
+`gpt-5.6-sol` and `xhigh`, use the configured `effort4_worker` and `reviewer`
+roles, and have the reviewer inspect the integrated diff and validation
+evidence rather than worker summaries. Workers and reviewers never perform Git
+or release actions.
 
 ## Git
 
-* Worker/subagents may inspect, edit, and test their assigned scope, but must not commit, push, tag, publish releases, or change repository settings.
-* For validated pre-1.0 task changes, the orchestrator must commit before reporting successful completion unless the user explicitly requests no commit; task-created changes must not be left uncommitted, while unrelated pre-existing changes must never be included.
-* Before `v1.0.0`, the orchestrator should commit and push validated task changes directly to `main` unless the user says otherwise.
-* The change that prepares or targets `v1.0.0` must use a branch and pull request.
-* After `v1.0.0`, all changes to `main` must go through branches and pull requests.
-* Never commit unrelated pre-existing changes.
-* Do not bump versions, create tags, or publish releases unless the task explicitly requests it.
+* Worker/subagents must not commit, push, tag, publish releases, or change repository settings.
+* For validated pre-1.0 changes, the orchestrator commits all and only task-created changes before successful completion.
+* Before `v1.0.0`, the orchestrator pushes validated changes directly to `main` unless the user says otherwise. The `v1.0.0` change uses a branch and pull request; after `v1.0.0`, all changes to `main` do.
+* Never include unrelated pre-existing changes.
+* Do not bump versions, create tags, or publish releases unless explicitly requested.
 
 ## Validation
 
-TarLink targets Linux, but development may occur on Linux or macOS.
-
-* Detect the host OS before choosing the validation strategy.
-* On Linux, run required validation natively.
-* On macOS, use an ephemeral Linux Podman environment for Linux-specific validation when available.
-* If Podman is unavailable, run all host-compatible validation locally and rely on Ubuntu GitHub Actions for remaining Linux checks.
-* Ubuntu 24.04 GitHub Actions is the authoritative final Linux integration environment.
-* After pushing Linux-sensitive changes, inspect CI for the exact pushed commit. Fix and repeat until green.
-
-Use the canonical validation entry point:
-
-```sh
-./scripts/validate.sh
-```
-
-During implementation, prefer:
-
-```sh
-./scripts/validate.sh --quick
-```
-
-Before reporting completion, run the full validation.
-
-It includes the required checks and repository-specific installer, uninstaller, and architecture checks:
-
-```sh
-test -z "$(gofmt -l .)"
-go vet ./...
-go test ./...
-go test -race ./...
-CGO_ENABLED=0 go build ./...
-```
-
-Security-sensitive changes require focused success, hostile-input, and failure-path tests plus a short explanation of the affected trust boundary.
-
-Documentation must describe implemented behavior or clearly marked plans; never invent commands, registry entries, URLs, or hashes.
-
-## TUI architecture
-
-* TUI work remains presentation-only; detailed architecture and rules for code under `tui/` live in `tui/AGENTS.md`.
+Detect the host OS. Run `./scripts/validate.sh --quick` during implementation
+and `./scripts/validate.sh` before completion. On Linux, validate natively; on
+macOS use ephemeral Linux Podman when available, otherwise run host-compatible
+checks and rely on Ubuntu 24.04 GitHub Actions. Security-sensitive changes need
+focused success, hostile-input, and failure-path tests. After pushing
+Linux-sensitive changes, require authoritative CI green for the exact commit.
+Documentation must describe implemented behavior and must not invent commands,
+registry entries, URLs, or hashes.

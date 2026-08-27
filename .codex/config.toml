@@ -2,10 +2,18 @@
 
 [agents]
 enabled = true
-max_concurrent_threads_per_session = 3
+max_concurrent_threads_per_session = 2
 default_subagent_model = "gpt-5.6-luna"
 default_subagent_reasoning_effort = "medium"
 
 [agents.specialist]
 description = "Specialist for difficult architecture, security, lifecycle, and debugging work."
 config_file = "agents/specialist.toml"
+
+[agents.effort4_worker]
+description = "Focused Effort 4 implementation and testing worker. Use only for a narrow assigned coding scope."
+config_file = "agents/effort4-worker.toml"
+
+[agents.reviewer]
+description = "Independent Effort 4 reviewer of the integrated diff and validation evidence."
+config_file = "agents/reviewer.toml"

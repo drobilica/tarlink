@@ -5,8 +5,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -210,7 +208,7 @@ func TestCoreResearchCLIMalformedRepository(t *testing.T) {
 	}
 }
 
-func TestCoreResearchCLIInspectRejectedIsBlocked(t *testing.T) {
+func TestCoreResearchCLIInspectWithoutGitHubDigestReportsArtifactBlocker(t *testing.T) {
 	body := strings.Replace(researchReleaseJSON(researchAssetJSON(20, "linux.bin", "")), `"size":1`, `"size":14`, 1)
 	core := newResearchCore(t, func(r *http.Request) *http.Response {
 		if strings.Contains(r.URL.Host, "objects.example.test") {
@@ -223,12 +221,12 @@ func TestCoreResearchCLIInspectRejectedIsBlocked(t *testing.T) {
 	})
 	var out strings.Builder
 	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1.2.3", "--asset", "linux.bin", "--json"})
-	if code != 0 || !strings.Contains(out.String(), `"status":"BLOCKED"`) || !strings.Contains(out.String(), `"NO_AUTHORITATIVE_DIGEST"`) {
+	if code != 0 || !strings.Contains(out.String(), `"status":"BLOCKED"`) || !strings.Contains(out.String(), `"blockers":["UNSUPPORTED_ARTIFACT"]`) || strings.Contains(out.String(), `"blockers":["NO_AUTHORITATIVE_DIGEST"]`) {
 		t.Fatalf("blocked inspection output=%s code=%d", out.String(), code)
 	}
 }
 
-func TestCoreResearchCLIInspectReadyForReview(t *testing.T) {
+func TestCoreResearchCLIInspectComputesDigestWithoutGitHubDigest(t *testing.T) {
 	var archiveBytes bytes.Buffer
 	zw := gzip.NewWriter(&archiveBytes)
 	tw := tar.NewWriter(zw)
@@ -245,8 +243,7 @@ func TestCoreResearchCLIInspectReadyForReview(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := archiveBytes.Bytes()
-	hash := sha256.Sum256(payload)
-	asset := `{"id":20,"name":"linux.tar.gz","browser_download_url":"https://objects.example.test/linux.tar.gz","size":` + strconv.Itoa(len(payload)) + `,"digest":"sha256:` + hex.EncodeToString(hash[:]) + `","content_type":"application/gzip","state":"uploaded"}`
+	asset := `{"id":20,"name":"linux.tar.gz","browser_download_url":"https://objects.example.test/linux.tar.gz","size":` + strconv.Itoa(len(payload)) + `,"digest":"","content_type":"application/gzip","state":"uploaded"}`
 	core := newResearchCore(t, func(r *http.Request) *http.Response {
 		if strings.Contains(r.URL.Host, "objects.example.test") {
 			return jsonResponse(http.StatusOK, string(payload))
@@ -259,7 +256,7 @@ func TestCoreResearchCLIInspectReadyForReview(t *testing.T) {
 	})
 	var out strings.Builder
 	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
-	if code != 0 || !strings.Contains(out.String(), `"status":"READY_FOR_REVIEW"`) || !strings.Contains(out.String(), `"artifact_type":"tar.gz"`) {
+	if code != 0 || !strings.Contains(out.String(), `"status":"READY_FOR_REVIEW"`) || !strings.Contains(out.String(), `"artifact_type":"tar.gz"`) || !strings.Contains(out.String(), `"computed_digests"`) || strings.Contains(out.String(), `"blockers":["NO_AUTHORITATIVE_DIGEST"]`) {
 		t.Fatalf("ready inspection output=%s code=%d", out.String(), code)
 	}
 }

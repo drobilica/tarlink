@@ -293,6 +293,35 @@ func TestCatalogStaleness(t *testing.T) {
 	}
 }
 
+func TestValidateTreeUsesCheckedAtMetadataInsteadOfDirectoryTimestamp(t *testing.T) {
+	root := createRegistry(t)
+	checkedAt := time.Date(2026, 8, 27, 15, 4, 5, 0, time.UTC)
+	if err := os.WriteFile(filepath.Join(root, GenerationMetadataFile), []byte(`{"checked_at":"2026-08-27T15:04:05Z"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := checkedAt.Add(-72 * time.Hour)
+	if err := os.Chtimes(root, old, old); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catalog.FetchedAt.Equal(checkedAt) {
+		t.Fatalf("checked-at = %s, want %s", catalog.FetchedAt, checkedAt)
+	}
+}
+
+func TestValidateTreeOldGenerationWithoutMetadataIsDisposable(t *testing.T) {
+	catalog, err := ValidateTree(createRegistry(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catalog.FetchedAt.IsZero() {
+		t.Fatalf("missing metadata checked-at = %s, want zero", catalog.FetchedAt)
+	}
+}
+
 func TestRegistryWorkingTreeIntegration(t *testing.T) {
 	root := os.Getenv("TARLINK_REGISTRY_WORKTREE")
 	if root == "" {

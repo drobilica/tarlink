@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -949,10 +950,11 @@ func (c *Client) FetchUnverified(ctx context.Context, asset Asset) (Artifact, er
 }
 
 type Inspection struct {
-	ArtifactType string   `json:"artifact_type"`
-	Executables  []string `json:"executables,omitempty"`
-	Nested       []string `json:"nested,omitempty"`
-	Blockers     []string `json:"blockers,omitempty"`
+	ArtifactType    string            `json:"artifact_type"`
+	ComputedDigests map[string]string `json:"computed_digests,omitempty"`
+	Executables     []string          `json:"executables,omitempty"`
+	Nested          []string          `json:"nested,omitempty"`
+	Blockers        []string          `json:"blockers,omitempty"`
 }
 
 type InspectError struct {
@@ -1018,28 +1020,34 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 	if e != nil || !before.Mode().IsRegular() || !os.SameFile(before, entry) {
 		return Inspection{}, ErrCacheCorrupt
 	}
+	sha256Hash := sha256.New()
+	sha512Hash := sha512.New()
+	n, e := io.Copy(io.MultiWriter(sha256Hash, sha512Hash), io.LimitReader(f, maxArtifactBytes+1))
+	if e != nil {
+		return Inspection{}, fmt.Errorf("%w: read: %v", ErrCacheCorrupt, e)
+	}
+	if n > maxArtifactBytes || artifact.Size != 0 && n != artifact.Size {
+		return Inspection{}, fmt.Errorf("%w: digest or size mismatch", ErrCacheCorrupt)
+	}
+	inspection := Inspection{ComputedDigests: map[string]string{
+		"sha256": hex.EncodeToString(sha256Hash.Sum(nil)),
+		"sha512": hex.EncodeToString(sha512Hash.Sum(nil)),
+	}}
 	if artifact.Provenance.Verdict == Acceptable {
-		h, e := checksum.NewHasher(artifact.Provenance.Algorithm, artifact.Provenance.Digest)
-		if e != nil {
-			return Inspection{}, fmt.Errorf("%w: hasher: %v", ErrCacheCorrupt, e)
-		}
-		n, e := io.Copy(h, io.LimitReader(f, maxArtifactBytes+1))
-		if e != nil {
-			return Inspection{}, fmt.Errorf("%w: read: %v", ErrCacheCorrupt, e)
-		}
-		if n != artifact.Size || n > maxArtifactBytes || hex.EncodeToString(h.Sum(nil)) != artifact.Provenance.Digest {
+		digest, ok := inspection.ComputedDigests[artifact.Provenance.Algorithm]
+		if !ok || digest != artifact.Provenance.Digest || n != artifact.Size {
 			return Inspection{}, fmt.Errorf("%w: digest or size mismatch", ErrCacheCorrupt)
 		}
-		if inspectParserHook != nil {
-			if e := inspectParserHook(); e != nil {
-				return Inspection{}, e
-			}
+	}
+	if inspectParserHook != nil {
+		if e := inspectParserHook(); e != nil {
+			return Inspection{}, e
 		}
-		after, e := f.Stat()
-		pathStat, pe := os.Lstat(artifact.Path)
-		if e != nil || pe != nil || !after.Mode().IsRegular() || !pathStat.Mode().IsRegular() || pathStat.Mode()&os.ModeSymlink != 0 || !os.SameFile(after, pathStat) || after.Size() != before.Size() {
-			return Inspection{}, ErrCacheCorrupt
-		}
+	}
+	after, e := f.Stat()
+	pathStat, pe := os.Lstat(artifact.Path)
+	if e != nil || pe != nil || !after.Mode().IsRegular() || !pathStat.Mode().IsRegular() || pathStat.Mode()&os.ModeSymlink != 0 || !os.SameFile(after, pathStat) || after.Size() != before.Size() {
+		return Inspection{}, ErrCacheCorrupt
 	}
 	if _, e := f.Seek(0, io.SeekStart); e != nil {
 		return Inspection{}, fmt.Errorf("%w: seek: %v", ErrCacheCorrupt, e)
@@ -1081,11 +1089,11 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 		}
 		if err := appimage.ValidatePath(copyPath, arch); err != nil {
 			if strings.Contains(err.Error(), "architecture mismatch") {
-				return Inspection{ArtifactType: "appimage", Blockers: []string{"UNSUPPORTED_ARCH"}}, nil
+				return Inspection{ArtifactType: "appimage", ComputedDigests: inspection.ComputedDigests, Blockers: []string{"UNSUPPORTED_ARCH"}}, nil
 			}
-			return Inspection{ArtifactType: "appimage", Blockers: []string{"UNSUPPORTED_ARTIFACT"}}, nil
+			return Inspection{ArtifactType: "appimage", ComputedDigests: inspection.ComputedDigests, Blockers: []string{"UNSUPPORTED_ARTIFACT"}}, nil
 		}
-		return Inspection{ArtifactType: "appimage"}, nil
+		return Inspection{ArtifactType: "appimage", ComputedDigests: inspection.ComputedDigests}, nil
 	}
 	if format == "" {
 		b := make([]byte, 6)
@@ -1101,7 +1109,7 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 		} else if bytes.HasPrefix(b, []byte{0xfd, '7', 'z', 'X', 'Z', 0}) {
 			format = archive.FormatTarXZ
 		} else {
-			return Inspection{ArtifactType: "unknown", Blockers: []string{"UNSUPPORTED_ARTIFACT"}}, nil
+			return Inspection{ArtifactType: "unknown", ComputedDigests: inspection.ComputedDigests, Blockers: []string{"UNSUPPORTED_ARTIFACT"}}, nil
 		}
 	}
 	root, err := os.MkdirTemp(filepath.Dir(artifact.Path), ".tarlink-inspect-")
@@ -1116,9 +1124,10 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return Inspection{}, &InspectError{Kind: InspectErrorCanceled, Cause: err}
 		}
-		return Inspection{ArtifactType: string(format), Blockers: []string{"UNSUPPORTED_ARTIFACT"}}, nil
+		return Inspection{ArtifactType: string(format), ComputedDigests: inspection.ComputedDigests, Blockers: []string{"UNSUPPORTED_ARTIFACT"}}, nil
 	}
-	result := Inspection{ArtifactType: string(format)}
+	inspection.ArtifactType = string(format)
+	result := inspection
 	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr

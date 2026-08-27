@@ -10,6 +10,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/drobilica/tarlink/internal/app"
 	"github.com/drobilica/tarlink/internal/freshness"
@@ -53,6 +54,7 @@ Run 'tarlink <command> --help' for command-specific help.
 
 const registryHelp = `Registry maintenance commands:
   tarlink registry validate <path>
+  tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]
   tarlink registry freshness <app> [--json]
   tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
   tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
@@ -81,6 +83,7 @@ var commandHelp = map[string]string{
 
 var registryCommandHelp = map[string]string{
 	"validate": "usage: tarlink registry validate <path>", "freshness": "usage: tarlink registry freshness <app> [--json]",
+	"check":      "usage: tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]",
 	"provenance": "usage: tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]",
 	"inspect":    "usage: tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]",
 	"candidates": "usage: tarlink registry candidates [--changed] [--json]", "blockers": "usage: tarlink registry blockers [--capability <capability>] [--json]",
@@ -146,6 +149,22 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			err = r.Service.ValidateRegistry(ctx, arguments[2])
 			if err == nil {
 				_, err = fmt.Fprintln(r.Stdout, "Registry is valid")
+			}
+			break
+		}
+		if len(arguments) >= 3 && arguments[1] == "check" {
+			options, parseErr := registryCheckArguments(arguments[2:])
+			if parseErr != nil {
+				return r.invalid(registryCommandHelp["check"])
+			}
+			service, ok := r.Service.(app.RegistryCheckService)
+			if !ok {
+				return r.fail(errors.New("registry checker is unavailable"))
+			}
+			var result app.RegistryCheckResult
+			result, err = service.CheckRegistry(ctx, options)
+			if err == nil {
+				_, err = fmt.Fprintf(r.Stdout, "Registry is valid; materialized %d artifact(s)\n", result.Materialized)
 			}
 			break
 		}
@@ -365,14 +384,15 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			}
 			break
 		}
-		return r.invalid("usage: tarlink registry <validate|freshness|provenance|inspect|candidates|blockers|icons> ...")
+		return r.invalid("usage: tarlink registry <validate|check|freshness|provenance|inspect|candidates|blockers|icons> ...")
 	case "refresh":
 		if len(arguments) != 1 {
 			return r.invalid("usage: tarlink refresh")
 		}
-		err = r.Service.SyncRegistry(ctx, r.progress())
+		var checkedAt time.Time
+		checkedAt, err = r.Service.SyncRegistry(ctx, r.progress())
 		if err == nil {
-			_, err = io.WriteString(r.Stdout, "Application catalog refreshed.\n")
+			_, err = fmt.Fprintf(r.Stdout, "Application catalog refreshed. Checked at %s.\n", checkedAt.UTC().Format(time.RFC3339))
 		}
 	case "search":
 		value, jsonOutput, parseErr := oneValueJSON(arguments[1:])
@@ -761,6 +781,42 @@ func registryIconArguments(arguments []string) (app.RegistryIconOptions, bool, e
 	}
 	return options, jsonOutput, nil
 }
+
+func registryCheckArguments(arguments []string) (app.RegistryCheckOptions, error) {
+	if len(arguments) == 0 || strings.HasPrefix(arguments[0], "-") {
+		return app.RegistryCheckOptions{}, errors.New("registry path required")
+	}
+	options := app.RegistryCheckOptions{Root: arguments[0]}
+	selector := 0
+	for i := 1; i < len(arguments); i++ {
+		switch arguments[i] {
+		case "--app":
+			if i+1 >= len(arguments) || strings.HasPrefix(arguments[i+1], "-") {
+				return app.RegistryCheckOptions{}, errors.New("application required")
+			}
+			options.App = arguments[i+1]
+			selector++
+			i++
+		case "--old-root":
+			if i+1 >= len(arguments) || strings.HasPrefix(arguments[i+1], "-") {
+				return app.RegistryCheckOptions{}, errors.New("previous registry path required")
+			}
+			options.OldRoot = arguments[i+1]
+			selector++
+			i++
+		case "--all-artifacts":
+			options.AllArtifacts = true
+			selector++
+		default:
+			return app.RegistryCheckOptions{}, errors.New("unknown option")
+		}
+	}
+	if selector > 1 {
+		return app.RegistryCheckOptions{}, errors.New("registry check selectors are mutually exclusive")
+	}
+	return options, nil
+}
+
 func batchInspectArguments(a []string) (string, bool, error) {
 	if len(a) == 0 {
 		return "", false, errors.New("path required")
@@ -811,6 +867,11 @@ func (r Runner) printResearch(value app.ResearchResult, jsonOutput bool) error {
 	_, err := fmt.Fprintf(r.Stdout, "Repository: %s\nRelease tag: %s\nRelease ID: %d\nAsset: %s\nAsset ID: %d\nAsset size: %d\nGitHub digest: %s\nAlgorithm: %s\nVerdict: %s\nReason: %s\n", value.Repository, value.Release.Tag, value.Release.ID, value.Asset.Name, value.Asset.ID, value.Asset.Size, value.Asset.Digest, value.Provenance.Algorithm, value.Provenance.Verdict, value.Provenance.Message)
 	if err != nil || value.Inspection == nil {
 		return err
+	}
+	if len(value.Inspection.ComputedDigests) != 0 {
+		if _, err = fmt.Fprintf(r.Stdout, "Computed digests: sha256=%s sha512=%s\n", value.Inspection.ComputedDigests["sha256"], value.Inspection.ComputedDigests["sha512"]); err != nil {
+			return err
+		}
 	}
 	if _, err = fmt.Fprintf(r.Stdout, "Status: %s\nArtifact type: %s\nExecutables: %s\nNested archives: %s\nBlockers: %s\n", value.Status, value.Inspection.ArtifactType, strings.Join(value.Inspection.Executables, ", "), strings.Join(value.Inspection.Nested, ", "), strings.Join(value.Inspection.Blockers, ", ")); err != nil {
 		return err

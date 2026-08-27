@@ -1,125 +1,81 @@
-# Registry research
+# Registry maintenance
 
-These commands are advisory maintainer tooling. They report current GitHub
-release evidence and local artifact inspection; neither command approves an
-application or changes the official registry.
-
-## Registry validator pin
-
-The official `tarlink-registry` CI checks out an immutable TarLink commit for
-both structural validation and selected artifact materialization. That commit
-is the validator/schema contract for the registry workflow; it must remain a
-published TarLink release rather than a moving branch or an ad-hoc registry
-parser. When TarLink changes manifest schema or registry validation behavior,
-the TarLink release that contains the compatible validator is published first,
-then the registry workflow's pinned commit is advanced deliberately in a
-separate registry change. Until that update, the registry continues to be
-validated against the previous contract. Review the pinned commit and its
-release comment together when changing either side.
+The normal contribution path is intentionally short:
 
 ```text
-tarlink registry provenance OWNER/REPO [--release TAG] [--asset NAME] [--json] [--refresh]
+choose an official portable Linux HTTPS artifact
+        ↓
+inspect/download it with bounded TarLink tooling and calculate its digest
+        ↓
+write the schema-v3 manifest
+        ↓
+tarlink registry validate .
+        ↓
+materialize changed artifacts through tarlink registry check
+        ↓
+commit / pull request
+```
+
+The official registry is the approval boundary. The exact artifact digest is
+mandatory, but upstream does not need to publish a checksum file. For a newly
+calculated pin, prefer SHA-256; existing valid SHA-256 and SHA-512 releases do
+not need to be rehashed. Keep schema-v3 `verification.source` as an honest
+official upstream release page or artifact-origin HTTPS URL for existing-client
+compatibility. Use a distinct upstream page rather than repeating the artifact
+URL while v0.11.x remains on the live path. It is informational metadata, not
+independent checksum provenance. Never fabricate a checksum URL.
+
+Registry CI resolves the latest published stable TarLink release at the start
+of each workflow run and uses that released binary for structural validation
+and lifecycle materialization. The resolved version is run-local; neither
+repository stores a maintained cross-repository commit or tag pin.
+
+## Artifact inspection
+
+```text
 tarlink registry inspect OWNER/REPO [--release TAG] [--asset NAME] [--json] [--refresh]
+tarlink registry provenance OWNER/REPO [--release TAG] [--asset NAME] [--json] [--refresh]
 ```
 
 Repository input may also be an exact `https://github.com/OWNER/REPO` URL.
-The canonical identity is GitHub's case-insensitive owner/repository pair,
-stored in lowercase as `owner/repo`; URL paths must contain exactly those two
-components and no query, fragment, credentials, encoding tricks, or trailing
-path components. This policy is used consistently for discovery and artifact
-cache identity.
-Release selection uses the tag, while evidence retains GitHub's numeric
-release ID. Asset selection uses its exact name, while evidence retains the
-numeric asset ID, URL, size, and GitHub digest. If `--asset` is omitted there
-must be exactly one asset in the selected release.
+Release and asset selection are explicit when ambiguous. `registry inspect`
+downloads the selected official release asset through TarLink's existing
+HTTPS-only, timeout- and size-bounded client, calculates exact SHA-256 and
+SHA-512 values, and reports archive/AppImage facts without executing the
+application. It remains useful when GitHub or upstream publishes no digest.
+Missing upstream checksum publication is not an inspection blocker or an
+admission blocker.
+
+When GitHub supplies a supported digest for the exact final uploaded asset,
+TarLink can use it to verify a persistent research-cache entry. Otherwise the
+bounded download is temporary and the locally calculated digest is reported.
+`registry provenance` reports available GitHub release/asset metadata as
+advisory corroboration only; its verdict does not approve or reject a registry
+entry. The official registry review remains authoritative.
 
 Discovery metadata is cached for 24 hours under
-`$XDG_CACHE_HOME/tarlink/registry-research/discovery` (or
-`$HOME/.cache/tarlink/registry-research/discovery`). `--refresh` bypasses this
-metadata cache. Invalid, stale, or unknown-schema cache files are discarded
-and refreshed. `--refresh` bypasses discovery metadata but does not force a
-redownload of an unchanged immutable asset. Verified artifact bytes are kept
-separately under the
-`artifacts` child and are keyed by repository, release ID, asset ID, digest
-algorithm, and digest. They are reusable after discovery refresh only when
-that immutable identity is unchanged. Every inspection re-verifies cached
-bytes against the authoritative GitHub digest before parsing; corrupt entries
-are discarded and downloaded again. Only assets whose GitHub API upload state is
-final/available and whose digest uses TarLink's exact accepted `sha256` or
-`sha512` syntax enter the persistent verified cache. Assets without an
-acceptable GitHub digest are never placed there. Before parsing, the cache
-path must be a regular file (not a symlink or special file); the opened file is
-hashed and that same verified object is consumed by the parser.
+`$XDG_CACHE_HOME/tarlink/registry-research/discovery` (or the corresponding
+`$HOME/.cache` location). `--refresh` bypasses discovery metadata but does not
+turn the command into an updater. No command here edits manifests, commits
+changes, executes application binaries, or automatically accepts a release.
 
-`ACCEPTABLE` means only that the exact GitHub asset exposes a digest compatible
-with TarLink's current SHA-256/SHA-512 contract. It is evidence for review,
-not a trust or approval decision. Inspection reports mechanical facts and
-blockers such as unsupported artifacts; it never adds installation behavior.
-Nested archive paths are reported as advisory evidence. Their presence alone
-is not a blocker; a manifest/research decision must still select an exact
-declared inner path and format when the bounded nested-archive model applies.
+## Candidate tools are optional
 
-## Candidate workflow
+[`registry-research/candidates.yaml`](../registry-research/candidates.yaml),
+`tarlink registry candidates`, `tarlink registry blockers`, and
+`./scripts/agent-context.sh` are advisory backlog tools for coordinated
+research. They are not a prerequisite or evidence ledger for an ordinary new
+manifest. Use them when maintaining the existing candidate backlog or
+evaluating a proposed TarLink capability; do not create replacement provenance
+ceremony.
 
-The durable maintainer ledger is
-[`registry-research/candidates.yaml`](../registry-research/candidates.yaml).
-It is not registry data and is never read by installation or runtime registry
-sync. Each entry has a deterministic `id`, canonical `upstream` repository,
-the last checked release identity (`release_tag` and numeric `release_id`), a
-small status (`blocked`, `deferred`, or `rejected`), durable blocker codes, and
-explicit reconsideration conditions. The ledger intentionally excludes raw
-GitHub payloads, checksums, archive listings, downloaded paths, and credentials.
-
-Use this sequence at the start of a fresh registry task:
+`registry icons` remains the separate bounded desktop-icon workflow:
 
 ```text
-fetch both repositories
-↓
-./scripts/agent-context.sh
-↓
-tarlink registry candidates --changed
-↓
-consult registry-research/candidates.yaml
-↓
-inspect/provenance only for candidates requiring review
-↓
-manual research only for facts tooling cannot establish
+tarlink registry icons .
+tarlink registry icons . --fix
 ```
 
-Do not repeat artifact or provenance investigation for an unchanged immutable
-release. A `RECHECK` result requires fresh investigation; it does not approve a
-candidate. Inspection and provenance output are advisory evidence only; the
-official registry remains the trust boundary.
-
-`candidates --changed` performs lightweight release discovery and compares the
-immutable GitHub release ID as well as its tag. A recreated release with the
-same tag is therefore `RECHECK`; an unchanged identity is `UNCHANGED`, and a
-discovery failure is `ERROR`. It does not download assets or edit the ledger.
-`capability:<id>`, `new-upstream-release`, `provenance-policy-change`, and
-`manual` are the supported reconsideration conditions. Conditions make an
-entry eligible for review; they never approve it automatically.
-
-`tarlink registry blockers` summarizes recurring blockers from the ledger.
-`tarlink registry blockers --capability <id>` is an advisory preflight: it
-shows which selected capability blockers would be removed, what blockers would
-remain, and whether each candidate would be fully unlocked. Run this before
-implementing a security or artifact capability whose justification is
-onboarding candidates. A zero fully-unlocked result requires an independent
-explicit reason to proceed.
-
-## Registry icons
-
-`tarlink registry icons .` checks icon coverage without network access;
-`tarlink registry icons . --fix` performs bounded deterministic GitHub
-discovery and minimal manifest edits. It does not execute application
-binaries or permit icon sources outside the manifest icon contract. Review
-unresolved candidates, then run `tarlink registry validate .`.
-
-For several repositories, use the batch form of `registry inspect` documented
-by `tarlink registry inspect --help`; it invokes the same Task 1 inspection per
-repository and reports independent results. Batch input is ephemeral and is
-not a second ledger format.
-
-The ledger is updated explicitly by maintainers after reviewing fresh
-evidence. New upstream releases only produce `RECHECK`; they never cause
-automatic approval, manifest generation, commits, or registry changes.
+It does not execute application binaries or widen the manifest icon contract.
+Automatic application version updates, scheduled manifest mutation, candidate
+onboarding, and registry-update bots remain outside this design.

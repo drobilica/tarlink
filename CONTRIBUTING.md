@@ -64,7 +64,18 @@ fail and the script builds the exact image locally instead.
 
 ## Registry changes
 
-Registry updates must use authoritative upstream HTTPS release and checksum-source URLs plus the exact lowercase SHA-256 or SHA-512 digest published by upstream. Algorithms not supported by the manifest contract, substituted algorithms, and derived replacement digests are not accepted. Store each platform manifest at the strict path `apps/<id>/linux-amd64.yaml` or `apps/<id>/linux-arm64.yaml`; do not add a compatibility filename. Validate the registry with TarLink itself: `tarlink registry validate .`.
+Registry updates must use an official upstream portable Linux artifact over
+HTTPS plus its exact lowercase SHA-256 or SHA-512 digest. Maintainers may
+calculate that digest locally from the selected bytes; upstream checksum
+publication is optional. Schema-v3 `verification.source` records an honest
+official upstream release page or artifact-origin HTTPS URL as informational
+metadata, not independent checksum provenance; use a distinct upstream page
+rather than repeating the artifact URL while v0.11.x clients consume the live
+registry. Store each platform manifest at the strict path
+`apps/<id>/linux-amd64.yaml` or
+`apps/<id>/linux-arm64.yaml`; do not add a compatibility filename. Validate the
+registry with TarLink itself using `tarlink registry validate .`, then run the
+changed-artifact lifecycle check before review.
 
 Platform availability is explicit. The client resolves its exact `GOOS`/`GOARCH` pair and fails when that variant is absent; it never substitutes another platform. For example, Blender is amd64-only when upstream has no Linux arm64 release, while Godot may publish both variants. Keep shared metadata identical across an application's platform manifests.
 

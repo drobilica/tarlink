@@ -183,7 +183,60 @@ func TestSyncRetainsOnlyCurrentAndPreviousGenerations(t *testing.T) {
 	}
 }
 
-func TestSyncKeepsActivatedGenerationAfterDirectorySyncFailure(t *testing.T) {
+func TestSyncRetainsPreviousGenerationAfterDirectorySyncFailure(t *testing.T) {
+	payload := registryArchive(t, createRegistry(t))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(payload)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	syncer := &Syncer{
+		CacheRoot: filepath.Join(root, "cache", "registry"),
+		LocksRoot: filepath.Join(root, "state", "locks"),
+		Client:    &download.Client{HTTP: server.Client(), RedirectLimit: 2},
+		sourceURL: server.URL,
+		allowedURL: func(candidate *url.URL) bool {
+			return candidate != nil && candidate.Host == server.Listener.Addr().String()
+		},
+	}
+	retained := make([]string, 0, 2)
+	for range 2 {
+		if err := syncer.Sync(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		target, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		retained = append(retained, target)
+	}
+	injected := errors.New("injected cache directory sync failure")
+	syncer.syncCache = func(string) error { return injected }
+	if err := syncer.Sync(context.Background()); !errors.Is(err, injected) {
+		t.Fatalf("Sync() error = %v", err)
+	}
+	after, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+	if err != nil || after != retained[1] {
+		t.Fatalf("current before=%q after=%q error=%v", retained[1], after, err)
+	}
+	if _, err := Open(syncer.CacheRoot); err != nil {
+		t.Fatalf("previous registry is unavailable after sync failure: %v", err)
+	}
+	for _, target := range retained {
+		if _, err := os.Stat(filepath.Join(syncer.CacheRoot, target)); err != nil {
+			t.Fatalf("retained generation %q was removed: %v", target, err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(syncer.CacheRoot, "generations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("generation count = %d, want 2 after failed activation", len(entries))
+	}
+}
+
+func TestSyncKeepsProvisionalGenerationWhenRestoreFails(t *testing.T) {
 	payload := registryArchive(t, createRegistry(t))
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = writer.Write(payload)
@@ -202,23 +255,82 @@ func TestSyncKeepsActivatedGenerationAfterDirectorySyncFailure(t *testing.T) {
 	if err := syncer.Sync(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+	previous, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	injected := errors.New("injected cache directory sync failure")
-	syncer.syncCache = func(string) error { return injected }
-	if err := syncer.Sync(context.Background()); !errors.Is(err, injected) {
+	syncFailure := errors.New("injected cache directory sync failure")
+	restoreFailure := errors.New("injected pointer restoration failure")
+	syncer.syncCache = func(string) error { return syncFailure }
+	syncer.restore = func(string, string, string) error { return restoreFailure }
+	if err := syncer.Sync(context.Background()); !errors.Is(err, syncFailure) || !errors.Is(err, restoreFailure) {
 		t.Fatalf("Sync() error = %v", err)
 	}
-	after, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
-	if err != nil || after == before {
-		t.Fatalf("current before=%q after=%q error=%v", before, after, err)
+	current, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current == previous {
+		t.Fatalf("injected pre-rename restoration failure unexpectedly restored %q", previous)
+	}
+	if _, err := os.Stat(filepath.Join(syncer.CacheRoot, current)); err != nil {
+		t.Fatalf("provisional current generation was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(syncer.CacheRoot, previous)); err != nil {
+		t.Fatalf("previous validated generation was removed: %v", err)
 	}
 	if _, err := Open(syncer.CacheRoot); err != nil {
-		t.Fatalf("activated registry is unavailable after sync failure: %v", err)
+		t.Fatalf("registry cache has a dangling current pointer: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(syncer.CacheRoot, after)); err != nil {
-		t.Fatalf("activated generation was removed: %v", err)
+}
+
+func TestSyncRollsBackActivationWhenPruningFails(t *testing.T) {
+	payload := registryArchive(t, createRegistry(t))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write(payload)
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	checkedAt := time.Date(2026, 8, 27, 12, 0, 0, 0, time.UTC)
+	syncer := &Syncer{
+		CacheRoot: filepath.Join(root, "cache", "registry"),
+		LocksRoot: filepath.Join(root, "state", "locks"),
+		Client:    &download.Client{HTTP: server.Client(), RedirectLimit: 2},
+		sourceURL: server.URL,
+		allowedURL: func(candidate *url.URL) bool {
+			return candidate != nil && candidate.Host == server.Listener.Addr().String()
+		},
+		Now: func() time.Time { return checkedAt },
+	}
+	if _, err := syncer.SyncWithCheckedAt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	previous, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pruneFailure := errors.New("injected generation pruning failure")
+	syncer.prune = func(string, string, string) error { return pruneFailure }
+	checkedAt = checkedAt.Add(time.Hour)
+	if refreshedAt, err := syncer.SyncWithCheckedAt(context.Background()); !errors.Is(err, pruneFailure) || !refreshedAt.IsZero() {
+		t.Fatalf("SyncWithCheckedAt() checked-at=%s error=%v", refreshedAt, err)
+	}
+	current, err := os.Readlink(filepath.Join(syncer.CacheRoot, "current"))
+	if err != nil || current != previous {
+		t.Fatalf("current before=%q after=%q error=%v", previous, current, err)
+	}
+	catalog, err := Open(syncer.CacheRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !catalog.FetchedAt.Equal(checkedAt.Add(-time.Hour)) {
+		t.Fatalf("failed refresh advanced checked-at to %s", catalog.FetchedAt)
+	}
+	entries, err := os.ReadDir(filepath.Join(syncer.CacheRoot, "generations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("generation count = %d, want only the previous generation", len(entries))
 	}
 }

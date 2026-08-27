@@ -378,9 +378,9 @@ func TestChangedAllowsSameVersionReleaseMutationOnlyWithRevisionBump(t *testing.
 
 func TestRevisionBumpDoesNotBypassManifestValidation(t *testing.T) {
 	invalid := strings.Replace(checkerManifest, "schema: 3\n", "schema: 3\nrevision: 2\n", 1)
-	invalid = strings.Replace(invalid, "source: https://example.com/SHA256SUMS", "source: https://example.com/fixture.tar.gz", 1)
+	invalid = strings.Replace(invalid, "source: https://example.com/SHA256SUMS", "source: http://example.com/release", 1)
 	if _, err := manifest.ParseBytes([]byte(invalid)); err == nil {
-		t.Fatal("revision bump bypassed release provenance validation")
+		t.Fatal("revision bump bypassed release verification-source validation")
 	}
 }
 

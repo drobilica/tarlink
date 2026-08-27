@@ -2,8 +2,10 @@
 package registry
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -18,6 +20,10 @@ import (
 const (
 	OfficialArchiveURL = "https://codeload.github.com/drobilica/tarlink-registry/tar.gz/refs/heads/main"
 	DefaultMaxAge      = 24 * time.Hour
+	// GenerationMetadataFile is the cache-local metadata file written only
+	// after a downloaded registry has been validated. Its checked-at value is
+	// the freshness source; directory timestamps are deliberately ignored.
+	GenerationMetadataFile = "metadata.json"
 )
 
 var ErrUnavailable = errors.New("validated registry is unavailable")
@@ -41,6 +47,13 @@ type Catalog struct {
 }
 
 func ValidateTree(root string) (*Catalog, error) {
+	return validateTree(root, true)
+}
+
+// validateTree validates a registry tree and optionally reads cache-local
+// generation metadata. Downloaded archive roots are not cache generations;
+// any metadata shipped in an archive is ignored and replaced on activation.
+func validateTree(root string, readMetadata bool) (*Catalog, error) {
 	if !filepath.IsAbs(root) {
 		return nil, errors.New("registry root must be absolute")
 	}
@@ -50,6 +63,13 @@ func ValidateTree(root string) (*Catalog, error) {
 	}
 	if !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 {
 		return nil, errors.New("registry root must be a real directory")
+	}
+	var fetchedAt time.Time
+	if readMetadata {
+		fetchedAt, err = readGenerationMetadata(root)
+		if err != nil {
+			return nil, err
+		}
 	}
 	appsRoot := filepath.Join(root, "apps")
 	if err := rejectSymlinks(appsRoot); err != nil {
@@ -62,7 +82,50 @@ func ValidateTree(root string) (*Catalog, error) {
 	if len(variants) == 0 {
 		return nil, errors.New("registry contains no application manifests")
 	}
-	return &Catalog{FetchedAt: rootInfo.ModTime(), Variants: variants}, nil
+	return &Catalog{FetchedAt: fetchedAt, Variants: variants}, nil
+}
+
+type generationMetadata struct {
+	CheckedAt string `json:"checked_at"`
+}
+
+// readGenerationMetadata treats metadata as disposable cache state. A
+// missing file is accepted for old caches, but leaves FetchedAt zero so the
+// caller will refresh it before relying on it as fresh.
+func readGenerationMetadata(root string) (time.Time, error) {
+	path := filepath.Join(root, GenerationMetadataFile)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return time.Time{}, errors.New("registry generation metadata must be a regular file")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer file.Close()
+	limited := io.LimitReader(file, 4097)
+	data, err := io.ReadAll(limited)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if len(data) > 4096 {
+		return time.Time{}, errors.New("registry generation metadata is too large")
+	}
+	var metadata generationMetadata
+	if err := json.Unmarshal(data, &metadata); err != nil || metadata.CheckedAt == "" {
+		return time.Time{}, errors.New("registry generation metadata is invalid")
+	}
+	checkedAt, err := time.Parse(time.RFC3339, metadata.CheckedAt)
+	if err != nil {
+		return time.Time{}, errors.New("registry generation metadata has invalid checked-at")
+	}
+	return checkedAt.UTC(), nil
 }
 
 func Open(cacheRoot string) (*Catalog, error) {
@@ -96,7 +159,8 @@ func (c *Catalog) Stale(now time.Time, maxAge time.Duration) bool {
 	if c == nil || c.FetchedAt.IsZero() || maxAge <= 0 {
 		return true
 	}
-	return now.Sub(c.FetchedAt) >= maxAge
+	age := now.Sub(c.FetchedAt)
+	return age < 0 || age >= maxAge
 }
 
 func (c *Catalog) ManifestForPlatform(id, goos, goarch string) (*manifest.Manifest, error) {
