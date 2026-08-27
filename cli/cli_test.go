@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,18 @@ import (
 	"github.com/drobilica/tarlink/internal/freshness"
 	"github.com/drobilica/tarlink/internal/research"
 )
+
+func TestProgressNonTTYIsBoundedAndUsesIECBytes(t *testing.T) {
+	var out bytes.Buffer
+	sink := (Runner{Stderr: &out}).progress()
+	for i := int64(0); i < 40; i++ {
+		sink(app.Progress{Stage: app.ProgressDownloading, BytesDone: (i + 1) << 20, BytesTotal: 64 << 20})
+	}
+	value := out.String()
+	if strings.ContainsAny(value, "\r\x1b") || strings.Count(value, "Downloading") != 1 || !strings.Contains(value, "1.0 MiB / 64.0 MiB") {
+		t.Fatalf("unexpected non-TTY progress output: %q", value)
+	}
+}
 
 type fakeService struct {
 	applications   []app.Application
@@ -261,7 +274,7 @@ func TestJSONOutputContainsJSONOnly(t *testing.T) {
 	var out, errOut bytes.Buffer
 	service := &fakeService{applications: []app.Application{{ID: "blender", Name: "Blender", RegistryVersion: "5.2.0"}}}
 	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list", "--json"})
-	if code != 0 || out.String() != "[{\"id\":\"blender\",\"name\":\"Blender\",\"summary\":\"\",\"homepage\":\"\",\"categories\":null,\"registry_version\":\"5.2.0\",\"pinned\":false,\"update_available\":false}]\n" {
+	if code != 0 || out.String() != "[{\"id\":\"blender\",\"name\":\"Blender\",\"summary\":\"\",\"homepage\":\"\",\"categories\":null,\"registry_version\":\"5.2.0\",\"registry_fingerprint\":\"\",\"pinned\":false,\"update_available\":false}]\n" {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
@@ -283,15 +296,15 @@ func TestGameDataRequirementIsPresented(t *testing.T) {
 	}
 }
 
-func TestVersionNoticeUsesStderr(t *testing.T) {
+func TestVersionNoticeIsNotEmittedDuringCommands(t *testing.T) {
 	var out, errOut bytes.Buffer
 	service := &fakeService{applications: []app.Application{{ID: "blender"}}, tarlinkVersion: app.TarLinkVersion{Current: "0.4.2", Latest: "0.5.0", UpgradeAvailable: true}}
 	if code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list", "--json"}); code != 0 || !bytes.Contains(out.Bytes(), []byte("[")) || errOut.Len() != 0 {
 		t.Fatalf("JSON output was contaminated: code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 	errOut.Reset()
-	if code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list"}); code != 0 || !bytes.Contains(errOut.Bytes(), []byte("tarlink self-update")) {
-		t.Fatalf("notice was not sent to stderr: code=%d stderr=%q", code, errOut.String())
+	if code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"list"}); code != 0 || errOut.Len() != 0 {
+		t.Fatalf("unexpected version notice: code=%d stderr=%q", code, errOut.String())
 	}
 }
 

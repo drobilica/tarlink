@@ -68,6 +68,20 @@ func TestCheckPathDetectsShadowingAndMissingBinDir(t *testing.T) {
 		t.Fatalf("bin-only conflicts = %#v, want none", conflicts)
 	}
 
+	// Desktop-only executables do not need the local bin directory and must
+	// not produce missing-PATH or shadowing warnings.
+	createBinLink := false
+	desktopOnly := Spec{ID: "desktop-only", Executables: []ExecutableSpec{{Name: "desktop-only", Path: "bin/desktop-only", CreateBinLink: &createBinLink}}, LocalBinDirectory: binDir}
+	if conflicts := CheckPath(desktopOnly, earlier); len(conflicts) != 0 {
+		t.Fatalf("desktop-only missing-bin conflicts = %#v, want none", conflicts)
+	}
+	if err := os.WriteFile(filepath.Join(earlier, "desktop-only"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if conflicts := CheckPath(desktopOnly, pathValue); len(conflicts) != 0 {
+		t.Fatalf("desktop-only shadow conflicts = %#v, want none", conflicts)
+	}
+
 	// Empty or missing ID/bin is a no-op.
 	if conflicts := CheckPath(Spec{}, ""); len(conflicts) != 0 {
 		t.Fatalf("empty spec conflicts = %#v, want none", conflicts)

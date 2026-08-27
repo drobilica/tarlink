@@ -52,6 +52,7 @@ const (
 )
 
 type Progress func(stage string, current, total int64)
+type SubjectProgress func(stage, subject string, current, total int64)
 
 type Outcome struct {
 	State    state.State
@@ -108,6 +109,10 @@ func (manager *Manager) Install(ctx context.Context, item *manifest.Manifest, pr
 }
 
 func (manager *Manager) InstallWithOptions(ctx context.Context, item *manifest.Manifest, options Options, progress Progress) (Outcome, error) {
+	return manager.InstallWithOptionsSubject(ctx, item, options, func(stage, _ string, current, total int64) { manager.report(progress, stage, current, total) })
+}
+
+func (manager *Manager) InstallWithOptionsSubject(ctx context.Context, item *manifest.Manifest, options Options, progress SubjectProgress) (Outcome, error) {
 	var outcome Outcome
 	err := manager.WithLifecycle(ctx, func() error {
 		var err error
@@ -117,7 +122,7 @@ func (manager *Manager) InstallWithOptions(ctx context.Context, item *manifest.M
 	return outcome, err
 }
 
-func (manager *Manager) installUnlocked(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress Progress) (Outcome, error) {
+func (manager *Manager) installUnlocked(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress SubjectProgress) (Outcome, error) {
 	if item == nil {
 		return Outcome{}, errors.New("manifest is nil")
 	}
@@ -155,6 +160,10 @@ func (manager *Manager) Update(ctx context.Context, item *manifest.Manifest, pro
 }
 
 func (manager *Manager) UpdateWithOptions(ctx context.Context, item *manifest.Manifest, options Options, progress Progress) (Outcome, error) {
+	return manager.UpdateWithOptionsSubject(ctx, item, options, func(stage, _ string, current, total int64) { manager.report(progress, stage, current, total) })
+}
+
+func (manager *Manager) UpdateWithOptionsSubject(ctx context.Context, item *manifest.Manifest, options Options, progress SubjectProgress) (Outcome, error) {
 	var outcome Outcome
 	err := manager.WithLifecycle(ctx, func() error {
 		var err error
@@ -164,7 +173,7 @@ func (manager *Manager) UpdateWithOptions(ctx context.Context, item *manifest.Ma
 	return outcome, err
 }
 
-func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manifest, options Options, progress Progress) (Outcome, error) {
+func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manifest, options Options, progress SubjectProgress) (Outcome, error) {
 	if item == nil {
 		return Outcome{}, errors.New("manifest is nil")
 	}
@@ -192,97 +201,24 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	if err := manager.validateManagedApp(item.ID); err != nil {
 		return Outcome{}, err
 	}
-	itemRevision := item.Revision
-	if itemRevision == 0 {
-		itemRevision = 1
+	itemFingerprint, err := item.ResolvedPackageFingerprint()
+	if err != nil {
+		return Outcome{}, fmt.Errorf("fingerprint manifest: %w", err)
 	}
-	installedRevision := installed.CurrentRevision
-	if installedRevision == 0 {
-		installedRevision = 1
+	if installed.Current == item.Release.Version && installed.CurrentFingerprint == itemFingerprint {
+		return Outcome{}, ErrNoUpdate
 	}
-	if installed.Current == item.Release.Version && installedRevision == itemRevision {
-		return manager.reconcileExisting(item, installed, options, progress)
-	}
-	previousRevision := installed.PreviousRevision
-	if previousRevision == 0 {
-		previousRevision = 1
-	}
-	if installed.Previous == item.Release.Version && previousRevision == itemRevision {
+	if installed.Previous == item.Release.Version && installed.PreviousFingerprint == itemFingerprint {
 		return manager.activateRetained(item.ID, installed, progress)
 	}
 	return manager.installVersion(ctx, item, &installed, options, progress)
 }
 
-// reconcileExisting applies manifest integration changes without downloading
-// an unchanged release. This is used when a registry changes ownership or
-// desktop integration while the installed artifact remains current.
-func (manager *Manager) reconcileExisting(item *manifest.Manifest, installed state.State, options Options, progress Progress) (Outcome, error) {
-	oldSpec, err := manager.integrationSpec(installed, item.Name, item.Desktop.Categories)
-	if err != nil {
-		return Outcome{}, err
-	}
-	currentPath, err := manager.Layout.PackagePath(item.ID, installed.Current, installed.CurrentRevision)
-	if err != nil {
-		return Outcome{}, err
-	}
-	spec := integration.Spec{ID: item.ID, Name: item.Name, ApplicationRoot: filepath.Join(manager.Layout.Apps, item.ID), LocalBinDirectory: manager.Layout.Bin, DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons, DesktopEnabled: item.Desktop.Enabled, DesktopCategories: item.Desktop.Categories, WorkingDirectory: item.Desktop.WorkingDirectory == "application-root", Icon: installed.Integration.IconSource, IconSize: installed.Integration.IconSize, IconSHA256: installed.Integration.IconSHA256, IconSourceRoot: currentPath}
-	for _, executable := range item.Application.Executables {
-		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path, CreateBinLink: executable.CreateBinLink})
-	}
-	spec.DesktopExecutable = filepath.Join(manager.Layout.Apps, item.ID, "current", desktopExecutablePath(item))
-	if spec.DesktopEnabled {
-		spec.DesktopSHA256 = integration.DesktopDigest(spec, "")
-	}
-	if ownershipErr := integration.ValidateOwned(oldSpec); ownershipErr != nil {
-		// A prior reconciliation may already have written the direct desktop
-		// entry while its older state digest still described the bin-link form.
-		// Accept that exact desired entry; all other ownership checks remain
-		// anchored to the persisted state and fail closed.
-		if desiredErr := integration.ValidateOwned(spec); desiredErr != nil {
-			return Outcome{}, ownershipErr
-		}
-		oldSpec.DesktopExecutable = spec.DesktopExecutable
-		oldSpec.DesktopSHA256 = spec.DesktopSHA256
-	}
-	paths, undo, err := integration.Update(spec, oldSpec)
-	if err != nil {
-		return Outcome{}, fmt.Errorf("reconcile integrations: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = undo()
-		}
-	}()
-	manager.report(progress, "integrating", 0, 0)
-	updated := installed
-	updated.Executables = manifestExecutables(item.Application.Executables)
-	updated.DesktopEnabled = item.Desktop.Enabled
-	updated.Integration.DesktopEntry = ""
-	updated.Integration.DesktopSHA256 = ""
-	updated.Integration.DesktopExecutable = desktopExecutableName(item)
-	updated.Integration.WorkingDirectory = spec.WorkingDirectory
-	if item.Desktop.Enabled {
-		updated.Integration.DesktopEntry = paths.DesktopEntry
-		updated.Integration.DesktopSHA256 = spec.DesktopSHA256
-	}
-	updated.Integration.Executables = nil
-	for _, executable := range paths.Executables {
-		value := findManifestExecutable(item.Application.Executables, executable.Name)
-		updated.Integration.Executables = append(updated.Integration.Executables, state.ExecutableIntegration{Name: executable.Name, Path: value.Path, Link: executable.Link, Target: executable.Target, CreateBinLink: value.CreateBinLink})
-	}
-	stateCommitted, stateErr := manager.persistState(updated)
-	if stateCommitted {
-		committed = true
-	}
-	if stateErr != nil {
-		return Outcome{State: updated}, stateErr
-	}
-	manager.report(progress, "complete", 0, 0)
-	return Outcome{State: updated}, nil
+func (manager *Manager) Rollback(ctx context.Context, appID string, progress Progress) (Outcome, error) {
+	return manager.RollbackSubject(ctx, appID, func(stage, _ string, current, total int64) { manager.report(progress, stage, current, total) })
 }
 
-func (manager *Manager) Rollback(ctx context.Context, appID string, progress Progress) (Outcome, error) {
+func (manager *Manager) RollbackSubject(ctx context.Context, appID string, progress SubjectProgress) (Outcome, error) {
 	var outcome Outcome
 	err := manager.WithLifecycle(ctx, func() error {
 		var err error
@@ -292,7 +228,7 @@ func (manager *Manager) Rollback(ctx context.Context, appID string, progress Pro
 	return outcome, err
 }
 
-func (manager *Manager) rollbackUnlocked(ctx context.Context, appID string, progress Progress) (Outcome, error) {
+func (manager *Manager) rollbackUnlocked(ctx context.Context, appID string, progress SubjectProgress) (Outcome, error) {
 	lock, err := manager.lock(ctx, appID)
 	if err != nil {
 		return Outcome{}, err
@@ -318,10 +254,14 @@ func (manager *Manager) rollbackUnlocked(ctx context.Context, appID string, prog
 }
 
 func (manager *Manager) Uninstall(ctx context.Context, appID string, progress Progress) error {
+	return manager.UninstallSubject(ctx, appID, func(stage, _ string, current, total int64) { manager.report(progress, stage, current, total) })
+}
+
+func (manager *Manager) UninstallSubject(ctx context.Context, appID string, progress SubjectProgress) error {
 	return manager.WithLifecycle(ctx, func() error { return manager.uninstallUnlocked(ctx, appID, progress) })
 }
 
-func (manager *Manager) uninstallUnlocked(ctx context.Context, appID string, progress Progress) error {
+func (manager *Manager) uninstallUnlocked(ctx context.Context, appID string, progress SubjectProgress) error {
 	lock, err := manager.lock(ctx, appID)
 	if err != nil {
 		return err
@@ -374,7 +314,6 @@ func (manager *Manager) uninstallUnlocked(ctx context.Context, appID string, pro
 	if err := removeStateFile(statePath); err != nil {
 		return err
 	}
-	manager.report(progress, "complete", 0, 0)
 	return nil
 }
 
@@ -403,7 +342,7 @@ func (manager *Manager) RemoveUninstallConflict(ctx context.Context, appID, path
 	})
 }
 
-func (manager *Manager) UninstallLocked(ctx context.Context, appID string, progress Progress) error {
+func (manager *Manager) UninstallLocked(ctx context.Context, appID string, progress SubjectProgress) error {
 	return manager.uninstallUnlocked(ctx, appID, progress)
 }
 
@@ -432,7 +371,7 @@ func (manager *Manager) UninstallAll(ctx context.Context, progress func(string) 
 			if progress != nil {
 				appProgress = progress(installed.App)
 			}
-			if err := manager.UninstallLocked(ctx, installed.App, appProgress); err != nil {
+			if err := manager.UninstallLocked(ctx, installed.App, func(stage, _ string, current, total int64) { manager.report(appProgress, stage, current, total) }); err != nil {
 				uninstallErrs = append(uninstallErrs, err)
 			}
 			if ctx != nil && ctx.Err() != nil {
@@ -621,7 +560,7 @@ func (manager *Manager) SetPinned(ctx context.Context, appID string, pinned bool
 		if err := installed.ValidateForLayout(manager.Layout); err != nil {
 			return err
 		}
-		if err := manager.validateManagedApp(appID, installed.Current, installed.Previous); err != nil {
+		if err := manager.validateManagedApp(appID); err != nil {
 			return err
 		}
 		installed.Pinned = pinned
@@ -662,7 +601,7 @@ func removeStateFile(path string) error {
 	return nil
 }
 
-func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress Progress) (outcome Outcome, returnErr error) {
+func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress SubjectProgress) (outcome Outcome, returnErr error) {
 	materialized, err := manager.materializeArtifact(ctx, item, progress)
 	if err != nil {
 		return Outcome{}, err
@@ -678,7 +617,7 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 // materializeArtifact acquires, verifies, extracts, and validates an artifact
 // into a private staging directory. It never publishes application files or
 // changes integration, activation, or state.
-func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.Manifest, progress Progress) (materializedArtifact, error) {
+func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.Manifest, progress SubjectProgress) (materializedArtifact, error) {
 	manager.report(progress, "downloading", 0, 0)
 	artifacts := filepath.Join(manager.Layout.Cache, "artifacts")
 	if err := filesystem.SecureMkdirAll(artifacts, 0o700); err != nil {
@@ -712,7 +651,7 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 	}()
 	var applicationRoot string
 	if item.Release.Archive == "appimage" {
-		manager.report(progress, "validating", 0, 0)
+		manager.report(progress, "validating-appimage", 0, 0)
 		if err := appimage.ValidatePath(artifactPath, item.Platform.Arch); err != nil {
 			return materializedArtifact{}, err
 		}
@@ -806,7 +745,7 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 // at the reserved path inside the version payload, and their actual PNG
 // dimensions (validated from the signature and IHDR header) determine the
 // hicolor raster size.
-func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Manifest, applicationRoot string, progress Progress) (string, int, error) {
+func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Manifest, applicationRoot string, progress SubjectProgress) (string, int, error) {
 	if !item.Desktop.Icon.Remote() {
 		return item.Desktop.Icon.Path, 0, nil
 	}
@@ -816,11 +755,13 @@ func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Mani
 	} else if !os.IsNotExist(err) {
 		return "", 0, err
 	}
-	manager.report(progress, "downloading", 0, 0)
+	manager.report(progress, "downloading", 0, 0, "remote-desktop-icon")
 	_, err := manager.Client.FetchArtifact(ctx, download.ArtifactRequest{
 		URL: item.Desktop.Icon.URL, Algorithm: "sha256", Digest: item.Desktop.Icon.SHA256,
 		Destination: destination, MaxBytes: maxRemoteIconBytes,
-		ReportProgress: func(current, total int64) { manager.report(progress, "downloading", current, total) },
+		ReportProgress: func(current, total int64) {
+			manager.report(progress, "downloading", current, total, "remote-desktop-icon")
+		},
 	})
 	if err != nil {
 		return "", 0, fmt.Errorf("download desktop icon: %w", err)
@@ -856,10 +797,10 @@ func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Mani
 
 // activateMaterialized publishes a validated staged application and commits
 // its integration, active version, state, and retention policy atomically.
-func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed *state.State, options Options, progress Progress, materialized materializedArtifact) (outcome Outcome, returnErr error) {
-	itemRevision := item.Revision
-	if itemRevision == 0 {
-		itemRevision = 1
+func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed *state.State, options Options, progress SubjectProgress, materialized materializedArtifact) (outcome Outcome, returnErr error) {
+	itemFingerprint, err := item.ResolvedPackageFingerprint()
+	if err != nil {
+		return Outcome{}, fmt.Errorf("fingerprint manifest: %w", err)
 	}
 	applicationRoot := materialized.applicationRoot
 	iconSource := materialized.iconSource
@@ -884,12 +825,12 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 			_ = os.Remove(appRoot)
 		}
 	}()
-	finalPath, err := manager.Layout.PackagePath(item.ID, item.Release.Version, itemRevision)
+	finalPath, err := manager.Layout.PackagePath(item.ID, item.Release.Version, itemFingerprint)
 	if err != nil {
 		return Outcome{}, err
 	}
 	if _, err := os.Lstat(finalPath); err == nil {
-		return Outcome{}, fmt.Errorf("%w: version directory already exists", ErrConflict)
+		return Outcome{}, fmt.Errorf("%w: package directory already exists", ErrConflict)
 	} else if !os.IsNotExist(err) {
 		return Outcome{}, err
 	}
@@ -911,6 +852,9 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 			return
 		}
 		_ = filesystem.SafeRemove(appRoot, finalPath)
+		if filepath.Dir(finalPath) != appRoot {
+			_ = os.Remove(filepath.Dir(finalPath))
+		}
 		if appRootCreated {
 			_ = os.Remove(appRoot)
 		}
@@ -985,12 +929,12 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 	manager.report(progress, "activating", 0, 0)
 	oldTarget := ""
 	if installed != nil {
-		oldTarget, err = manager.currentTarget(item.ID, installed.Current, installed.CurrentRevision)
+		oldTarget, err = manager.currentTarget(item.ID, installed.Current, installed.CurrentFingerprint)
 		if err != nil {
 			return Outcome{}, err
 		}
 	}
-	newTarget, err := manager.currentTarget(item.ID, item.Release.Version, itemRevision)
+	newTarget, err := manager.currentTarget(item.ID, item.Release.Version, itemFingerprint)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -1026,15 +970,12 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		pinned = *options.Pinned
 	}
 	newState := state.State{
-		Schema: state.Schema, App: item.ID, Current: item.Release.Version, CurrentRevision: itemRevision, Previous: oldVersion,
-		PreviousRevision: func() int {
-			if installed != nil && installed.CurrentRevision > 0 {
-				return installed.CurrentRevision
-			}
+		Schema: state.Schema, App: item.ID, Current: item.Release.Version, CurrentFingerprint: itemFingerprint, Previous: oldVersion,
+		PreviousFingerprint: func() string {
 			if installed != nil {
-				return 1
+				return installed.CurrentFingerprint
 			}
-			return 0
+			return ""
 		}(),
 		PreviousArtifact: func() string {
 			if installed != nil {
@@ -1083,25 +1024,34 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		return outcome, stateErr
 	}
 
-	if previousVersion != "" && (previousVersion != newState.Current || newState.PreviousRevision != newState.CurrentRevision) && (previousVersion != newState.Previous || newState.PreviousRevision != newState.CurrentRevision) {
+	if installed != nil && previousVersion != "" &&
+		(previousVersion != newState.Current || installed.PreviousFingerprint != newState.CurrentFingerprint) &&
+		(previousVersion != newState.Previous || installed.PreviousFingerprint != newState.PreviousFingerprint) {
 		manager.report(progress, "cleaning", 0, 0)
-		oldPath, pathErr := manager.Layout.PackagePath(item.ID, previousVersion, installed.PreviousRevision)
+		oldPath, pathErr := manager.Layout.PackagePath(item.ID, previousVersion, installed.PreviousFingerprint)
 		if pathErr != nil {
 			outcome.Warnings = append(outcome.Warnings, pathErr.Error())
 		} else if cleanupErr := filesystem.SafeRemove(appRoot, oldPath); cleanupErr != nil {
 			outcome.Warnings = append(outcome.Warnings, cleanupErr.Error())
 		}
 	}
-	manager.report(progress, "complete", 0, 0)
 	return outcome, nil
 }
 
-func (manager *Manager) activateRetained(appID string, installed state.State, progress Progress) (Outcome, error) {
+func (manager *Manager) activateRetained(appID string, installed state.State, progress SubjectProgress) (Outcome, error) {
 	appRoot := filepath.Join(manager.Layout.Apps, appID)
-	if err := manager.validateManagedApp(appID, installed.Current, installed.Previous); err != nil {
+	if err := manager.validateManagedApp(appID); err != nil {
 		return Outcome{}, err
 	}
-	retained, err := manager.Layout.AppPath(appID, installed.Previous)
+	for _, packageRef := range []struct{ version, fingerprint string }{{installed.Current, installed.CurrentFingerprint}, {installed.Previous, installed.PreviousFingerprint}} {
+		if packageRef.version == "" {
+			continue
+		}
+		if err := manager.validateManagedPackage(appID, packageRef.version, packageRef.fingerprint); err != nil {
+			return Outcome{}, err
+		}
+	}
+	retained, err := manager.Layout.PackagePath(appID, installed.Previous, installed.PreviousFingerprint)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -1118,11 +1068,11 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 		return Outcome{}, err
 	}
 	manager.report(progress, "activating", 0, 0)
-	currentTarget, err := manager.currentTarget(appID, installed.Current, installed.CurrentRevision)
+	currentTarget, err := manager.currentTarget(appID, installed.Current, installed.CurrentFingerprint)
 	if err != nil {
 		return Outcome{}, err
 	}
-	previousTarget, err := manager.currentTarget(appID, installed.Previous, installed.PreviousRevision)
+	previousTarget, err := manager.currentTarget(appID, installed.Previous, installed.PreviousFingerprint)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -1140,7 +1090,7 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	// The previous version's payload is a real directory; the retained icon
 	// bytes live inside it so rollback needs no network. The switched current
 	// link itself is a symlink and is never used as an icon source root.
-	nextSpec.IconSourceRoot, err = manager.Layout.PackagePath(appID, installed.Previous, installed.PreviousRevision)
+	nextSpec.IconSourceRoot, err = manager.Layout.PackagePath(appID, installed.Previous, installed.PreviousFingerprint)
 	if err != nil {
 		_ = restore()
 		return Outcome{}, err
@@ -1161,7 +1111,7 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 		}
 	}()
 	installed.Current, installed.Previous = installed.Previous, installed.Current
-	installed.CurrentRevision, installed.PreviousRevision = installed.PreviousRevision, installed.CurrentRevision
+	installed.CurrentFingerprint, installed.PreviousFingerprint = installed.PreviousFingerprint, installed.CurrentFingerprint
 	installed.Artifact, installed.PreviousArtifact = installed.PreviousArtifact, installed.Artifact
 	installed.Channel, installed.PreviousChannel = installed.PreviousChannel, installed.Channel
 	installed.Integration.IconFile, installed.Integration.PreviousIconFile = installed.Integration.PreviousIconFile, installed.Integration.IconFile
@@ -1179,11 +1129,10 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	if stateErr != nil {
 		return Outcome{State: installed}, stateErr
 	}
-	manager.report(progress, "complete", 0, 0)
 	return Outcome{State: installed}, nil
 }
 
-func (manager *Manager) validateManagedApp(appID string, versions ...string) error {
+func (manager *Manager) validateManagedApp(appID string) error {
 	if err := filesystem.ValidateID(appID); err != nil {
 		return err
 	}
@@ -1193,19 +1142,15 @@ func (manager *Manager) validateManagedApp(appID string, versions ...string) err
 	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, filepath.Join(manager.Layout.Apps, appID)); err != nil {
 		return err
 	}
-	for _, version := range versions {
-		if version == "" {
-			continue
-		}
-		path, err := manager.Layout.AppPath(appID, version)
-		if err != nil {
-			return err
-		}
-		if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, path); err != nil {
-			return err
-		}
-	}
 	return nil
+}
+
+func (manager *Manager) validateManagedPackage(appID, version, fingerprint string) error {
+	path, err := manager.Layout.PackagePath(appID, version, fingerprint)
+	if err != nil {
+		return err
+	}
+	return filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, path)
 }
 
 func (manager *Manager) validateManagedRoots() error {
@@ -1267,8 +1212,8 @@ func (manager *Manager) integrationSpec(installed state.State, name string, cate
 	return spec, nil
 }
 
-func (manager *Manager) currentTarget(appID, version string, revision int) (string, error) {
-	packagePath, err := manager.Layout.PackagePath(appID, version, revision)
+func (manager *Manager) currentTarget(appID, version, fingerprint string) (string, error) {
+	packagePath, err := manager.Layout.PackagePath(appID, version, fingerprint)
 	if err != nil {
 		return "", err
 	}
@@ -1319,18 +1264,6 @@ func executablePath(values []manifest.Executable, name string) string {
 	}
 	return ""
 }
-func sameExecutables(a []state.Executable, b []manifest.Executable) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for index := range a {
-		if a[index].Name != b[index].Name || a[index].Path != b[index].Path || a[index].WantsBinLink() != b[index].WantsBinLink() {
-			return false
-		}
-	}
-	return true
-}
-
 func (manager *Manager) lock(ctx context.Context, appID string) (*locking.Lock, error) {
 	if err := filesystem.ValidateID(appID); err != nil {
 		return nil, err
@@ -1338,9 +1271,20 @@ func (manager *Manager) lock(ctx context.Context, appID string) (*locking.Lock, 
 	return locking.AcquireAppWithTimeout(ctx, manager.Layout.Locks, appID, manager.LockTimeout)
 }
 
-func (manager *Manager) report(progress Progress, stage string, current, total int64) {
-	if progress != nil {
-		progress(stage, current, total)
+func (manager *Manager) report(progress any, stage string, current, total int64, subject ...string) {
+	resource := "package-artifact"
+	if len(subject) != 0 {
+		resource = subject[0]
+	}
+	switch callback := progress.(type) {
+	case SubjectProgress:
+		if callback != nil {
+			callback(stage, resource, current, total)
+		}
+	case Progress:
+		if callback != nil {
+			callback(stage, current, total)
+		}
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,6 +74,32 @@ func TestValidation(t *testing.T) {
 	}
 	if err := ValidateVersion("1/2"); err == nil {
 		t.Fatal("slash version accepted")
+	}
+}
+
+func TestPackagePathUsesResolvedFingerprint(t *testing.T) {
+	home := t.TempDir()
+	layout, err := LayoutFor(home, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	second := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	firstPath, err := layout.PackagePath("demo", "1.0", first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPath, err := layout.PackagePath("demo", "1.0", second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstPath == secondPath || filepath.Base(firstPath) != ".tarlink-package-"+first {
+		t.Fatalf("fingerprinted package paths = %q, %q", firstPath, secondPath)
+	}
+	for _, invalid := range []string{"", "1", "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "sha512:" + strings.Repeat("a", 128)} {
+		if _, err := layout.PackagePath("demo", "1.0", invalid); err == nil {
+			t.Fatalf("invalid fingerprint %q accepted", invalid)
+		}
 	}
 }
 

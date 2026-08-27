@@ -1,4 +1,4 @@
-// Package state persists TarLink's schema-2 per-application state record.
+// Package state persists TarLink's schema-3 per-application state record.
 package state
 
 import (
@@ -18,7 +18,7 @@ import (
 	"github.com/drobilica/tarlink/internal/manifest"
 )
 
-const Schema = 2
+const Schema = 3
 
 type Integration struct {
 	Executables        []ExecutableIntegration `json:"executables,omitempty"`
@@ -45,13 +45,13 @@ type ExecutableIntegration struct {
 }
 
 type State struct {
-	Schema           int    `json:"schema"`
-	App              string `json:"app"`
-	Current          string `json:"current"`
-	CurrentRevision  int    `json:"current_revision,omitempty"`
-	Previous         string `json:"previous,omitempty"`
-	PreviousRevision int    `json:"previous_revision,omitempty"`
-	PreviousArtifact string `json:"previous_artifact,omitempty"`
+	Schema              int    `json:"schema"`
+	App                 string `json:"app"`
+	Current             string `json:"current"`
+	CurrentFingerprint  string `json:"current_fingerprint"`
+	Previous            string `json:"previous,omitempty"`
+	PreviousFingerprint string `json:"previous_fingerprint,omitempty"`
+	PreviousArtifact    string `json:"previous_artifact,omitempty"`
 	// Channel is the channel used to resolve the current installation. It is
 	// deliberately persisted as an opaque registry identifier; channels are
 	// not a global enum and must not be inferred from version syntax.
@@ -84,27 +84,21 @@ func (s State) Validate() error {
 	if err := filesystem.ValidateVersion(s.Current); err != nil {
 		return fmt.Errorf("%w: current version: %v", ErrCorrupt, err)
 	}
-	currentRevision := s.CurrentRevision
-	if currentRevision == 0 {
-		currentRevision = 1
-	}
-	if currentRevision < 1 {
-		return fmt.Errorf("%w: current revision must be positive", ErrCorrupt)
+	if err := validateFingerprint(s.CurrentFingerprint); err != nil {
+		return fmt.Errorf("%w: current fingerprint: %v", ErrCorrupt, err)
 	}
 	if s.Previous != "" {
 		if err := filesystem.ValidateVersion(s.Previous); err != nil {
 			return fmt.Errorf("%w: previous version: %v", ErrCorrupt, err)
 		}
-		previousRevision := s.PreviousRevision
-		if previousRevision == 0 {
-			previousRevision = 1
+		if err := validateFingerprint(s.PreviousFingerprint); err != nil {
+			return fmt.Errorf("%w: previous fingerprint: %v", ErrCorrupt, err)
 		}
-		if previousRevision < 1 {
-			return fmt.Errorf("%w: previous revision must be positive", ErrCorrupt)
-		}
-		if s.Previous == s.Current && previousRevision == currentRevision {
+		if s.Previous == s.Current && s.PreviousFingerprint == s.CurrentFingerprint {
 			return fmt.Errorf("%w: current and previous versions must differ", ErrCorrupt)
 		}
+	} else if s.PreviousFingerprint != "" {
+		return fmt.Errorf("%w: previous fingerprint requires previous version", ErrCorrupt)
 	}
 	if err := ValidateChannel(s.Channel); err != nil {
 		return fmt.Errorf("%w: channel: %v", ErrCorrupt, err)
@@ -243,6 +237,19 @@ func validArtifact(value string) bool {
 	return value == "tar.gz" || value == "tar.xz" || value == "zip" || value == "appimage"
 }
 
+func validateFingerprint(value string) error {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(value, prefix) || len(value) != len(prefix)+64 || strings.ToLower(value) != value {
+		return errors.New("must be a lowercase SHA-256 fingerprint")
+	}
+	for _, r := range value[len(prefix):] {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return errors.New("must be a lowercase SHA-256 fingerprint")
+		}
+	}
+	return nil
+}
+
 // ValidateChannel validates a registry-provided channel identifier. Channel
 // names are intentionally opaque, but constrained to a portable, deterministic
 // identifier so they are safe in selectors and state files.
@@ -263,13 +270,6 @@ func (s State) ValidateForLayout(l filesystem.Layout) error {
 		return err
 	}
 	appRoot := filepath.Join(l.Apps, s.App)
-	currentRevision, previousRevision := s.CurrentRevision, s.PreviousRevision
-	if currentRevision == 0 {
-		currentRevision = 1
-	}
-	if previousRevision == 0 {
-		previousRevision = 1
-	}
 	for _, executable := range s.Integration.Executables {
 		expectedLink := filepath.Join(l.Bin, executable.Name)
 		if !executable.WantsBinLink() {
@@ -301,11 +301,11 @@ func (s State) ValidateForLayout(l filesystem.Layout) error {
 	if s.Integration.DesktopEntry != expectedDesktop {
 		return fmt.Errorf("%w: desktop path does not match the canonical layout", ErrCorrupt)
 	}
-	if _, err := l.PackagePath(s.App, s.Current, currentRevision); err != nil {
+	if _, err := l.PackagePath(s.App, s.Current, s.CurrentFingerprint); err != nil {
 		return err
 	}
 	if s.Previous != "" {
-		if _, err := l.PackagePath(s.App, s.Previous, previousRevision); err != nil {
+		if _, err := l.PackagePath(s.App, s.Previous, s.PreviousFingerprint); err != nil {
 			return err
 		}
 	}
@@ -347,7 +347,7 @@ func Decode(data []byte) (State, error) {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return State{}, fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
-	for _, required := range []string{"schema", "app", "current", "channel", "pinned", "artifact", "desktop_enabled", "integration"} {
+	for _, required := range []string{"schema", "app", "current", "current_fingerprint", "channel", "pinned", "artifact", "desktop_enabled", "integration"} {
 		if _, ok := fields[required]; !ok {
 			return State{}, fmt.Errorf("%w: missing %s", ErrCorrupt, required)
 		}

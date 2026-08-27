@@ -13,6 +13,8 @@ import (
 	"github.com/drobilica/tarlink/internal/state"
 )
 
+const testStateFingerprint = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
 func doctorCore(t *testing.T) (*Core, filesystem.Layout) {
 	t.Helper()
 	layout := uninstallTestLayout(t)
@@ -25,7 +27,11 @@ func doctorCore(t *testing.T) (*Core, filesystem.Layout) {
 func writeDoctorState(t *testing.T, layout filesystem.Layout, id, artifact string, executables []state.Executable, desktop bool) {
 	t.Helper()
 	root := filepath.Join(layout.Apps, id)
-	version := filepath.Join(root, "1.0")
+	packagePath, err := layout.PackagePath(id, "1.0", testStateFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version := packagePath
 	if err := os.MkdirAll(version, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +56,11 @@ func writeDoctorState(t *testing.T, layout filesystem.Layout, id, artifact strin
 			t.Fatal(err)
 		}
 	}
-	if err := os.Symlink("1.0", filepath.Join(root, "current")); err != nil {
+	currentTarget, err := filepath.Rel(root, packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(currentTarget, filepath.Join(root, "current")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(layout.Bin, 0o755); err != nil {
@@ -71,7 +81,7 @@ func writeDoctorState(t *testing.T, layout filesystem.Layout, id, artifact strin
 	if desktop {
 		desktopEntry = paths.DesktopEntry
 	}
-	value := state.State{Schema: state.Schema, App: id, Current: "1.0", Channel: "stable", Artifact: artifact, Executables: executables, DesktopEnabled: desktop, Integration: state.Integration{DesktopEntry: desktopEntry, DesktopSHA256: spec.DesktopSHA256}}
+	value := state.State{Schema: state.Schema, App: id, Current: "1.0", CurrentFingerprint: testStateFingerprint, Channel: "stable", Artifact: artifact, Executables: executables, DesktopEnabled: desktop, Integration: state.Integration{DesktopEntry: desktopEntry, DesktopSHA256: spec.DesktopSHA256}}
 	for _, executable := range executables {
 		value.Integration.Executables = append(value.Integration.Executables, state.ExecutableIntegration{Name: executable.Name, Path: executable.Path, Link: filepath.Join(layout.Bin, executable.Name), Target: filepath.Join(root, "current", filepath.FromSlash(executable.Path))})
 	}
@@ -96,7 +106,7 @@ func TestDoctorHealthyArchiveMultipleExecutablesAndAppImage(t *testing.T) {
 func TestDoctorReportsMissingTargetAndDesktopWithoutMutation(t *testing.T) {
 	core, layout := doctorCore(t)
 	writeDoctorState(t, layout, "broken", "tar.gz", []state.Executable{{Name: "broken", Path: "bin/broken"}}, true)
-	target := filepath.Join(layout.Apps, "broken", "1.0", "bin", "broken")
+	target := filepath.Join(layout.Apps, "broken", "1.0", ".tarlink-package-"+testStateFingerprint, "bin", "broken")
 	if err := os.Remove(target); err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +168,10 @@ func TestDoctorValidatesRetainedRemoteIcon(t *testing.T) {
 	icon := []byte("retained 512 icon")
 	digest := sha256.Sum256(icon)
 	root := filepath.Join(layout.Apps, "remote")
-	version := filepath.Join(root, "1.0")
+	version, err := layout.PackagePath("remote", "1.0", testStateFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(version, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +184,11 @@ func TestDoctorValidatesRetainedRemoteIcon(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(version, "bin", "run"), []byte("#!/bin/false\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("1.0", filepath.Join(root, "current")); err != nil {
+	currentTarget, err := filepath.Rel(root, version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(currentTarget, filepath.Join(root, "current")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(layout.Bin, 0o755); err != nil {
@@ -186,7 +203,7 @@ func TestDoctorValidatesRetainedRemoteIcon(t *testing.T) {
 	if filepath.Base(filepath.Dir(filepath.Dir(paths.IconFile))) != "512x512" {
 		t.Fatalf("doctor fixture icon path = %q", paths.IconFile)
 	}
-	value := state.State{Schema: state.Schema, App: "remote", Current: "1.0", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "run", Path: "bin/run"}}, DesktopEnabled: true, Integration: state.Integration{
+	value := state.State{Schema: state.Schema, App: "remote", Current: "1.0", CurrentFingerprint: testStateFingerprint, Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "run", Path: "bin/run"}}, DesktopEnabled: true, Integration: state.Integration{
 		DesktopEntry: paths.DesktopEntry, DesktopSHA256: spec.DesktopSHA256,
 		IconFile: paths.IconFile, IconSHA256: spec.IconSHA256, IconSize: 512, IconSource: ".tarlink-icon.png",
 		Executables: []state.ExecutableIntegration{{Name: "run", Path: "bin/run", Link: filepath.Join(layout.Bin, "run"), Target: filepath.Join(root, "current", "bin", "run")}},

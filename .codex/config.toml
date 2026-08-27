@@ -1,5 +1,6 @@
 # Project-local Codex defaults. Custom role layers are kept in .codex/agents/.
-
+[features.multi_agent_v2]
+expose_spawn_agent_model_overrides = false
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 2

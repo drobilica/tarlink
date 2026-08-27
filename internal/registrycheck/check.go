@@ -8,9 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
-	"strings"
 
 	"github.com/drobilica/tarlink/internal/download"
 	"github.com/drobilica/tarlink/internal/filesystem"
@@ -130,23 +128,28 @@ func changedFromCatalog(_ string, oldRoot string, catalog *registry.Catalog) (Se
 			selectProjections(selected, after)
 			continue
 		}
-		if after.Revision < before.Revision {
-			return Selection{}, fmt.Errorf("package revision decreased for %s %s/%s: current revision: %d, previous: %d", after.ID, after.Platform.OS, after.Platform.Arch, after.Revision, before.Revision)
+		beforeFingerprint, fingerprintErr := before.ResolvedPackageFingerprint()
+		if fingerprintErr != nil {
+			return Selection{}, fmt.Errorf("fingerprint previous %s %s/%s: %w", before.ID, before.Platform.OS, before.Platform.Arch, fingerprintErr)
 		}
-		materiallyChanged := affectsMaterialization(before, after)
-		if materiallyChanged && after.Revision <= before.Revision {
-			return Selection{}, fmt.Errorf("package definition changed without revision bump: %s %s-%s current revision: %d required: >= %d", after.ID, after.Platform.Arch, after.Platform.OS, after.Revision, before.Revision+1)
+		afterFingerprint, fingerprintErr := after.ResolvedPackageFingerprint()
+		if fingerprintErr != nil {
+			return Selection{}, fmt.Errorf("fingerprint current %s %s/%s: %w", after.ID, after.Platform.OS, after.Platform.Arch, fingerprintErr)
 		}
+		materiallyChanged := beforeFingerprint != afterFingerprint
 		added, compareErr := historyChanges(before, after)
 		if compareErr != nil {
 			return Selection{}, fmt.Errorf("compare %s %s/%s: %w", after.ID, after.Platform.OS, after.Platform.Arch, compareErr)
 		}
-		if materiallyChanged || after.Revision > before.Revision {
-			selectProjections(selected, after)
+		if len(added) > 0 {
+			for _, item := range added {
+				selected[projectionIdentity(item)] = item
+			}
 			continue
 		}
-		for _, item := range added {
-			selected[projectionIdentity(item)] = item
+		if materiallyChanged {
+			selectProjections(selected, after)
+			continue
 		}
 	}
 	items := make([]*manifest.Manifest, 0, len(selected))
@@ -194,6 +197,17 @@ func platformDefinitions(catalog *registry.Catalog) map[string]*manifest.Manifes
 	return result
 }
 
+func comparisonDefinitions(root string) (map[string]*manifest.Manifest, error) {
+	if root == "" {
+		return map[string]*manifest.Manifest{}, nil
+	}
+	catalog, err := registry.ValidateTree(root)
+	if err != nil {
+		return nil, fmt.Errorf("validate previous schema-v5 registry: %w", err)
+	}
+	return platformDefinitions(catalog), nil
+}
+
 func platformIdentity(id string, platform manifest.Platform) string {
 	return id + "\x00" + platform.OS + "\x00" + platform.Arch
 }
@@ -214,35 +228,30 @@ func historyChanges(before, after *manifest.Manifest) ([]*manifest.Manifest, err
 		oldReleases[release.Channel+"\x00"+release.Version] = release
 	}
 	newReleases := make(map[string]manifest.Release, len(after.ReleaseHistory.Releases))
+	var added []*manifest.Manifest
 	for _, release := range after.ReleaseHistory.Releases {
 		key := release.Channel + "\x00" + release.Version
 		newReleases[key] = release
-		if old, ok := oldReleases[key]; ok && old != release && after.Revision <= before.Revision {
-			return nil, fmt.Errorf("approved release %q in channel %q was mutated", release.Version, release.Channel)
+		if old, ok := oldReleases[key]; ok && old != release {
+			oldProjection := *before
+			oldProjection.Release = old
+			newProjection := *after
+			newProjection.Release = release
+			oldFingerprint, oldErr := oldProjection.ResolvedPackageFingerprint()
+			newFingerprint, newErr := newProjection.ResolvedPackageFingerprint()
+			if oldErr != nil || newErr != nil {
+				return nil, errors.Join(oldErr, newErr)
+			}
+			if oldFingerprint != newFingerprint {
+				added = append(added, &newProjection)
+			}
 		}
 	}
 	for key, old := range oldReleases {
 		if _, ok := newReleases[key]; !ok {
-			// A release correction is an explicit pre-1.0 escape hatch for an
-			// immutable upstream version whose TarLink payload contract was
-			// wrong. The corrected release must use the old version plus the
-			// reserved -appimage suffix; all other removals remain rejected.
-			if _, corrected := newReleases[old.Channel+"\x00"+old.Version+"-appimage"]; corrected {
-				continue
-			}
-			// The pre-revision registry used a synthetic -appimage suffix for
-			// this release correction. Permit the one-way return to the
-			// authoritative upstream version while retaining the normal
-			// immutable-release rule for all other removals.
-			if strings.HasSuffix(old.Version, "-appimage") {
-				if _, corrected := newReleases[old.Channel+"\x00"+strings.TrimSuffix(old.Version, "-appimage")]; corrected {
-					continue
-				}
-			}
 			return nil, fmt.Errorf("approved release %q in channel %q was removed", old.Version, old.Channel)
 		}
 	}
-	var added []*manifest.Manifest
 	for _, release := range after.ReleaseHistory.Releases {
 		if _, ok := oldReleases[release.Channel+"\x00"+release.Version]; !ok {
 			copy := *after
@@ -298,20 +307,4 @@ func MaterializeWithClient(ctx context.Context, item *manifest.Manifest, client 
 		return fmt.Errorf("state remains after uninstall for %s: %v", item.ID, err)
 	}
 	return nil
-}
-
-func affectsMaterialization(before, after *manifest.Manifest) bool {
-	if before == nil || after == nil {
-		return true
-	}
-	return before.Platform != after.Platform ||
-		before.Name != after.Name ||
-		!reflect.DeepEqual(before.Categories, after.Categories) ||
-		!reflect.DeepEqual(before.Requirements, after.Requirements) ||
-		!reflect.DeepEqual(before.Application, after.Application) ||
-		before.Desktop.Enabled != after.Desktop.Enabled ||
-		before.Desktop.Executable != after.Desktop.Executable ||
-		before.Desktop.WorkingDirectory != after.Desktop.WorkingDirectory ||
-		!reflect.DeepEqual(before.Desktop.Categories, after.Desktop.Categories) ||
-		before.Desktop.Icon != after.Desktop.Icon
 }

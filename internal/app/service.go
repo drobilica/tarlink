@@ -74,7 +74,7 @@ func (core *Core) UpgradeTarLink(ctx context.Context, sink ProgressSink) (TarLin
 				mapped = ProgressInstalling
 			}
 			if stage == "complete" {
-				mapped = ProgressComplete
+				return
 			}
 			core.emit(sink, mapped, "", done, total)
 		})
@@ -82,6 +82,8 @@ func (core *Core) UpgradeTarLink(ctx context.Context, sink ProgressSink) (TarLin
 	})
 	if err != nil {
 		err = classify("upgrade TarLink", err)
+	} else {
+		core.emit(sink, ProgressComplete, "", 0, 0)
 	}
 	return TarLinkVersion{Current: value.Current, Latest: value.Latest, UpgradeAvailable: upgrade.IsNewer(value.Current, value.Latest)}, err
 }
@@ -114,11 +116,12 @@ func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) 
 		return Result{}, err
 	}
 	core.emit(sink, ProgressResolving, appID, 0, 0)
-	outcome, err := core.installer.InstallWithOptions(ctx, item, install.Options{Channel: item.Release.Channel, Explicit: selector.Target != ""}, core.progress(sink, item.ID))
+	outcome, err := core.installer.InstallWithOptionsSubject(ctx, item, install.Options{Channel: item.Release.Channel, Explicit: selector.Target != ""}, core.progress(sink, item.ID))
 	if err != nil {
 		return Result{}, classify("install "+appID, err)
 	}
-	return Result{AppID: item.ID, Version: outcome.State.Current, Previous: outcome.State.Previous, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
+	core.emit(sink, ProgressComplete, item.ID, 0, 0)
+	return Result{AppID: item.ID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
 }
 
 func (core *Core) Update(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
@@ -143,11 +146,12 @@ func (core *Core) Update(ctx context.Context, appID string, sink ProgressSink) (
 		return Result{}, err
 	}
 	core.emit(sink, ProgressResolving, appID, 0, 0)
-	outcome, err := core.installer.UpdateWithOptions(ctx, item, install.Options{Channel: item.Release.Channel, Explicit: selector.Target != ""}, core.progress(sink, item.ID))
+	outcome, err := core.installer.UpdateWithOptionsSubject(ctx, item, install.Options{Channel: item.Release.Channel, Explicit: selector.Target != ""}, core.progress(sink, item.ID))
 	if err != nil {
 		return Result{}, classify("update "+appID, err)
 	}
-	return Result{AppID: item.ID, Version: outcome.State.Current, Previous: outcome.State.Previous, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
+	core.emit(sink, ProgressComplete, item.ID, 0, 0)
+	return Result{AppID: item.ID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
 }
 
 func (core *Core) Pin(ctx context.Context, appID string) error {
@@ -201,11 +205,12 @@ func (core *Core) Rollback(ctx context.Context, appID string, sink ProgressSink)
 	if err := filesystem.ValidateID(appID); err != nil {
 		return Result{}, &Error{Code: CodeInvalidArguments, Op: "rollback", Err: err}
 	}
-	outcome, err := core.installer.Rollback(ctx, appID, core.progress(sink, appID))
+	outcome, err := core.installer.RollbackSubject(ctx, appID, core.progress(sink, appID))
 	if err != nil {
 		return Result{}, classify("rollback "+appID, err)
 	}
-	return Result{AppID: appID, Version: outcome.State.Current, Previous: outcome.State.Previous, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
+	core.emit(sink, ProgressComplete, appID, 0, 0)
+	return Result{AppID: appID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
 }
 
 func (core *Core) List(ctx context.Context) ([]Application, error) {
@@ -311,9 +316,9 @@ func (core *Core) Versions(ctx context.Context, appID string) ([]Version, error)
 	if err != nil {
 		return nil, classify("versions "+appID, err)
 	}
-	result := []Version{{Version: installed.Current, Status: "current", Channel: installed.Channel, Pinned: installed.Pinned}}
+	result := []Version{{Version: installed.Current, Fingerprint: installed.CurrentFingerprint, Status: "current", Channel: installed.Channel, Pinned: installed.Pinned}}
 	if installed.Previous != "" {
-		result = append(result, Version{Version: installed.Previous, Status: "previous", Channel: installed.PreviousChannel})
+		result = append(result, Version{Version: installed.Previous, Fingerprint: installed.PreviousFingerprint, Status: "previous", Channel: installed.PreviousChannel})
 	}
 	if catalog, catErr := core.catalog(ctx, nil); catErr == nil {
 		goos, goarch := core.platform()
@@ -324,7 +329,10 @@ func (core *Core) Versions(ctx context.Context, appID string) ([]Version, error)
 					continue
 				}
 				current := item.ReleaseHistory.Channels[release.Channel].Current == release.Version
-				result = append(result, Version{Version: release.Version, Status: "approved", Channel: release.Channel, Current: current, Default: item.ReleaseHistory.DefaultChannel == release.Channel})
+				projection := *item
+				projection.Release = release
+				fingerprint, _ := projection.ResolvedPackageFingerprint()
+				result = append(result, Version{Version: release.Version, Fingerprint: fingerprint, Status: "approved", Channel: release.Channel, Current: current, Default: item.ReleaseHistory.DefaultChannel == release.Channel})
 				seen[release.Version] = true
 			}
 		}
@@ -366,7 +374,10 @@ func (core *Core) syncRegistry(ctx context.Context, sink ProgressSink) error {
 
 func (core *Core) syncRegistryAt(ctx context.Context, sink ProgressSink) (time.Time, error) {
 	core.syncer.Progress = func(stage string, current, total int64) {
-		mapped := ProgressStage(stage)
+		mapped := ProgressVerifying
+		if stage == "downloading" {
+			mapped = ProgressDownloading
+		}
 		if stage == "validating" {
 			mapped = ProgressVerifying
 		}
@@ -502,39 +513,33 @@ func (core *Core) installedStates() ([]state.State, error) {
 func applicationFrom(item *manifest.Manifest, installed *state.State) Application {
 	value := Application{
 		ID: item.ID, Name: item.Name, Summary: item.Summary, Homepage: item.Homepage,
-		Categories: append([]string(nil), item.Categories...), Requirements: append([]string(nil), item.Requirements...), RegistryVersion: item.Release.Version, RegistryRevision: item.Revision,
+		Categories: append([]string(nil), item.Categories...), Requirements: append([]string(nil), item.Requirements...), RegistryVersion: item.Release.Version,
 		DefaultChannel: item.ReleaseHistory.DefaultChannel,
 		ChannelHeads:   make(map[string]string, len(item.ReleaseHistory.Channels)),
 	}
+	value.RegistryFingerprint, _ = item.ResolvedPackageFingerprint()
 	for channel, head := range item.ReleaseHistory.Channels {
 		value.ChannelHeads[channel] = head.Current
 	}
 	value.ApprovedReleases = make([]Version, 0, len(item.ReleaseHistory.Releases))
 	for _, release := range item.ReleaseHistory.Releases {
+		projection := *item
+		projection.Release = release
+		fingerprint, _ := projection.ResolvedPackageFingerprint()
 		value.ApprovedReleases = append(value.ApprovedReleases, Version{
-			Version: release.Version, Status: "approved", Channel: release.Channel,
+			Version: release.Version, Fingerprint: fingerprint, Status: "approved", Channel: release.Channel,
 			Current: item.ReleaseHistory.Channels[release.Channel].Current == release.Version,
 			Default: item.ReleaseHistory.DefaultChannel == release.Channel,
 		})
 	}
 	if installed != nil {
 		value.InstalledVersion = installed.Current
-		value.InstalledRevision = installed.CurrentRevision
-		if value.InstalledRevision == 0 {
-			value.InstalledRevision = 1
-		}
+		value.InstalledFingerprint = installed.CurrentFingerprint
 		value.PreviousVersion = installed.Previous
-		value.PreviousRevision = installed.PreviousRevision
-		if value.PreviousVersion != "" && value.PreviousRevision == 0 {
-			value.PreviousRevision = 1
-		}
+		value.PreviousFingerprint = installed.PreviousFingerprint
 		value.InstalledChannel = installed.Channel
 		value.Pinned = installed.Pinned
-		installedRevision := installed.CurrentRevision
-		if installedRevision == 0 {
-			installedRevision = 1
-		}
-		value.UpdateAvailable = installed.Current != item.Release.Version || installedRevision != item.Revision
+		value.UpdateAvailable = installed.Current != item.Release.Version || installed.CurrentFingerprint != value.RegistryFingerprint
 	}
 	return value
 }
@@ -555,15 +560,45 @@ func (core *Core) itemForInstalledChannel(catalog *registry.Catalog, item *manif
 	return selected
 }
 
-func (core *Core) progress(sink ProgressSink, appID string) install.Progress {
-	return func(stage string, current, total int64) {
-		core.emit(sink, ProgressStage(stage), appID, current, total)
+func (core *Core) progress(sink ProgressSink, appID string) install.SubjectProgress {
+	return func(stage, subject string, current, total int64) {
+		mapped := ProgressVerifying
+		description := ""
+		switch stage {
+		case "downloading":
+			mapped = ProgressDownloading
+		case "verifying":
+			mapped = ProgressVerifying
+		case "validating-appimage":
+			mapped, description = ProgressVerifying, "Validating AppImage"
+		case "extracting", "extracting-preparing":
+			mapped, description = ProgressExtracting, "Preparing extraction"
+		case "installing":
+			mapped = ProgressInstalling
+		case "integrating":
+			mapped = ProgressIntegrating
+		case "activating":
+			mapped = ProgressActivating
+		case "cleaning":
+			mapped = ProgressCleaning
+		default:
+			return
+		}
+		resource := ProgressSubjectPackageArtifact
+		if subject == "remote-desktop-icon" {
+			resource = ProgressSubjectRemoteDesktopIcon
+		}
+		core.emitDetailed(sink, mapped, appID, resource, description, current, total)
 	}
 }
 
 func (core *Core) emit(sink ProgressSink, stage ProgressStage, appID string, current, total int64) {
+	core.emitDetailed(sink, stage, appID, "", "", current, total)
+}
+
+func (core *Core) emitDetailed(sink ProgressSink, stage ProgressStage, appID string, subject ProgressSubject, description string, current, total int64) {
 	if sink != nil {
-		sink(Progress{Stage: stage, AppID: appID, BytesDone: current, BytesTotal: total})
+		sink(Progress{Stage: stage, Subject: subject, Description: description, AppID: appID, BytesDone: current, BytesTotal: total})
 	}
 }
 

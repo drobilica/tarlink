@@ -132,12 +132,6 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	if r.Service == nil && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" {
 		return r.fail(errors.New("TarLink core is unavailable"))
 	}
-	if arguments[0] != "self-update" && arguments[0] != "upgrade" && arguments[0] != "doctor" && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" && !contains(arguments[1:], "--json") {
-		if value, checkErr := r.Service.CheckTarLinkVersion(ctx); checkErr == nil && value.UpgradeAvailable {
-			_, _ = fmt.Fprintf(r.Stderr, "TarLink %s is available (current %s).\nRun `tarlink self-update` to update.\n", value.Latest, value.Current)
-		}
-	}
-
 	var err error
 	switch arguments[0] {
 	case "registry":
@@ -596,14 +590,56 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 }
 
 func (r Runner) progress() app.ProgressSink {
+	tty := isTTY(r.Stderr)
 	last := app.ProgressStage("")
+	count := 0
 	return func(event app.Progress) {
-		if event.Stage == last || event.Stage == "" {
+		if event.Stage == last || event.Stage == "" || count >= 16 {
 			return
 		}
 		last = event.Stage
-		_, _ = fmt.Fprintf(r.Stderr, "%s...\n", title(string(event.Stage)))
+		count++
+		label := event.Description
+		if label == "" {
+			label = title(string(event.Stage))
+		}
+		if event.BytesTotal > 0 {
+			label = fmt.Sprintf("%s %s / %s", label, bytesLabel(event.BytesDone), bytesLabel(event.BytesTotal))
+		} else if event.BytesDone > 0 {
+			label = fmt.Sprintf("%s %s", label, bytesLabel(event.BytesDone))
+		}
+		if tty {
+			_, _ = fmt.Fprintf(r.Stderr, "\r%-80s", label)
+			return
+		}
+		_, _ = fmt.Fprintln(r.Stderr, label)
 	}
+}
+
+func isTTY(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
+}
+
+func bytesLabel(value int64) string {
+	if value < 0 {
+		value = 0
+	}
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB"}
+	amount := float64(value)
+	i := 0
+	for amount >= 1024 && i < len(units)-1 {
+		amount /= 1024
+		i++
+	}
+	if i == 0 {
+		return fmt.Sprintf("%d %s", value, units[i])
+	}
+	return fmt.Sprintf("%.1f %s", amount, units[i])
 }
 
 func (r Runner) printApplications(values []app.Application, jsonOutput bool, emptyMessage string) error {

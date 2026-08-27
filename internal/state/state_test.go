@@ -11,11 +11,27 @@ import (
 )
 
 func testState() State {
-	return State{Schema: Schema, App: "demo", Current: "1.2.3", Channel: "stable", Pinned: false, Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}}, Integration: Integration{Executables: []ExecutableIntegration{{Name: "demo", Path: "bin/demo", Link: "/tmp/bin/demo", Target: "/tmp/apps/demo/current/bin/demo"}}}}
+	return State{Schema: Schema, App: "demo", Current: "1.2.3", CurrentFingerprint: testFingerprint, Channel: "stable", Pinned: false, Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}}, Integration: Integration{Executables: []ExecutableIntegration{{Name: "demo", Path: "bin/demo", Link: "/tmp/bin/demo", Target: "/tmp/apps/demo/current/bin/demo"}}}}
+}
+
+const testFingerprint = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+func testTempDir(t *testing.T) string {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(os.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := os.MkdirTemp(root, "tarlink-state-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
 
 func TestDecodeStrictAndTrailing(t *testing.T) {
-	b := []byte(`{"schema":2,"app":"demo","current":"1.2.3","channel":"stable","pinned":false,"artifact":"tar.gz","executables":[{"name":"demo","path":"bin/demo"}],"desktop_enabled":false,"integration":{"executables":[{"name":"demo","path":"bin/demo","link":"/tmp/bin/demo","target":"/tmp/apps/demo/current/bin/demo"}],"desktop_entry":"","desktop_sha256":""}}`)
+	b := []byte(`{"schema":3,"app":"demo","current":"1.2.3","current_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","channel":"stable","pinned":false,"artifact":"tar.gz","executables":[{"name":"demo","path":"bin/demo"}],"desktop_enabled":false,"integration":{"executables":[{"name":"demo","path":"bin/demo","link":"/tmp/bin/demo","target":"/tmp/apps/demo/current/bin/demo"}],"desktop_entry":"","desktop_sha256":""}}`)
 	if _, err := Decode(b); err != nil {
 		t.Fatal(err)
 	}
@@ -32,7 +48,7 @@ func TestDecodeStrictAndTrailing(t *testing.T) {
 }
 
 func TestWriteLoadAndCorruptPreserved(t *testing.T) {
-	d := t.TempDir()
+	d := testTempDir(t)
 	p := filepath.Join(d, "state.json")
 	if err := Write(p, testState()); err != nil {
 		t.Fatal(err)
@@ -41,19 +57,38 @@ func TestWriteLoadAndCorruptPreserved(t *testing.T) {
 	if err != nil || got.App != "demo" {
 		t.Fatalf("state=%+v err=%v", got, err)
 	}
-	if err := os.WriteFile(p, []byte(`{"schema":2,"app":"demo","current":""}`), 0600); err != nil {
+	if err := os.WriteFile(p, []byte(`{"schema":3,"app":"demo","current":""}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := Load(p); !errors.Is(err, ErrCorrupt) {
 		t.Fatalf("err=%v", err)
 	}
-	if b, _ := os.ReadFile(p); string(b) != `{"schema":2,"app":"demo","current":""}` {
+	if b, _ := os.ReadFile(p); string(b) != `{"schema":3,"app":"demo","current":""}` {
 		t.Fatal("corrupt file changed")
 	}
 }
 
+func TestValidateRequiresFingerprintIdentityAndAllowsSameVersionReplacement(t *testing.T) {
+	value := testState()
+	value.Previous = value.Current
+	value.PreviousFingerprint = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	value.PreviousArtifact = value.Artifact
+	if err := value.Validate(); err != nil {
+		t.Fatalf("same-version replacement rejected: %v", err)
+	}
+	value.PreviousFingerprint = value.CurrentFingerprint
+	if !errors.Is(value.Validate(), ErrCorrupt) {
+		t.Fatal("same package identity retained as previous")
+	}
+	value = testState()
+	value.CurrentFingerprint = ""
+	if !errors.Is(value.Validate(), ErrCorrupt) {
+		t.Fatal("missing current fingerprint accepted")
+	}
+}
+
 func TestWriteReportsPostRenameSyncFailureAsCommitted(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
+	path := filepath.Join(testTempDir(t), "state.json")
 	injected := errors.New("injected directory sync failure")
 	committed, err := write(path, testState(), func(string) error { return injected })
 	if !committed || !errors.Is(err, injected) {
@@ -66,7 +101,7 @@ func TestWriteReportsPostRenameSyncFailureAsCommitted(t *testing.T) {
 }
 
 func TestValidateForLayoutRequiresCanonicalOwnedPaths(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	layout, err := filesystem.LayoutFor(home, func(name string) string {
 		switch name {
 		case "XDG_DATA_HOME":
@@ -83,7 +118,7 @@ func TestValidateForLayoutRequiresCanonicalOwnedPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	value := State{
-		Schema: Schema, App: "demo", Current: "1.2.3", Channel: "stable", Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}},
+		Schema: Schema, App: "demo", Current: "1.2.3", CurrentFingerprint: testFingerprint, Channel: "stable", Artifact: "tar.gz", Executables: []Executable{{Name: "demo", Path: "bin/demo"}},
 		Integration: Integration{
 			Executables: []ExecutableIntegration{{Name: "demo", Path: "bin/demo", Link: filepath.Join(layout.Bin, "demo"), Target: filepath.Join(layout.Apps, "demo", "current", "bin", "demo")}},
 		},
@@ -98,7 +133,7 @@ func TestValidateForLayoutRequiresCanonicalOwnedPaths(t *testing.T) {
 }
 
 func TestValidateForLayoutRequiresCanonicalIconOwnership(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	layout, err := filesystem.LayoutFor(home, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -121,7 +156,7 @@ func TestValidateForLayoutRequiresCanonicalIconOwnership(t *testing.T) {
 }
 
 func TestValidateForLayoutUsesRecordedRasterSize(t *testing.T) {
-	home := t.TempDir()
+	home := testTempDir(t)
 	layout, err := filesystem.LayoutFor(home, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -188,7 +223,7 @@ func TestValidateRejectsMalformedPreviousIconPath(t *testing.T) {
 }
 
 func FuzzDecode(f *testing.F) {
-	f.Add([]byte(`{"schema":2,"app":"demo","current":"1","channel":"stable","pinned":false,"executable":"x","desktop_enabled":false,"integration":{"executable_link":"/tmp/x","executable_target":"/tmp/y","desktop_entry":"","desktop_sha256":""}}`))
+	f.Add([]byte(`{"schema":3,"app":"demo","current":"1","current_fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","channel":"stable","pinned":false,"executable":"x","desktop_enabled":false,"integration":{"executable_link":"/tmp/x","executable_target":"/tmp/y","desktop_entry":"","desktop_sha256":""}}`))
 	f.Add([]byte("not json"))
 	f.Fuzz(func(t *testing.T, data []byte) { _, _ = Decode(data) })
 }

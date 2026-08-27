@@ -69,7 +69,7 @@ func (core *Core) InstallBatch(ctx context.Context, ids []string, sink ProgressS
 				sink(value)
 			}
 		}
-		outcome, installErr := core.installer.InstallWithOptions(ctx, item, install.Options{Channel: target.Channel}, core.progress(progress, target.AppID))
+		outcome, installErr := core.installer.InstallWithOptionsSubject(ctx, item, install.Options{Channel: target.Channel}, core.progress(progress, target.AppID))
 		if installErr != nil {
 			if ctx.Err() != nil {
 				result.Canceled = true
@@ -78,7 +78,7 @@ func (core *Core) InstallBatch(ctx context.Context, ids []string, sink ProgressS
 			result.Failed[target.AppID] = installErr.Error()
 			continue
 		}
-		result.Completed = append(result.Completed, Result{AppID: target.AppID, Version: outcome.State.Current, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings})
+		result.Completed = append(result.Completed, Result{AppID: target.AppID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings})
 	}
 	return result, nil
 }
@@ -110,7 +110,7 @@ func (core *Core) UninstallBatch(ctx context.Context, ids []string, sink Progres
 				sink(value)
 			}
 		}
-		if uninstallErr := core.installer.Uninstall(ctx, id, core.progress(progress, id)); uninstallErr != nil {
+		if uninstallErr := core.installer.UninstallSubject(ctx, id, core.progress(progress, id)); uninstallErr != nil {
 			if ctx.Err() != nil {
 				result.Canceled = true
 				return result, ctx.Err()

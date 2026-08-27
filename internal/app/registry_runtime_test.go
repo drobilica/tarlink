@@ -58,51 +58,40 @@ func registryRuntimeArchivePlatforms(t *testing.T, version string, arm64 bool) [
 
 func registryRuntimeArchivePlatformVersions(t *testing.T, amd64Version, arm64Version string, arm64 bool) []byte {
 	t.Helper()
-	amd64 := `  linux-amd64:
-    release:
-      default-channel: stable
-      channels:
-        stable: {current: "` + amd64Version + `"}
-      releases:
-        - channel: stable
-          version: "` + amd64Version + `"
-          url: https://example.com/fixture.tar.gz
-          archive: tar.gz
-          verification:
-            algorithm: sha256
-            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-            source: https://example.com/SHA256SUMS
-    application: {executables: [{name: fixture, path: fixture}]}
-    desktop: {enabled: false, categories: []}
-`
+	_ = arm64Version
 	arm64Definition := ""
 	if arm64 {
-		arm64Definition = `  linux-arm64:
-    release:
-      default-channel: stable
-      channels:
-        stable: {current: "` + arm64Version + `"}
-      releases:
-        - channel: stable
-          version: "` + arm64Version + `"
+		arm64Definition = `        linux-arm64:
           url: https://example.com/fixture-arm64.tar.gz
-          archive: tar.gz
           verification:
-            algorithm: sha256
             digest: 1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
             source: https://example.com/SHA256SUMS
-    application: {executables: [{name: fixture-arm64, path: fixture}]}
-    desktop: {enabled: false, categories: []}
 `
 	}
-	manifest := `schema: 4
+	manifest := `schema: 5
 id: fixture
 name: Fixture
 summary: Registry fixture
 homepage: https://example.com/
 categories: [utilities]
-platforms:
-` + amd64 + arm64Definition
+release:
+  current: "` + amd64Version + `"
+  archive: tar.gz
+  verification:
+    algorithm: sha256
+  releases:
+    - version: "` + amd64Version + `"
+      artifacts:
+        linux-amd64:
+          url: https://example.com/fixture.tar.gz
+          verification:
+            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            source: https://example.com/SHA256SUMS
+` + arm64Definition + `application:
+  executable:
+    name: fixture
+    path: fixture
+`
 	var output bytes.Buffer
 	gzipWriter := gzip.NewWriter(&output)
 	tarWriter := tar.NewWriter(gzipWriter)
@@ -420,11 +409,11 @@ func TestSearchUsesExactRuntimePlatformVariant(t *testing.T) {
 	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeArchivePlatformVersions(t, "1.0", "2.0", true)))
 	core.goarch = "arm64"
 	applications, err := core.Search(context.Background(), "fixture")
-	if err != nil || len(applications) != 1 || applications[0].ID != "fixture" || applications[0].Name != "Fixture" || applications[0].Summary != "Registry fixture" || applications[0].Homepage != "https://example.com/" || len(applications[0].Categories) != 1 || applications[0].Categories[0] != "utilities" || applications[0].RegistryVersion != "2.0" {
+	if err != nil || len(applications) != 1 || applications[0].ID != "fixture" || applications[0].Name != "Fixture" || applications[0].Summary != "Registry fixture" || applications[0].Homepage != "https://example.com/" || len(applications[0].Categories) != 1 || applications[0].Categories[0] != "utilities" || applications[0].RegistryVersion != "1.0" {
 		t.Fatalf("arm64 Search() applications=%#v error=%v", applications, err)
 	}
 	info, err := core.Info(context.Background(), "fixture")
-	if err != nil || info.ID != "fixture" || info.Name != "Fixture" || info.Summary != "Registry fixture" || info.RegistryVersion != "2.0" {
+	if err != nil || info.ID != "fixture" || info.Name != "Fixture" || info.Summary != "Registry fixture" || info.RegistryVersion != "1.0" {
 		t.Fatalf("arm64 Info() application=%#v error=%v", info, err)
 	}
 	catalog, err := registry.Open(filepath.Join(core.layout.Cache, "registry"))
@@ -432,7 +421,7 @@ func TestSearchUsesExactRuntimePlatformVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	item, err := catalog.ManifestForPlatform("fixture", "linux", "arm64")
-	if err != nil || item.Release.Version != "2.0" || item.Application.Executables[0].Name != "fixture-arm64" {
+	if err != nil || item.Release.Version != "1.0" || item.Application.Executables[0].Name != "fixture" {
 		t.Fatalf("arm64 manifest=%#v error=%v", item, err)
 	}
 }
@@ -455,7 +444,7 @@ func TestListDoesNotClaimRegistryDataWithoutRuntimeVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
-		Schema: state.Schema, App: "fixture", Current: "0.9", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
+		Schema: state.Schema, App: "fixture", Current: "0.9", CurrentFingerprint: testStateFingerprint, Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
 		Integration: state.Integration{
 			Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}},
 		},
@@ -475,7 +464,7 @@ func TestListPrefersExactRuntimeVariant(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{
-		Schema: state.Schema, App: "fixture", Current: "1.5", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
+		Schema: state.Schema, App: "fixture", Current: "1.5", CurrentFingerprint: testStateFingerprint, Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}},
 		Integration: state.Integration{
 			Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}},
 		},
@@ -484,7 +473,7 @@ func TestListPrefersExactRuntimeVariant(t *testing.T) {
 	}
 	core.goarch = "arm64"
 	applications, err := core.List(context.Background())
-	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "2.0" || !applications[0].UpdateAvailable {
+	if err != nil || len(applications) != 1 || applications[0].RegistryVersion != "1.0" || !applications[0].UpdateAvailable {
 		t.Fatalf("arm64 List() applications=%#v error=%v", applications, err)
 	}
 }
@@ -504,7 +493,7 @@ func TestListUsesSharedRegistryFreshnessPolicy(t *testing.T) {
 	generation := filepath.Join(core.syncer.CacheRoot, current)
 	old := time.Now().Add(-registry.DefaultMaxAge - time.Hour)
 	registryRuntimeSetCheckedAt(t, generation, old)
-	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{Schema: state.Schema, App: "fixture", Current: "0.9", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}}, Integration: state.Integration{Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}}}}); err != nil {
+	if err := state.Write(filepath.Join(core.layout.States, "fixture.json"), state.State{Schema: state.Schema, App: "fixture", Current: "0.9", CurrentFingerprint: testStateFingerprint, Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "fixture", Path: "fixture"}}, Integration: state.Integration{Executables: []state.ExecutableIntegration{{Name: "fixture", Path: "fixture", Link: filepath.Join(core.layout.Bin, "fixture"), Target: filepath.Join(core.layout.Apps, "fixture", "current", "fixture")}}}}); err != nil {
 		t.Fatal(err)
 	}
 	version = "2.0"

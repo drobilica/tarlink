@@ -11,37 +11,41 @@ import (
 	"github.com/drobilica/tarlink/internal/manifest"
 )
 
-const testManifest = `schema: 4
+const testManifest = `schema: 5
 id: blender
 name: Blender
 summary: 3D creation suite
 homepage: https://www.blender.org/
 categories: [game-development, graphics]
-platforms:
-  linux-amd64:
-    revision: 1
-    release:
-      default-channel: stable
-      channels:
-        stable:
-          current: "5.2.0"
-      releases:
-        - channel: stable
-          version: "5.2.0"
+release:
+  current: "5.2.0"
+  archive: tar.xz
+  verification:
+    algorithm: sha256
+  releases:
+    - version: "5.2.0"
+      artifacts:
+        linux-amd64:
           url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz
-          archive: tar.xz
           verification:
-            algorithm: sha256
             digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
             source: https://example.com/blender-checksums
-    application: {executables: [{name: blender, path: blender}]}
-    desktop: {enabled: true, categories: [Graphics], icon: null}
+application:
+  executable:
+    name: blender
+    path: blender
+desktop:
+  categories: [Graphics]
 `
 
 func withArm64(base string) string {
-	arm := strings.Replace(base, "linux-amd64:", "linux-arm64:", 1)
-	start := strings.Index(arm, "  linux-arm64:")
-	return base + arm[start:]
+	arm := `        linux-arm64:
+          url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-arm64.tar.xz
+          verification:
+            digest: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+            source: https://example.com/blender-checksums
+`
+	return strings.Replace(base, "application:\n", arm+"application:\n", 1)
 }
 
 func createRegistry(t *testing.T) string {
@@ -103,9 +107,6 @@ func TestValidateTreeRejectsInvalidApplicationData(t *testing.T) {
 func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
 	root := createRegistry(t)
 	arm64 := withArm64(testManifest)
-	armStart := strings.Index(arm64, "  linux-arm64:")
-	arm64 = arm64[:armStart] + strings.ReplaceAll(arm64[armStart:], `"5.2.0"`, `"5.2.0-arm64"`)
-	arm64 = arm64[:armStart] + strings.Replace(arm64[armStart:], "name: blender, path: blender", "name: blender-arm64, path: blender", 1)
 	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(arm64), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -124,10 +125,10 @@ func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
 	if err != nil {
 		t.Fatalf("arm64 lookup error = %v", err)
 	}
-	if arm.Release.Version != "5.2.0-arm64" || arm.Application.Executables[0].Name != "blender-arm64" {
+	if arm.Release.Version != "5.2.0" || arm.Application.Executables[0].Name != "blender" {
 		t.Fatalf("arm64 manifest = %#v", arm)
 	}
-	if got := catalog.SearchForPlatform("3d", "linux", "arm64"); len(got) != 1 || got[0].ID != "blender" || got[0].Release.Version != "5.2.0-arm64" || got[0].Application.Executables[0].Name != "blender-arm64" {
+	if got := catalog.SearchForPlatform("3d", "linux", "arm64"); len(got) != 1 || got[0].ID != "blender" || got[0].Release.Version != "5.2.0" || got[0].Application.Executables[0].Name != "blender" {
 		t.Fatalf("arm64 SearchForPlatform() = %#v", got)
 	}
 }
@@ -138,8 +139,9 @@ func TestReleaseForPlatformResolvesChannelAndOpaqueVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutated := strings.Replace(string(content), "      channels:\n        stable:\n          current: \"5.2.0\"", "      channels:\n        stable:\n          current: \"5.2.0\"\n        preview:\n          current: \"2.7.513\"", 1)
-	mutated = strings.Replace(mutated, "    application: {executables:", "        - channel: preview\n          version: \"2.7.513\"\n          url: https://download.blender.org/release/Blender5.2/preview.tar.xz\n          archive: tar.xz\n          verification:\n            algorithm: sha256\n            digest: abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n            source: https://download.blender.org/release/Blender5.2/preview.sha256\n    application: {executables:", 1)
+	mutated := strings.Replace(string(content), "  current: \"5.2.0\"", "  default-channel: stable\n  channels:\n    stable:\n      current: \"5.2.0\"\n    preview:\n      current: \"2.7.513\"", 1)
+	mutated = strings.Replace(mutated, "    - version: \"5.2.0\"", "    - channel: stable\n      version: \"5.2.0\"", 1)
+	mutated = strings.Replace(mutated, "application:\n", "    - channel: preview\n      version: \"2.7.513\"\n      artifacts:\n        linux-amd64:\n          url: https://download.blender.org/release/Blender5.2/preview.tar.xz\n          verification:\n            digest: abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n            source: https://download.blender.org/release/Blender5.2/preview.sha256\napplication:\n", 1)
 	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(mutated), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -167,9 +169,9 @@ func TestReleaseSelectorsPreserveReleaseScopedNestedRecipes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutated := strings.Replace(string(content), "          archive: tar.xz\n          verification:", "          archive: tar.xz\n          nested-archive: {path: stable.zip, archive: zip}\n          verification:", 1)
-	mutated = strings.Replace(mutated, "        - channel: stable", "        - channel: preview\n          version: \"2.0\"\n          url: https://example.com/preview.tar.xz\n          archive: tar.xz\n          nested-archive: {path: preview.zip, archive: zip}\n          verification:\n            algorithm: sha256\n            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n            source: https://example.com/preview.sha256\n        - channel: stable", 1)
-	mutated = strings.Replace(mutated, "        stable:\n          current: \"5.2.0\"", "        stable:\n          current: \"5.2.0\"\n        preview:\n          current: \"2.0\"", 1)
+	mutated := strings.Replace(string(content), "    - version: \"5.2.0\"", "    - channel: stable\n      version: \"5.2.0\"\n      nested-archive: {path: stable.zip, archive: zip}", 1)
+	mutated = strings.Replace(mutated, "application:\n", "    - channel: preview\n      version: \"2.0\"\n      nested-archive: {path: preview.zip, archive: zip}\n      artifacts:\n        linux-amd64:\n          url: https://example.com/preview.tar.xz\n          verification:\n            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n            source: https://example.com/preview.sha256\napplication:\n", 1)
+	mutated = strings.Replace(mutated, "  current: \"5.2.0\"", "  default-channel: stable\n  channels:\n    stable:\n      current: \"5.2.0\"\n    preview:\n      current: \"2.0\"", 1)
 	if err := os.WriteFile(path, []byte(mutated), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -53,7 +53,12 @@ func CheckPath(spec Spec, pathValue string) []PathConflict {
 	if spec.LocalBinDirectory == "" {
 		return conflicts
 	}
-	executables := spec.Executables
+	var executables []ExecutableSpec
+	for _, executable := range spec.Executables {
+		if executable.WantsBinLink() {
+			executables = append(executables, executable)
+		}
+	}
 	binDir := filepath.Clean(spec.LocalBinDirectory)
 	directories := filepath.SplitList(pathValue)
 	binIndex := -1

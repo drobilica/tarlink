@@ -46,6 +46,7 @@ implementation, exploration, testing, and debugging to workers. Use the
 specialist only for genuinely difficult architecture, security, lifecycle, or
 debugging work. Keep scopes narrow and concurrency small.
 
+Workers use the configured default subagent model and reasoning effort; do not override them for routine work.
 ### Effort levels
 
 **Effort 1 — small or straightforward**

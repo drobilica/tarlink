@@ -1,7 +1,7 @@
 # Manifest v3 (historical)
 
 Manifest v3 was retired by TarLink v0.13.0 and is not accepted by the runtime
-registry loader. The current authoring contract is [manifest v4](manifest-v4.md).
+registry loader. The current authoring contract is [manifest v5](manifest-v5.md).
 This document remains only as a historical description of the former format.
 
 Manifest v3 was strict YAML containing exactly one document. It stored a

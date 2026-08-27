@@ -331,58 +331,42 @@ func iconDimensionScore(size int) int {
 
 func addRemoteIcon(data []byte, icon fixedRegistryIcon) ([]byte, error) {
 	parsed, err := manifest.ParseBytes(data)
-	if err != nil && !strings.Contains(err.Error(), "desktop icon must be explicitly declared or null") {
+	if err != nil {
 		return nil, err
 	}
-	if parsed != nil {
-		for _, platform := range parsed.Platforms {
-			if platform.Desktop.Enabled && !platform.Desktop.Icon.IsZero() {
-				return nil, errors.New("manifest icon is no longer missing")
-			}
-		}
+	if parsed.Desktop == nil {
+		return nil, errors.New("manifest desktop mapping is missing")
+	}
+	if parsed.Desktop.Icon != nil {
+		return nil, errors.New("manifest icon is no longer missing")
 	}
 	lines := strings.SplitAfter(string(data), "\n")
-	type replacement struct{ index, indent int }
-	var replacements []replacement
+	desktopLine := -1
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
 		indent := len(line) - len(strings.TrimLeft(line, " "))
-		if trimmed != "desktop:" || indent != 4 {
-			continue
+		if trimmed == "desktop:" && indent == 0 {
+			desktopLine = i
+			break
 		}
-		enabled := false
-		iconNull := -1
-		for next := i + 1; next < len(lines); next++ {
-			candidate := strings.TrimSuffix(lines[next], "\n")
-			if strings.TrimSpace(candidate) == "" {
-				continue
-			}
-			level := len(candidate) - len(strings.TrimLeft(candidate, " "))
-			if level <= indent {
-				break
-			}
-			if level == indent+2 && strings.TrimSpace(candidate) == "enabled: true" {
-				enabled = true
-			}
-			if level == indent+2 && strings.TrimSpace(candidate) == "icon: null" {
-				iconNull = next
-			}
-		}
-		if !enabled {
-			continue
-		}
-		if iconNull < 0 {
-			return nil, errors.New("enabled platform desktop icon is not null")
-		}
-		replacements = append(replacements, replacement{index: iconNull, indent: indent})
 	}
-	if len(replacements) == 0 {
+	if desktopLine < 0 {
 		return nil, errors.New("manifest desktop mapping is missing")
 	}
-	for i := len(replacements) - 1; i >= 0; i-- {
-		at := replacements[i]
-		lines[at.index] = strings.Repeat(" ", at.indent+2) + "icon:\n" + strings.Repeat(" ", at.indent+4) + "url: " + icon.URL + "\n" + strings.Repeat(" ", at.indent+4) + "sha256: " + icon.SHA256 + "\n"
+	insertAt := len(lines)
+	for i := desktopLine + 1; i < len(lines); i++ {
+		candidate := strings.TrimSuffix(lines[i], "\n")
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		level := len(candidate) - len(strings.TrimLeft(candidate, " "))
+		if level == 0 {
+			insertAt = i
+			break
+		}
 	}
+	addition := []string{"  icon:\n", "    url: " + icon.URL + "\n", "    sha256: " + icon.SHA256 + "\n"}
+	lines = append(lines[:insertAt], append(addition, lines[insertAt:]...)...)
 	output := []byte(strings.Join(lines, ""))
 	if _, err := manifest.ParseBytes(output); err != nil {
 		return nil, fmt.Errorf("validate updated manifest: %w", err)

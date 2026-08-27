@@ -1,0 +1,32 @@
+# Canonical manifest v5 example. Values are intentionally reviewed Helm
+# 4.2.4 Linux releases; this file is documentation, not a second registry source.
+schema: 5
+id: helm
+name: Helm
+summary: Package manager for Kubernetes
+homepage: https://helm.sh/
+categories: [development, utilities]
+release:
+  current: "4.2.4"
+  archive: tar.gz
+  verification:
+    algorithm: sha256
+  releases:
+    - version: "4.2.4"
+      artifacts:
+        linux-amd64:
+          url: https://get.helm.sh/helm-v4.2.4-linux-amd64.tar.gz
+          verification:
+            digest: c306b46f719b0a4da32d0f78ee21bf90ce8d602f15b22ab753f0674d1670a7f3
+            source: https://get.helm.sh/helm-v4.2.4-linux-amd64.tar.gz.sha256sum
+        linux-arm64:
+          url: https://get.helm.sh/helm-v4.2.4-linux-arm64.tar.gz
+          verification:
+            digest: 564de2191b881e9f71b5606b25345821ea1682f06ab90499d3ab22b530176da1
+            source: https://get.helm.sh/helm-v4.2.4-linux-arm64.tar.gz.sha256sum
+application:
+  executable:
+    name: helm
+    paths:
+      linux-amd64: linux-amd64/helm
+      linux-arm64: linux-arm64/helm

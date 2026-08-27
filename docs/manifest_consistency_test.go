@@ -9,7 +9,7 @@ import (
 )
 
 func TestCanonicalManifestExampleParsesAsDocumented(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "schema", "manifest-v4.example.yaml"))
+	data, err := os.ReadFile(filepath.Join("..", "schema", "manifest-v5.example.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

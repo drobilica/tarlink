@@ -63,7 +63,7 @@ func TestUninstallAllRejectsCorruptStateBeforeCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(layout.States, "demo.json")
-	if err := os.WriteFile(statePath, []byte(`{"schema":2,"app":"demo","channel":"stable","pinned":false}`), 0o600); err != nil {
+	if err := os.WriteFile(statePath, []byte(`{"schema":3,"app":"demo","channel":"stable","pinned":false}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	core := &Core{layout: layout, installer: install.New(layout, nil)}
@@ -82,14 +82,22 @@ func TestUninstallAllRejectsCorruptStateBeforeCleanup(t *testing.T) {
 func writeInstalledUninstallFixture(t *testing.T, layout filesystem.Layout, appID string) {
 	t.Helper()
 	appRoot := filepath.Join(layout.Apps, appID)
-	executable := filepath.Join(appRoot, "v1", "bin", "run")
+	packagePath, err := layout.PackagePath(appID, "v1", testStateFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(packagePath, "bin", "run")
 	if err := os.MkdirAll(filepath.Dir(executable), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(executable, []byte("run"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("v1", filepath.Join(appRoot, "current")); err != nil {
+	currentTarget, err := filepath.Rel(appRoot, packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(currentTarget, filepath.Join(appRoot, "current")); err != nil {
 		t.Fatal(err)
 	}
 	spec := integration.Spec{
@@ -103,7 +111,7 @@ func writeInstalledUninstallFixture(t *testing.T, layout filesystem.Layout, appI
 		t.Fatal(err)
 	}
 	value := state.State{
-		Schema: state.Schema, App: appID, Current: "v1", Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: appID, Path: "bin/run"}}, DesktopEnabled: true,
+		Schema: state.Schema, App: appID, Current: "v1", CurrentFingerprint: testStateFingerprint, Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: appID, Path: "bin/run"}}, DesktopEnabled: true,
 		Integration: state.Integration{
 			Executables:  []state.ExecutableIntegration{{Name: appID, Path: "bin/run", Link: paths.Executables[0].Link, Target: filepath.Join(appRoot, "current", "bin", "run")}},
 			DesktopEntry: paths.DesktopEntry, DesktopSHA256: spec.DesktopSHA256,

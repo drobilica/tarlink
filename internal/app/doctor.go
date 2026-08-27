@@ -180,22 +180,24 @@ func (core *Core) auditApplication(value state.State, add func(string, string, s
 	}
 	current := filepath.Join(appRoot, "current")
 	currentTarget, linkErr := os.Readlink(current)
-	if linkErr != nil || currentTarget != value.Current {
-		add("payload", "error", fmt.Sprintf("current link does not point to %s", value.Current))
+	currentPath, currentPathErr := core.layout.PackagePath(value.App, value.Current, value.CurrentFingerprint)
+	expectedCurrent, expectedCurrentErr := filepath.Rel(appRoot, currentPath)
+	if linkErr != nil || currentPathErr != nil || expectedCurrentErr != nil || currentTarget != expectedCurrent {
+		add("payload", "error", fmt.Sprintf("current link does not point to %s", expectedCurrent))
 	} else {
 		add("payload", "ok", "current payload is active")
 	}
-	for _, version := range []string{value.Current, value.Previous} {
-		if version == "" {
+	for _, packageRef := range []struct{ version, fingerprint string }{{value.Current, value.CurrentFingerprint}, {value.Previous, value.PreviousFingerprint}} {
+		if packageRef.version == "" {
 			continue
 		}
-		path := filepath.Join(appRoot, version)
+		path, pathErr := core.layout.PackagePath(value.App, packageRef.version, packageRef.fingerprint)
 		info, statErr := os.Lstat(path)
-		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			add("payload "+version, "error", "version payload is missing or not a real directory")
+		if pathErr != nil || statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			add("payload "+packageRef.version, "error", "version payload is missing or not a real directory")
 			continue
 		}
-		add("payload "+version, "ok", "present")
+		add("payload "+packageRef.version, "ok", "present")
 	}
 	if value.Artifact == "appimage" {
 		arch := core.goarch

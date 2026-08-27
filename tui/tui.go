@@ -1672,6 +1672,9 @@ func truncate(value string, width int, tail string) string {
 
 func (m model) progressLine() string {
 	stage := title(string(m.progress.Stage))
+	if m.progress.Description != "" {
+		stage = m.progress.Description
+	}
 	if m.progress.Stage == app.ProgressComplete {
 		return m.style(stage, success)
 	}

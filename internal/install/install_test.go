@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -158,7 +159,7 @@ func (server artifactServer) manifestChannel(version, channel string) *manifest.
 		Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.server.URL + "/SHA256SUMS",
 	}, Archive: "tar.gz"}
 	return &manifest.Manifest{
-		Schema: manifest.SchemaV4, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: manifest.SchemaV5, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release:        release,
 		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: channel, Channels: map[string]manifest.ChannelHead{channel: {Current: version}}, Releases: []manifest.Release{release}},
@@ -201,7 +202,7 @@ func (server multiRouteServer) manifest(t *testing.T, version string, routes map
 	}, Archive: "tar.gz"}
 	iconDigest := sha256.Sum256(routes[iconPath])
 	return &manifest.Manifest{
-		Schema: manifest.SchemaV4, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: manifest.SchemaV5, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release:        release,
 		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: version}}, Releases: []manifest.Release{release}},
@@ -260,6 +261,64 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 	if content, err := os.ReadFile(unrelated); err != nil || string(content) != "keep" {
 		t.Fatalf("unrelated file changed: %q, %v", content, err)
+	}
+}
+
+func TestSameVersionFingerprintSeparatesMaterialChangesButReconcilesMetadata(t *testing.T) {
+	layout := testLayout(t)
+	first := newArtifactServer(t, fixtureArchive(t, "same-version-a"))
+	manager := managerFor(t, layout, first)
+	initial := first.manifest("1.0")
+	installed, err := manager.InstallWithOptions(context.Background(), initial, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPath, err := layout.PackagePath("fixture", installed.State.Current, installed.State.CurrentFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeState := installed.State
+	beforePayload, err := os.ReadFile(filepath.Join(firstPath, "bin", "run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	metadata := first.manifest("1.0")
+	metadata.Summary = "metadata changed"
+	if _, err := manager.UpdateWithOptions(context.Background(), metadata, Options{Channel: "stable"}, nil); !errors.Is(err, ErrNoUpdate) {
+		t.Fatalf("metadata-only update error = %v, want ErrNoUpdate", err)
+	}
+	afterState, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatalf("load state after metadata-only update: %v", err)
+	}
+	if !reflect.DeepEqual(afterState, beforeState) {
+		t.Fatalf("metadata-only update changed state: before=%#v after=%#v", beforeState, afterState)
+	}
+	afterPayload, err := os.ReadFile(filepath.Join(firstPath, "bin", "run"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(afterPayload, beforePayload) {
+		t.Fatalf("metadata-only update changed payload: before=%q after=%q", beforePayload, afterPayload)
+	}
+
+	second := newArtifactServer(t, fixtureArchive(t, "same-version-b"))
+	manager.Client = &download.Client{HTTP: second.server.Client(), RedirectLimit: 2}
+	material := second.manifest("1.0")
+	updated, err := manager.UpdateWithOptions(context.Background(), material, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatalf("material same-version update: %v", err)
+	}
+	secondPath, err := layout.PackagePath("fixture", updated.State.Current, updated.State.CurrentFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondPath == firstPath || updated.State.Previous != "1.0" || updated.State.PreviousFingerprint == updated.State.CurrentFingerprint {
+		t.Fatalf("material change did not create distinct retained package: state=%#v", updated.State)
+	}
+	if _, err := os.Stat(firstPath); err != nil {
+		t.Fatalf("previous package missing after same-version material update: %v", err)
 	}
 }
 
@@ -404,7 +463,15 @@ func TestUninstallFailureBeforeCleanupPreservesInstallation(t *testing.T) {
 	if _, err := state.LoadForApp(layout, "fixture"); err != nil {
 		t.Fatalf("state removed after injected failure: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture", "v1", "bin", "run")); err != nil {
+	installed, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	packagePath, err := layout.PackagePath("fixture", installed.Current, installed.CurrentFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(packagePath, "bin", "run")); err != nil {
 		t.Fatalf("installed executable removed after injected failure: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(layout.Bin, "run")); err != nil {
@@ -932,9 +999,15 @@ func TestMutationsReportLifecycleLockConflict(t *testing.T) {
 
 func assertCurrent(t *testing.T, layout filesystem.Layout, appID, version string) {
 	t.Helper()
+	installed, err := state.LoadForApp(layout, appID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
 	target, err := os.Readlink(filepath.Join(layout.Apps, appID, "current"))
-	if err != nil || target != version {
-		t.Fatalf("current = %q, %v; want %q", target, err, version)
+	packagePath, pathErr := layout.PackagePath(appID, version, installed.CurrentFingerprint)
+	expected, relErr := filepath.Rel(filepath.Join(layout.Apps, appID), packagePath)
+	if err != nil || pathErr != nil || relErr != nil || target != expected {
+		t.Fatalf("current = %q, %v; want %q", target, err, expected)
 	}
 }
 
@@ -964,7 +1037,11 @@ func TestRemoteIconInstallRetainsBytesAndPlacesThemedIcon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}
-	retained := filepath.Join(layout.Apps, "fixture", "v1", ".tarlink-icon.png")
+	retainedPath, err := layout.PackagePath("fixture", installed.State.Current, installed.State.CurrentFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained := filepath.Join(retainedPath, ".tarlink-icon.png")
 	if content, err := os.ReadFile(retained); err != nil || string(content) != string(icon) {
 		t.Fatalf("retained icon = %q, %v", content, err)
 	}
@@ -1215,7 +1292,7 @@ func appImageManifest(t *testing.T, server *httptest.Server, version, iconURL, i
 		Algorithm: "sha256", Digest: strings.Repeat("a", 64), Source: server.URL + "/SHA256SUMS",
 	}, Archive: "appimage"}
 	return &manifest.Manifest{
-		Schema: manifest.SchemaV4, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: manifest.SchemaV5, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release:        release,
 		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: version}}, Releases: []manifest.Release{release}},
@@ -1244,11 +1321,15 @@ func TestAppImageRemoteIconInstallsOpaquePayloadAndIcon(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}
-	payload := filepath.Join(layout.Apps, "fixture", "1.0", "appimage")
+	payloadPath, err := layout.PackagePath("fixture", installed.State.Current, installed.State.CurrentFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := filepath.Join(payloadPath, "appimage")
 	if content, err := os.ReadFile(payload); err != nil || !bytes.Equal(content, appImage) {
 		t.Fatalf("opaque AppImage payload changed: %v", err)
 	}
-	retained := filepath.Join(layout.Apps, "fixture", "1.0", ".tarlink-icon.png")
+	retained := filepath.Join(payloadPath, ".tarlink-icon.png")
 	if content, err := os.ReadFile(retained); err != nil || !bytes.Equal(content, icon) {
 		t.Fatalf("retained icon = %q, %v", content, err)
 	}
@@ -1279,7 +1360,7 @@ func TestAppImageRemoteIconInstallsOpaquePayloadAndIcon(t *testing.T) {
 
 func TestAppImageManifestRefusesArchiveIconAtInstall(t *testing.T) {
 	item := &manifest.Manifest{
-		Schema: manifest.SchemaV4, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: manifest.SchemaV5, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release: manifest.Release{Channel: "stable", Version: "1.0", URL: "https://example.com/fixture.AppImage", Verification: manifest.Verification{
 			Algorithm: "sha256", Digest: strings.Repeat("a", 64), Source: "https://example.com/fixture.sha256",

@@ -12,7 +12,7 @@ generation activation, and cache freshness semantics.
 * Successful activation must become visible to subsequent catalog operations in the same process. Do not retain a stale in-memory catalog after sync.
 * Keep current-plus-one-previous generation retention and the existing lifecycle/registry lock ordering.
 * This cache is private to TarLink. Do not expose its layout or couple it to TarLink Data state, recipes, sources, or caches.
-* Schema v4 is the current registry contract: each application has exactly one `apps/<id>/manifest.yaml` with shared metadata once and complete platform definitions under exact canonical keys.
+* Schema v5 is the current registry contract: each application has exactly one `apps/<id>/manifest.yaml`, with platform availability derived from exact artifact keys and shared metadata declared once.
 * Resolve the runtime platform exactly once into the existing single-platform package view. Never add aliases, fallback, emulation, defaults, or overrides between platform entries.
 
 Use injected clocks and fetch clients for freshness, activation, and failure

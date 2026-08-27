@@ -52,13 +52,23 @@ const (
 	ProgressUpgrading   ProgressStage = "upgrading"
 )
 
+// ProgressSubject identifies the bounded resource an operation is processing.
+type ProgressSubject string
+
+const (
+	ProgressSubjectPackageArtifact   ProgressSubject = "package-artifact"
+	ProgressSubjectRemoteDesktopIcon ProgressSubject = "remote-desktop-icon"
+)
+
 type Progress struct {
-	Stage      ProgressStage `json:"stage"`
-	AppID      string        `json:"app_id,omitempty"`
-	Item       int           `json:"item,omitempty"`
-	Total      int           `json:"total,omitempty"`
-	BytesDone  int64         `json:"bytes_done,omitempty"`
-	BytesTotal int64         `json:"bytes_total,omitempty"`
+	Stage       ProgressStage   `json:"stage"`
+	Subject     ProgressSubject `json:"subject,omitempty"`
+	Description string          `json:"description,omitempty"`
+	AppID       string          `json:"app_id,omitempty"`
+	Item        int             `json:"item,omitempty"`
+	Total       int             `json:"total,omitempty"`
+	BytesDone   int64           `json:"bytes_done,omitempty"`
+	BytesTotal  int64           `json:"bytes_total,omitempty"`
 }
 
 type BatchTarget struct {
@@ -85,33 +95,35 @@ type BatchService interface {
 type ProgressSink func(Progress)
 
 type Application struct {
-	ID                string            `json:"id"`
-	Name              string            `json:"name"`
-	Summary           string            `json:"summary"`
-	Homepage          string            `json:"homepage"`
-	Categories        []string          `json:"categories"`
-	Requirements      []string          `json:"requirements,omitempty"`
-	RegistryVersion   string            `json:"registry_version"`
-	RegistryRevision  int               `json:"registry_revision,omitempty"`
-	InstalledVersion  string            `json:"installed_version,omitempty"`
-	InstalledRevision int               `json:"installed_revision,omitempty"`
-	PreviousVersion   string            `json:"previous_version,omitempty"`
-	PreviousRevision  int               `json:"previous_revision,omitempty"`
-	InstalledChannel  string            `json:"installed_channel,omitempty"`
-	Pinned            bool              `json:"pinned"`
-	UpdateAvailable   bool              `json:"update_available"`
-	DefaultChannel    string            `json:"default_channel,omitempty"`
-	ChannelHeads      map[string]string `json:"channel_heads,omitempty"`
-	ApprovedReleases  []Version         `json:"approved_releases,omitempty"`
+	ID                   string            `json:"id"`
+	Name                 string            `json:"name"`
+	Summary              string            `json:"summary"`
+	Homepage             string            `json:"homepage"`
+	Categories           []string          `json:"categories"`
+	Requirements         []string          `json:"requirements,omitempty"`
+	RegistryVersion      string            `json:"registry_version"`
+	RegistryFingerprint  string            `json:"registry_fingerprint"`
+	InstalledVersion     string            `json:"installed_version,omitempty"`
+	InstalledFingerprint string            `json:"installed_fingerprint,omitempty"`
+	PreviousVersion      string            `json:"previous_version,omitempty"`
+	PreviousFingerprint  string            `json:"previous_fingerprint,omitempty"`
+	InstalledChannel     string            `json:"installed_channel,omitempty"`
+	Pinned               bool              `json:"pinned"`
+	UpdateAvailable      bool              `json:"update_available"`
+	DefaultChannel       string            `json:"default_channel,omitempty"`
+	ChannelHeads         map[string]string `json:"channel_heads,omitempty"`
+	ApprovedReleases     []Version         `json:"approved_releases,omitempty"`
 }
 
 type Result struct {
-	AppID    string   `json:"app_id"`
-	Version  string   `json:"version,omitempty"`
-	Previous string   `json:"previous,omitempty"`
-	Channel  string   `json:"channel,omitempty"`
-	Pinned   bool     `json:"pinned"`
-	Warnings []string `json:"warnings,omitempty"`
+	AppID               string   `json:"app_id"`
+	Version             string   `json:"version,omitempty"`
+	Fingerprint         string   `json:"fingerprint,omitempty"`
+	Previous            string   `json:"previous,omitempty"`
+	PreviousFingerprint string   `json:"previous_fingerprint,omitempty"`
+	Channel             string   `json:"channel,omitempty"`
+	Pinned              bool     `json:"pinned"`
+	Warnings            []string `json:"warnings,omitempty"`
 }
 
 type UpdateAllResult struct {
@@ -123,12 +135,13 @@ type UpdateAllResult struct {
 }
 
 type Version struct {
-	Version string `json:"version"`
-	Status  string `json:"status"`
-	Channel string `json:"channel,omitempty"`
-	Pinned  bool   `json:"pinned,omitempty"`
-	Current bool   `json:"current,omitempty"`
-	Default bool   `json:"default,omitempty"`
+	Version     string `json:"version"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Status      string `json:"status"`
+	Channel     string `json:"channel,omitempty"`
+	Pinned      bool   `json:"pinned,omitempty"`
+	Current     bool   `json:"current,omitempty"`
+	Default     bool   `json:"default,omitempty"`
 }
 
 type TarLinkVersion struct {
