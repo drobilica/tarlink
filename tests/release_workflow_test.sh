@@ -29,8 +29,9 @@ if grep -F 'ref: ${{ github.ref }}' "$release_workflow" >/dev/null; then
 	printf '%s\n' 'release workflow checks out a mutable ref' >&2
 	exit 1
 fi
-if [ "$(grep -Ec '^[[:space:]]+ref: main$' "$release_workflow")" -ne 1 ]; then
-	printf '%s\n' 'release workflow must resolve registry main exactly once' >&2
+if [ "$(grep -Ec '^[[:space:]]+ref: main$' "$release_workflow")" -ne 1 ] && \
+	[ "$(grep -Fc "ref: \${{ github.ref_name == 'v0.14.0' && 'dd6a0ed97f186136a75ba10636888514bb7b46b4' || 'main' }}" "$release_workflow")" -ne 1 ]; then
+	printf '%s\n' 'release workflow must resolve registry main once, except for the v0.14.0 v5 bootstrap' >&2
 	exit 1
 fi
 grep -F 'actual_sha=$(git -C registry rev-parse HEAD)' "$release_workflow" >/dev/null

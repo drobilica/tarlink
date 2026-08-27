@@ -174,7 +174,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: drobilica/tarlink-registry
-          ref: main
+          # One-time schema-v5 v0.14.0 bootstrap; subsequent releases use main.
+          ref: ${{ github.ref_name == 'v0.14.0' && 'dd6a0ed97f186136a75ba10636888514bb7b46b4' || 'main' }}
           path: registry
           fetch-depth: 1
 
