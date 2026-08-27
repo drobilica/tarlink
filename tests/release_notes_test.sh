@@ -48,4 +48,8 @@ run_case() {
 
 run_case 1
 run_case 0
+cutover_notes="$tmp/notes-v0.13.0.md"
+PATH="$tmp:$PATH" bash "$script_dir/.github/scripts/generate-release-notes.sh" \
+  drobilica/tarlink v0.13.0 targetsha "$cutover_notes"
+grep -Fq 'Update TarLink to v0.13.0 or newer before consuming the schema-v4 official registry.' "$cutover_notes"
 printf 'release notes tests passed\n'

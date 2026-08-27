@@ -158,7 +158,7 @@ func (server artifactServer) manifestChannel(version, channel string) *manifest.
 		Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.server.URL + "/SHA256SUMS",
 	}, Archive: "tar.gz"}
 	return &manifest.Manifest{
-		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: manifest.SchemaV4, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release:        release,
 		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: channel, Channels: map[string]manifest.ChannelHead{channel: {Current: version}}, Releases: []manifest.Release{release}},
@@ -201,7 +201,7 @@ func (server multiRouteServer) manifest(t *testing.T, version string, routes map
 	}, Archive: "tar.gz"}
 	iconDigest := sha256.Sum256(routes[iconPath])
 	return &manifest.Manifest{
-		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: manifest.SchemaV4, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release:        release,
 		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: version}}, Releases: []manifest.Release{release}},
@@ -1215,7 +1215,7 @@ func appImageManifest(t *testing.T, server *httptest.Server, version, iconURL, i
 		Algorithm: "sha256", Digest: strings.Repeat("a", 64), Source: server.URL + "/SHA256SUMS",
 	}, Archive: "appimage"}
 	return &manifest.Manifest{
-		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: manifest.SchemaV4, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release:        release,
 		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: version}}, Releases: []manifest.Release{release}},
@@ -1279,7 +1279,7 @@ func TestAppImageRemoteIconInstallsOpaquePayloadAndIcon(t *testing.T) {
 
 func TestAppImageManifestRefusesArchiveIconAtInstall(t *testing.T) {
 	item := &manifest.Manifest{
-		Schema: 3, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
+		Schema: manifest.SchemaV4, ID: "fixture", Name: "Fixture", Summary: "Lifecycle fixture", Homepage: "https://example.com/",
 		Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
 		Release: manifest.Release{Channel: "stable", Version: "1.0", URL: "https://example.com/fixture.AppImage", Verification: manifest.Verification{
 			Algorithm: "sha256", Digest: strings.Repeat("a", 64), Source: "https://example.com/fixture.sha256",

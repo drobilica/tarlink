@@ -9,16 +9,16 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 - Connect, TLS handshake, response-header, and overall timeouts bound waits.
 - Registry responses are limited to 64 MiB. Application downloads are limited to 8 GiB.
 - Each application release declares an exact lowercase SHA-256 or SHA-512 digest approved in the official registry. Maintainers may calculate it from the exact official upstream HTTPS artifact; verification still completes before extraction or activation. Other algorithms, missing verification, and malformed digests are rejected.
-- Version-3 manifests may retain multiple approved releases, but every historical release has the same exact URL, digest, archive, and informational origin metadata checks. Explicit channel heads and opaque exact versions are resolved only from the validated official registry; freshness candidates cannot alter trusted release metadata. A release may explicitly declare one nested archive layer, which shares cumulative extraction limits with its outer archive.
+- Version-4 manifests may retain multiple approved releases independently for each exact platform, but every historical release has the same exact URL, digest, archive, and informational origin metadata checks. Explicit channel heads and opaque exact versions are resolved only from the validated official registry; freshness candidates cannot alter trusted release metadata. A release may explicitly declare one nested archive layer, which shares cumulative extraction limits with its outer archive.
 - AppImage releases are accepted only as verified, little-endian 64-bit ELF Type 2 artifacts matching the target architecture. TarLink stores them as opaque regular files, never executes, mounts, or extracts them, and rejects Type 1 markers and malformed headers.
 - Remote desktop icons are HTTPS-only `.png` downloads capped at 4 MiB, verified against the manifest's lowercase SHA-256, and retained inside each version payload so rollback needs no network. The downloaded bytes must carry the PNG signature and an IHDR chunk whose square dimensions are a supported hicolor size; the size is validated from the header, never decoded from image pixels, and the URL path carries no size-token requirement. Non-PNG, malformed, non-square, or unsupported-dimension downloads fail installation. AppImages remain opaque and may only use a verified remote icon, which is downloaded and validated separately from the opaque payload; an archive-contained icon path inside an AppImage is rejected because no extracted tree exists.
 - Registry generations contain only a revalidated `apps/` tree. The active pointer must be relative and remain below `generations/`.
 - A missing registry is fetched automatically. Explicit refresh always fetches the current official registry. Each activated cache generation stores the successful UTC check time as private metadata; failed stale or explicit refreshes cannot advance that time or replace the last successfully validated cache.
 - XDG data, state, and cache homes must be absolute paths below the user's home and cannot contain control characters. Managed directory chains are checked without accepting symlink components before mutation.
 
-The official registry is the artifact-approval boundary. Schema-v3
+The official registry is the artifact-approval boundary. Schema-v4
 `verification.source` records an official upstream release or artifact origin
-for reviewer context and live-client compatibility; it is not an assertion
+for reviewer context; it is not an assertion
 that upstream published a checksum. TarLink does not fetch or cryptographically
 bind it at runtime, and manifests cannot turn it into a command. The official
 registry branch is a trusted, mutable catalog rather than signed metadata:

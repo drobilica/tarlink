@@ -58,29 +58,51 @@ func registryRuntimeArchivePlatforms(t *testing.T, version string, arm64 bool) [
 
 func registryRuntimeArchivePlatformVersions(t *testing.T, amd64Version, arm64Version string, arm64 bool) []byte {
 	t.Helper()
-	manifest := `schema: 3
+	amd64 := `  linux-amd64:
+    release:
+      default-channel: stable
+      channels:
+        stable: {current: "` + amd64Version + `"}
+      releases:
+        - channel: stable
+          version: "` + amd64Version + `"
+          url: https://example.com/fixture.tar.gz
+          archive: tar.gz
+          verification:
+            algorithm: sha256
+            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            source: https://example.com/SHA256SUMS
+    application: {executables: [{name: fixture, path: fixture}]}
+    desktop: {enabled: false, categories: []}
+`
+	arm64Definition := ""
+	if arm64 {
+		arm64Definition = `  linux-arm64:
+    release:
+      default-channel: stable
+      channels:
+        stable: {current: "` + arm64Version + `"}
+      releases:
+        - channel: stable
+          version: "` + arm64Version + `"
+          url: https://example.com/fixture-arm64.tar.gz
+          archive: tar.gz
+          verification:
+            algorithm: sha256
+            digest: 1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            source: https://example.com/SHA256SUMS
+    application: {executables: [{name: fixture-arm64, path: fixture}]}
+    desktop: {enabled: false, categories: []}
+`
+	}
+	manifest := `schema: 4
 id: fixture
 name: Fixture
 summary: Registry fixture
 homepage: https://example.com/
 categories: [utilities]
-platform: {os: linux, arch: amd64}
-release:
-  default-channel: stable
-  channels:
-    stable: {current: "` + amd64Version + `"}
-  releases:
-    - channel: stable
-      version: "` + amd64Version + `"
-      url: https://example.com/fixture.tar.gz
-      archive: tar.gz
-      verification:
-        algorithm: sha256
-        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-        source: https://example.com/SHA256SUMS
-application: {executables: [{name: fixture, path: fixture}]}
-desktop: {enabled: false, categories: []}
-`
+platforms:
+` + amd64 + arm64Definition
 	var output bytes.Buffer
 	gzipWriter := gzip.NewWriter(&output)
 	tarWriter := tar.NewWriter(gzipWriter)
@@ -92,21 +114,7 @@ desktop: {enabled: false, categories: []}
 		{name: "tarlink-registry-main/", mode: 0o755},
 		{name: "tarlink-registry-main/apps/", mode: 0o755},
 		{name: "tarlink-registry-main/apps/fixture/", mode: 0o755},
-		{name: "tarlink-registry-main/apps/fixture/linux-amd64.yaml", mode: 0o644, body: []byte(manifest)},
-	}
-	if arm64 {
-		// The channel head and release entry must describe the same
-		// platform-specific release. Replacing every occurrence also updates
-		// the channel's current pointer; leaving the amd64 head here makes the
-		// fixture invalid under the v2 duplicate/current-head checks.
-		armManifest := strings.ReplaceAll(manifest, `"`+amd64Version+`"`, `"`+arm64Version+`"`)
-		armManifest = strings.Replace(armManifest, "arch: amd64", "arch: arm64", 1)
-		armManifest = strings.Replace(armManifest, "name: fixture, path: fixture", "name: fixture-arm64, path: fixture", 1)
-		entries = append(entries, struct {
-			name string
-			mode int64
-			body []byte
-		}{name: "tarlink-registry-main/apps/fixture/linux-arm64.yaml", mode: 0o644, body: []byte(armManifest)})
+		{name: "tarlink-registry-main/apps/fixture/manifest.yaml", mode: 0o644, body: []byte(manifest)},
 	}
 	for _, entry := range entries {
 		typeFlag := byte(tar.TypeDir)
@@ -253,7 +261,7 @@ func TestCatalogRejectsCorruptStaleCacheWhenOffline(t *testing.T) {
 			}
 		},
 		"manifest": func(t *testing.T, _, generation string) {
-			manifestPath := filepath.Join(generation, "apps", "fixture", "linux-amd64.yaml")
+			manifestPath := filepath.Join(generation, "apps", "fixture", "manifest.yaml")
 			if err := os.WriteFile(manifestPath, []byte("not a manifest"), 0o600); err != nil {
 				t.Fatal(err)
 			}

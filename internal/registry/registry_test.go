@@ -11,30 +11,38 @@ import (
 	"github.com/drobilica/tarlink/internal/manifest"
 )
 
-const testManifest = `schema: 3
+const testManifest = `schema: 4
 id: blender
 name: Blender
 summary: 3D creation suite
 homepage: https://www.blender.org/
 categories: [game-development, graphics]
-platform: {os: linux, arch: amd64}
-release:
-  default-channel: stable
-  channels:
-    stable:
-      current: "5.2.0"
-  releases:
-    - channel: stable
-      version: "5.2.0"
-      url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz
-      archive: tar.xz
-      verification:
-        algorithm: sha256
-        digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
-        source: https://example.com/blender-checksums
-application: {executables: [{name: blender, path: blender}]}
-desktop: {enabled: true, categories: [Graphics], icon: null}
+platforms:
+  linux-amd64:
+    revision: 1
+    release:
+      default-channel: stable
+      channels:
+        stable:
+          current: "5.2.0"
+      releases:
+        - channel: stable
+          version: "5.2.0"
+          url: https://download.blender.org/release/Blender5.2/blender-5.2.0-linux-x64.tar.xz
+          archive: tar.xz
+          verification:
+            algorithm: sha256
+            digest: 96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48
+            source: https://example.com/blender-checksums
+    application: {executables: [{name: blender, path: blender}]}
+    desktop: {enabled: true, categories: [Graphics], icon: null}
 `
+
+func withArm64(base string) string {
+	arm := strings.Replace(base, "linux-amd64:", "linux-arm64:", 1)
+	start := strings.Index(arm, "  linux-arm64:")
+	return base + arm[start:]
+}
 
 func createRegistry(t *testing.T) string {
 	t.Helper()
@@ -42,7 +50,7 @@ func createRegistry(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Join(root, "apps", "blender"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-amd64.yaml"), []byte(testManifest), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(testManifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	return root
@@ -68,7 +76,7 @@ func TestValidateTreeAndSearch(t *testing.T) {
 func TestValidateTreeRejectsInvalidApplicationData(t *testing.T) {
 	t.Run("manifest URL", func(t *testing.T) {
 		root := createRegistry(t)
-		path := filepath.Join(root, "apps", "blender", "linux-amd64.yaml")
+		path := filepath.Join(root, "apps", "blender", "manifest.yaml")
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -94,10 +102,11 @@ func TestValidateTreeRejectsInvalidApplicationData(t *testing.T) {
 
 func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
 	root := createRegistry(t)
-	arm64 := strings.Replace(testManifest, "arch: amd64", "arch: arm64", 1)
-	arm64 = strings.ReplaceAll(arm64, `"5.2.0"`, `"5.2.0-arm64"`)
-	arm64 = strings.Replace(arm64, "name: blender, path: blender", "name: blender-arm64, path: blender", 1)
-	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-arm64.yaml"), []byte(arm64), 0o644); err != nil {
+	arm64 := withArm64(testManifest)
+	armStart := strings.Index(arm64, "  linux-arm64:")
+	arm64 = arm64[:armStart] + strings.ReplaceAll(arm64[armStart:], `"5.2.0"`, `"5.2.0-arm64"`)
+	arm64 = arm64[:armStart] + strings.Replace(arm64[armStart:], "name: blender, path: blender", "name: blender-arm64, path: blender", 1)
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(arm64), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := ValidateTree(root)
@@ -125,13 +134,13 @@ func TestValidateTreeSupportsExactPlatformVariants(t *testing.T) {
 
 func TestReleaseForPlatformResolvesChannelAndOpaqueVersion(t *testing.T) {
 	root := createRegistry(t)
-	content, err := os.ReadFile(filepath.Join(root, "apps", "blender", "linux-amd64.yaml"))
+	content, err := os.ReadFile(filepath.Join(root, "apps", "blender", "manifest.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutated := strings.Replace(string(content), "  channels:\n    stable:\n      current: \"5.2.0\"", "  channels:\n    stable:\n      current: \"5.2.0\"\n    preview:\n      current: \"2.7.513\"", 1)
-	mutated = strings.Replace(mutated, "application: {executables:", "    - channel: preview\n      version: \"2.7.513\"\n      url: https://download.blender.org/release/Blender5.2/preview.tar.xz\n      archive: tar.xz\n      verification:\n        algorithm: sha256\n        digest: abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n        source: https://download.blender.org/release/Blender5.2/preview.sha256\napplication: {executables:", 1)
-	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-amd64.yaml"), []byte(mutated), 0o644); err != nil {
+	mutated := strings.Replace(string(content), "      channels:\n        stable:\n          current: \"5.2.0\"", "      channels:\n        stable:\n          current: \"5.2.0\"\n        preview:\n          current: \"2.7.513\"", 1)
+	mutated = strings.Replace(mutated, "    application: {executables:", "        - channel: preview\n          version: \"2.7.513\"\n          url: https://download.blender.org/release/Blender5.2/preview.tar.xz\n          archive: tar.xz\n          verification:\n            algorithm: sha256\n            digest: abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd\n            source: https://download.blender.org/release/Blender5.2/preview.sha256\n    application: {executables:", 1)
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(mutated), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := ValidateTree(root)
@@ -153,14 +162,14 @@ func TestReleaseForPlatformResolvesChannelAndOpaqueVersion(t *testing.T) {
 
 func TestReleaseSelectorsPreserveReleaseScopedNestedRecipes(t *testing.T) {
 	root := createRegistry(t)
-	path := filepath.Join(root, "apps", "blender", "linux-amd64.yaml")
+	path := filepath.Join(root, "apps", "blender", "manifest.yaml")
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutated := strings.Replace(string(content), "      archive: tar.xz\n      verification:", "      archive: tar.xz\n      nested-archive: {path: stable.zip, archive: zip}\n      verification:", 1)
-	mutated = strings.Replace(mutated, "    - channel: stable", "    - channel: preview\n      version: \"2.0\"\n      url: https://example.com/preview.tar.xz\n      archive: tar.xz\n      nested-archive: {path: preview.zip, archive: zip}\n      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://example.com/preview.sha256\n    - channel: stable", 1)
-	mutated = strings.Replace(mutated, "    stable:\n      current: \"5.2.0\"", "    stable:\n      current: \"5.2.0\"\n    preview:\n      current: \"2.0\"", 1)
+	mutated := strings.Replace(string(content), "          archive: tar.xz\n          verification:", "          archive: tar.xz\n          nested-archive: {path: stable.zip, archive: zip}\n          verification:", 1)
+	mutated = strings.Replace(mutated, "        - channel: stable", "        - channel: preview\n          version: \"2.0\"\n          url: https://example.com/preview.tar.xz\n          archive: tar.xz\n          nested-archive: {path: preview.zip, archive: zip}\n          verification:\n            algorithm: sha256\n            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n            source: https://example.com/preview.sha256\n        - channel: stable", 1)
+	mutated = strings.Replace(mutated, "        stable:\n          current: \"5.2.0\"", "        stable:\n          current: \"5.2.0\"\n        preview:\n          current: \"2.0\"", 1)
 	if err := os.WriteFile(path, []byte(mutated), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +196,7 @@ func TestReleaseSelectorsPreserveReleaseScopedNestedRecipes(t *testing.T) {
 func TestValidateTreeRejectsPlatformLayoutViolations(t *testing.T) {
 	tests := map[string]func(string) (string, string){
 		"legacy manifest filename": func(root string) (string, string) {
-			return filepath.Join(root, "apps", "blender", "manifest.yaml"), testManifest
+			return filepath.Join(root, "apps", "blender", "linux-amd64.yaml"), testManifest
 		},
 		"mismatched filename": func(root string) (string, string) {
 			return filepath.Join(root, "apps", "blender", "linux-arm64.yaml"), testManifest
@@ -214,15 +223,14 @@ func TestValidateTreeRejectsPlatformLayoutViolations(t *testing.T) {
 }
 
 func TestValidateTreeRejectsInconsistentVariantsAndDuplicateNames(t *testing.T) {
-	t.Run("inconsistent shared metadata", func(t *testing.T) {
+	t.Run("shared metadata is represented once", func(t *testing.T) {
 		root := createRegistry(t)
-		arm64 := strings.Replace(testManifest, "arch: amd64", "arch: arm64", 1)
-		arm64 = strings.Replace(arm64, "summary: 3D creation suite", "summary: Different summary", 1)
-		if err := os.WriteFile(filepath.Join(root, "apps", "blender", "linux-arm64.yaml"), []byte(arm64), 0o644); err != nil {
+		arm64 := withArm64(testManifest)
+		if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(arm64), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ValidateTree(root); err == nil {
-			t.Fatal("inconsistent variants unexpectedly accepted")
+		if _, err := ValidateTree(root); err != nil {
+			t.Fatalf("unified metadata unexpectedly rejected: %v", err)
 		}
 	})
 	t.Run("duplicate names", func(t *testing.T) {
@@ -231,7 +239,7 @@ func TestValidateTreeRejectsInconsistentVariantsAndDuplicateNames(t *testing.T) 
 			t.Fatal(err)
 		}
 		other := strings.Replace(testManifest, "id: blender", "id: other", 1)
-		if err := os.WriteFile(filepath.Join(root, "apps", "other", "linux-amd64.yaml"), []byte(other), 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(root, "apps", "other", "manifest.yaml"), []byte(other), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := ValidateTree(root); err == nil {

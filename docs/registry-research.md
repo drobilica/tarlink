@@ -7,7 +7,7 @@ choose an official portable Linux HTTPS artifact
         ↓
 inspect/download it with bounded TarLink tooling and calculate its digest
         ↓
-write the schema-v3 manifest
+write the schema-v4 manifest
         ↓
 tarlink registry validate .
         ↓
@@ -19,11 +19,10 @@ commit / pull request
 The official registry is the approval boundary. The exact artifact digest is
 mandatory, but upstream does not need to publish a checksum file. For a newly
 calculated pin, prefer SHA-256; existing valid SHA-256 and SHA-512 releases do
-not need to be rehashed. Keep schema-v3 `verification.source` as an honest
-official upstream release page or artifact-origin HTTPS URL for existing-client
-compatibility. Use a distinct upstream page rather than repeating the artifact
-URL while v0.11.x remains on the live path. It is informational metadata, not
-independent checksum provenance. Never fabricate a checksum URL.
+not need to be rehashed. Keep schema-v4 `verification.source` as an honest
+official upstream release page or artifact-origin HTTPS URL. It is
+informational metadata, not independent checksum provenance. Never fabricate a
+checksum URL.
 
 Registry CI resolves the latest published stable TarLink release at the start
 of each workflow run and uses that released binary for structural validation

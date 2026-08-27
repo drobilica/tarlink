@@ -1,4 +1,4 @@
-// Package manifest implements TarLink's deliberately small, declarative v3
+// Package manifest implements TarLink's deliberately small, declarative v4
 // application manifest. A manifest can describe data only; it cannot request
 // process execution, hooks, arbitrary destinations, or command arguments.
 package manifest
@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -23,37 +24,110 @@ import (
 const (
 	SchemaV1         = 1 // retired; retained as a name for callers describing old data.
 	SchemaV2         = 2
-	SchemaV3         = 3
+	SchemaV3         = 3 // retired
+	SchemaV4         = 4
 	MaxManifestBytes = 1 << 20
 )
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
+var positiveIntegerPattern = regexp.MustCompile(`^[1-9][0-9]*$`)
 
 type Manifest struct {
-	Schema int `yaml:"schema" json:"schema"`
+	Schema int `json:"schema"`
 	// Revision identifies TarLink's package definition independently of the
 	// upstream release version. An omitted value is revision 1.
-	Revision     int      `yaml:"revision,omitempty" json:"revision,omitempty"`
-	ID           string   `yaml:"id" json:"id"`
-	Name         string   `yaml:"name" json:"name"`
-	Summary      string   `yaml:"summary" json:"summary"`
-	Homepage     string   `yaml:"homepage" json:"homepage"`
-	Categories   []string `yaml:"categories" json:"categories"`
-	Requirements []string `yaml:"requirements,omitempty" json:"requirements,omitempty"`
-	Platform     Platform `yaml:"platform" json:"platform"`
+	Revision     int      `json:"revision"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Summary      string   `json:"summary"`
+	Homepage     string   `json:"homepage"`
+	Categories   []string `json:"categories"`
+	Requirements []string `json:"requirements,omitempty"`
+	Platform     Platform `json:"platform"`
 	// Release is the selected default-channel head. It is populated from
 	// ReleaseHistory by Parse and by registry resolution; it is not itself a
 	// YAML field. Keeping this convenience view avoids making consumers parse
 	// registry history when they only need the artifact to install.
-	Release        Release        `yaml:"-" json:"release"`
-	ReleaseHistory ReleaseHistory `yaml:"release" json:"release_history"`
-	Application    Application    `yaml:"application" json:"application"`
-	Desktop        Desktop        `yaml:"desktop" json:"desktop"`
+	Release        Release        `json:"release"`
+	ReleaseHistory ReleaseHistory `json:"release_history"`
+	Application    Application    `json:"application"`
+	Desktop        Desktop        `json:"desktop"`
 }
 
 type Platform struct {
 	OS   string `yaml:"os" json:"os"`
 	Arch string `yaml:"arch" json:"arch"`
+}
+
+// Document is the one-file registry representation for an application.
+type Document struct {
+	Schema       int                         `yaml:"schema" json:"schema"`
+	ID           string                      `yaml:"id" json:"id"`
+	Name         string                      `yaml:"name" json:"name"`
+	Summary      string                      `yaml:"summary" json:"summary"`
+	Homepage     string                      `yaml:"homepage" json:"homepage"`
+	Categories   []string                    `yaml:"categories" json:"categories"`
+	Requirements []string                    `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	Platforms    map[string]PlatformManifest `yaml:"platforms" json:"platforms"`
+}
+
+// PlatformManifest contains the complete package definition for one canonical
+// platform. Revision is independent across platform definitions.
+type PlatformManifest struct {
+	Revision       int            `yaml:"revision,omitempty" json:"revision"`
+	ReleaseHistory ReleaseHistory `yaml:"release" json:"release_history"`
+	Application    Application    `yaml:"application" json:"application"`
+	Desktop        Desktop        `yaml:"desktop" json:"desktop"`
+}
+
+const (
+	PlatformLinuxAMD64 = "linux-amd64"
+	PlatformLinuxARM64 = "linux-arm64"
+)
+
+func PlatformKey(p Platform) string { return p.OS + "-" + p.Arch }
+
+func ParsePlatformKey(key string) (Platform, bool) {
+	switch key {
+	case PlatformLinuxAMD64:
+		return Platform{OS: "linux", Arch: "amd64"}, true
+	case PlatformLinuxARM64:
+		return Platform{OS: "linux", Arch: "arm64"}, true
+	default:
+		return Platform{}, false
+	}
+}
+
+// ResolvePlatform projects one exact platform definition into the logical
+// single-platform manifest consumed by the install lifecycle.
+func (d *Document) ResolvePlatform(key string) (*Manifest, error) {
+	platform, supported := ParsePlatformKey(key)
+	if !supported {
+		return nil, fmt.Errorf("unsupported platform %q", key)
+	}
+	definition, available := d.Platforms[key]
+	if !available {
+		return nil, fmt.Errorf("platform %q is unavailable", key)
+	}
+	result := &Manifest{
+		Schema: d.Schema, Revision: definition.Revision,
+		ID: d.ID, Name: d.Name, Summary: d.Summary, Homepage: d.Homepage,
+		Categories: d.Categories, Requirements: d.Requirements, Platform: platform,
+		ReleaseHistory: definition.ReleaseHistory,
+		Application:    definition.Application,
+		Desktop:        definition.Desktop,
+	}
+	for index := range result.Application.Executables {
+		if result.Application.Executables[index].Name == "" {
+			result.Application.Executables[index].Name = path.Base(result.Application.Executables[index].Path)
+		}
+	}
+	var err error
+	result.Release, err = result.ReleaseHistory.ResolveDefault()
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 type Release struct {
@@ -133,7 +207,7 @@ func (i DesktopIcon) IsZero() bool { return i.Path == "" && i.URL == "" && i.SHA
 // archive-contained path.
 func (i DesktopIcon) Remote() bool { return i.URL != "" }
 
-func Parse(r io.Reader) (*Manifest, error) {
+func Parse(r io.Reader) (*Document, error) {
 	data, err := io.ReadAll(io.LimitReader(r, MaxManifestBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read manifest: %w", err)
@@ -144,7 +218,6 @@ func Parse(r io.Reader) (*Manifest, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil, errors.New("manifest is empty")
 	}
-
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
 		return nil, fmt.Errorf("decode YAML: %w", err)
@@ -156,41 +229,76 @@ func Parse(r io.Reader) (*Manifest, error) {
 		return nil, err
 	}
 
-	dec := yaml.NewDecoder(bytes.NewReader(data))
-	dec.KnownFields(true)
-	var result Manifest
-	if err := dec.Decode(&result); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	var result Document
+	if err := decoder.Decode(&result); err != nil {
 		return nil, fmt.Errorf("decode manifest: %w", err)
 	}
-	for index := range result.Application.Executables {
-		if result.Application.Executables[index].Name == "" {
-			result.Application.Executables[index].Name = path.Base(result.Application.Executables[index].Path)
-		}
-	}
-	if result.Revision == 0 {
-		result.Revision = 1
-	}
 	var trailing any
-	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return nil, errors.New("manifest must contain exactly one YAML document")
 		}
 		return nil, fmt.Errorf("decode trailing YAML: %w", err)
 	}
-	if err := result.Validate(); err != nil {
+	if err := result.validateShared(); err != nil {
 		return nil, err
 	}
-	if err := result.ValidateHistory(); err != nil {
-		return nil, err
+
+	keys := make([]string, 0, len(result.Platforms))
+	for key, definition := range result.Platforms {
+		if definition.Revision == 0 {
+			definition.Revision = 1
+			result.Platforms[key] = definition
+		}
+		keys = append(keys, key)
 	}
-	result.Release, err = result.ReleaseHistory.ResolveDefault()
-	if err != nil {
-		return nil, err
+	sort.Strings(keys)
+	for _, key := range keys {
+		resolved, err := result.ResolvePlatform(key)
+		if err != nil {
+			return nil, err
+		}
+		if err := resolved.Validate(); err != nil {
+			return nil, fmt.Errorf("platform %s: %w", key, err)
+		}
+		if err := resolved.ValidateHistory(); err != nil {
+			return nil, fmt.Errorf("platform %s: %w", key, err)
+		}
 	}
 	return &result, nil
 }
 
-func ParseBytes(data []byte) (*Manifest, error) { return Parse(bytes.NewReader(data)) }
+func (d Document) validateShared() error {
+	if d.Schema != SchemaV4 {
+		return fmt.Errorf("unsupported manifest schema %d", d.Schema)
+	}
+	if !ValidID(d.ID) {
+		return fmt.Errorf("invalid application ID %q", d.ID)
+	}
+	if err := constrainedText("name", d.Name, 1, 120); err != nil {
+		return err
+	}
+	if err := constrainedText("summary", d.Summary, 1, 240); err != nil {
+		return err
+	}
+	if err := validateHTTPSURL("homepage", d.Homepage); err != nil {
+		return err
+	}
+	if len(d.Categories) == 0 {
+		return errors.New("at least one category is required")
+	}
+	if err := validateEnumList("category", d.Categories, map[string]bool{
+		"game-development": true, "emulation": true, "graphics": true,
+		"development": true, "utilities": true, "games": true, "recompilation": true,
+	}); err != nil {
+		return err
+	}
+	return validateEnumList("requirement", d.Requirements, map[string]bool{"original-game-data": true})
+}
+
+func ParseBytes(data []byte) (*Document, error) { return Parse(bytes.NewReader(data)) }
 
 func validateYAMLNode(node *yaml.Node) error {
 	if node == nil {
@@ -209,6 +317,18 @@ func validateYAMLNode(node *yaml.Node) error {
 	if node.Tag == "!!merge" || node.Value == "<<" {
 		return errors.New("YAML merge keys are not allowed")
 	}
+	if node.Kind == yaml.MappingNode {
+		seen := make(map[string]bool, len(node.Content)/2)
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			key := node.Content[i]
+			if key.Kind == yaml.ScalarNode {
+				if seen[key.Value] {
+					return fmt.Errorf("mapping contains duplicate field %q", key.Value)
+				}
+				seen[key.Value] = true
+			}
+		}
+	}
 	for _, child := range node.Content {
 		if err := validateYAMLNode(child); err != nil {
 			return err
@@ -222,87 +342,97 @@ func validateManifestShape(document *yaml.Node) error {
 		return errors.New("manifest must contain one mapping document")
 	}
 	root, err := requiredMapping(document.Content[0], "manifest", []string{
-		"schema", "id", "name", "summary", "homepage", "categories", "platform", "release", "application", "desktop",
-	}, []string{"requirements", "revision"})
+		"schema", "id", "name", "summary", "homepage", "categories", "platforms",
+	}, []string{"requirements"})
 	if err != nil {
 		return err
 	}
-	if revision, ok := root["revision"]; ok {
-		if revision.Kind != yaml.ScalarNode || revision.Tag != "!!int" {
-			return errors.New("manifest revision must be a positive integer")
+	platforms := root["platforms"]
+	if platforms.Kind != yaml.MappingNode || len(platforms.Content) == 0 {
+		return errors.New("platforms must be a non-empty mapping")
+	}
+	for i := 0; i < len(platforms.Content); i += 2 {
+		key := platforms.Content[i]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return errors.New("platform keys must be strings")
 		}
-		value := strings.TrimSpace(revision.Value)
-		if value == "" || strings.HasPrefix(value, "-") || value == "0" {
-			return errors.New("manifest revision must be a positive integer")
+		if _, ok := ParsePlatformKey(key.Value); !ok {
+			return fmt.Errorf("unsupported platform %q", key.Value)
 		}
-	}
-	if _, err := requiredMapping(root["platform"], "platform", []string{"os", "arch"}, nil); err != nil {
-		return err
-	}
-	release, err := requiredMapping(root["release"], "release", []string{"default-channel", "channels", "releases"}, nil)
-	if err != nil {
-		return err
-	}
-	if release["channels"].Kind != yaml.MappingNode || len(release["channels"].Content) == 0 {
-		return errors.New("release.channels must be a non-empty mapping")
-	}
-	for i := 0; i < len(release["channels"].Content); i += 2 {
-		name := release["channels"].Content[i]
-		if name.Kind != yaml.ScalarNode || name.Tag != "!!str" {
-			return errors.New("release channel names must be strings")
+		entry, entryErr := requiredMapping(platforms.Content[i+1], "platforms."+key.Value, []string{"release", "application", "desktop"}, []string{"revision"})
+		if entryErr != nil {
+			return entryErr
 		}
-		if _, err := requiredMapping(release["channels"].Content[i+1], "release.channels."+name.Value, []string{"current"}, nil); err != nil {
-			return err
+		if revision, ok := entry["revision"]; ok {
+			if revision.Kind != yaml.ScalarNode || revision.Tag != "!!int" || !positiveIntegerPattern.MatchString(strings.TrimSpace(revision.Value)) {
+				return errors.New("platform revision must be a positive integer")
+			}
 		}
-	}
-	if release["releases"].Kind != yaml.SequenceNode || len(release["releases"].Content) == 0 {
-		return errors.New("release.releases must be a non-empty sequence")
-	}
-	for index, value := range release["releases"].Content {
-		entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"channel", "version", "url", "verification", "archive"}, []string{"nested-archive"})
+		release, err := requiredMapping(entry["release"], "platforms."+key.Value+".release", []string{"default-channel", "channels", "releases"}, nil)
 		if err != nil {
 			return err
 		}
-		if _, err := requiredMapping(entry["verification"], "release.releases.verification", []string{"algorithm", "digest", "source"}, nil); err != nil {
-			return err
+		if release["channels"].Kind != yaml.MappingNode || len(release["channels"].Content) == 0 {
+			return errors.New("release.channels must be a non-empty mapping")
 		}
-		if nested, ok := entry["nested-archive"]; ok {
-			nm, err := requiredMapping(nested, "release.releases.nested", []string{"path", "archive"}, nil)
+		for i := 0; i < len(release["channels"].Content); i += 2 {
+			name := release["channels"].Content[i]
+			if name.Kind != yaml.ScalarNode || name.Tag != "!!str" {
+				return errors.New("release channel names must be strings")
+			}
+			if _, err := requiredMapping(release["channels"].Content[i+1], "release.channels."+name.Value, []string{"current"}, nil); err != nil {
+				return err
+			}
+		}
+		if release["releases"].Kind != yaml.SequenceNode || len(release["releases"].Content) == 0 {
+			return errors.New("release.releases must be a non-empty sequence")
+		}
+		for index, value := range release["releases"].Content {
+			entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"channel", "version", "url", "verification", "archive"}, []string{"nested-archive"})
 			if err != nil {
 				return err
 			}
-			if nm["path"].Value == "" || nm["archive"].Value == "" {
-				return errors.New("release.releases.nested-archive fields must not be empty")
+			if _, err := requiredMapping(entry["verification"], "release.releases.verification", []string{"algorithm", "digest", "source"}, nil); err != nil {
+				return err
+			}
+			if nested, ok := entry["nested-archive"]; ok {
+				nm, err := requiredMapping(nested, "release.releases.nested", []string{"path", "archive"}, nil)
+				if err != nil {
+					return err
+				}
+				if nm["path"].Value == "" || nm["archive"].Value == "" {
+					return errors.New("release.releases.nested-archive fields must not be empty")
+				}
 			}
 		}
-	}
-	application, err := requiredMapping(root["application"], "application", []string{"executables"}, nil)
-	if err != nil {
-		return err
-	}
-	if application["executables"].Kind != yaml.SequenceNode || len(application["executables"].Content) == 0 {
-		return errors.New("application.executables must be a non-empty sequence")
-	}
-	for index, value := range application["executables"].Content {
-		if _, err := requiredMapping(value, fmt.Sprintf("application.executables[%d]", index), []string{"path"}, []string{"name", "create-bin-link"}); err != nil {
+		application, err := requiredMapping(entry["application"], "platforms."+key.Value+".application", []string{"executables"}, nil)
+		if err != nil {
 			return err
 		}
-	}
-	desktop, err := requiredMapping(root["desktop"], "desktop", []string{"enabled"}, []string{"categories", "icon", "executable", "working-directory"})
-	if err != nil {
-		return err
-	}
-	icon, hasIcon := desktop["icon"]
-	if desktop["enabled"].Tag == "!!bool" && desktop["enabled"].Value == "true" && !hasIcon {
-		return errors.New("desktop icon must be explicitly declared or null")
-	}
-	if hasIcon && icon.Tag != "!!null" {
-		iconMapping, mappingErr := requiredMapping(icon, "desktop.icon", nil, []string{"path", "url", "sha256"})
-		if mappingErr != nil {
-			return mappingErr
+		if application["executables"].Kind != yaml.SequenceNode || len(application["executables"].Content) == 0 {
+			return errors.New("application.executables must be a non-empty sequence")
 		}
-		if len(iconMapping) == 0 {
-			return errors.New("desktop.icon must not be empty")
+		for index, value := range application["executables"].Content {
+			if _, err := requiredMapping(value, fmt.Sprintf("application.executables[%d]", index), []string{"path"}, []string{"name", "create-bin-link"}); err != nil {
+				return err
+			}
+		}
+		desktop, err := requiredMapping(entry["desktop"], "platforms."+key.Value+".desktop", []string{"enabled"}, []string{"categories", "icon", "executable", "working-directory"})
+		if err != nil {
+			return err
+		}
+		icon, hasIcon := desktop["icon"]
+		if desktop["enabled"].Tag == "!!bool" && desktop["enabled"].Value == "true" && !hasIcon {
+			return errors.New("desktop icon must be explicitly declared or null")
+		}
+		if hasIcon && icon.Tag != "!!null" {
+			iconMapping, mappingErr := requiredMapping(icon, "desktop.icon", nil, []string{"path", "url", "sha256"})
+			if mappingErr != nil {
+				return mappingErr
+			}
+			if len(iconMapping) == 0 {
+				return errors.New("desktop.icon must not be empty")
+			}
 		}
 	}
 	if requirements, ok := root["requirements"]; ok {
@@ -349,7 +479,7 @@ func requiredMapping(node *yaml.Node, label string, required, optional []string)
 }
 
 func (m Manifest) Validate() error {
-	if m.Schema != SchemaV3 {
+	if m.Schema != SchemaV4 {
 		return fmt.Errorf("unsupported manifest schema %d", m.Schema)
 	}
 	if m.Revision < 0 {

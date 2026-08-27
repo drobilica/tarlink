@@ -109,7 +109,7 @@ process.
 | Architecture and lifecycle | [docs/architecture.md](docs/architecture.md) |
 | Enforced security guarantees and limits | [docs/security-model.md](docs/security-model.md) |
 | Trust boundaries and adversaries | [docs/threat-model.md](docs/threat-model.md) |
-| Manifest contract (schema v3) | [docs/manifest-v3.md](docs/manifest-v3.md) |
+| Manifest contract (schema v4) | [docs/manifest-v4.md](docs/manifest-v4.md) |
 | Owned filesystem paths | [docs/filesystem-layout.md](docs/filesystem-layout.md) |
 | Registry research workflow | [docs/registry-research.md](docs/registry-research.md) |
 | Contributor workflow | [CONTRIBUTING.md](CONTRIBUTING.md) |

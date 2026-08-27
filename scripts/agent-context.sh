@@ -45,7 +45,7 @@ if [ -n "$tarlink_bin" ] || command -v go >/dev/null 2>&1; then
   changed_summary=$(printf '%s' "$changed_json" | awk 'BEGIN{RS="}"} /"decision"[[:space:]]*:[[:space:]]*"RECHECK"/ {r++} /"decision"[[:space:]]*:[[:space:]]*"UNCHANGED"/ {u++} /"decision"[[:space:]]*:[[:space:]]*"ERROR"/ {e++} END {printf "RECHECK %d UNCHANGED %d ERROR %d",r+0,u+0,e+0}')
 fi
 latest=$(git -C "$repo_root" describe --tags --abbrev=0 2>/dev/null || printf unavailable)
-schema=$(awk '/^schema:[[:space:]]*/ {print $2; exit}' "$repo_root/schema/manifest-v3.example.yaml" 2>/dev/null || printf unavailable)
+schema=$(awk '/^schema:[[:space:]]*/ {print $2; exit}' "$repo_root/schema/manifest-v4.example.yaml" 2>/dev/null || printf unavailable)
 
 if [ "$json" -eq 1 ]; then
   printf '{"tarlink":{"head":"%s","origin_main":"%s","branch":"%s","state":"%s","latest_release":"%s","manifest_schema":"%s"},' \

@@ -67,17 +67,18 @@ fail and the script builds the exact image locally instead.
 Registry updates must use an official upstream portable Linux artifact over
 HTTPS plus its exact lowercase SHA-256 or SHA-512 digest. Maintainers may
 calculate that digest locally from the selected bytes; upstream checksum
-publication is optional. Schema-v3 `verification.source` records an honest
+publication is optional. Schema-v4 `verification.source` records an honest
 official upstream release page or artifact-origin HTTPS URL as informational
-metadata, not independent checksum provenance; use a distinct upstream page
-rather than repeating the artifact URL while v0.11.x clients consume the live
-registry. Store each platform manifest at the strict path
-`apps/<id>/linux-amd64.yaml` or
-`apps/<id>/linux-arm64.yaml`; do not add a compatibility filename. Validate the
+metadata, not independent checksum provenance. Store one strict manifest at
+`apps/<id>/manifest.yaml`, with shared metadata once and complete definitions
+under the exact `linux-amd64` and/or `linux-arm64` platform keys. Validate the
 registry with TarLink itself using `tarlink registry validate .`, then run the
 changed-artifact lifecycle check before review.
 
-Platform availability is explicit. The client resolves its exact `GOOS`/`GOARCH` pair and fails when that variant is absent; it never substitutes another platform. For example, Blender is amd64-only when upstream has no Linux arm64 release, while Godot may publish both variants. Keep shared metadata identical across an application's platform manifests.
+Platform availability is explicit. Omit unsupported platforms. The client
+resolves its exact `GOOS`/`GOARCH` pair and fails when that entry is absent; it
+never substitutes another platform. Revision, release history, application
+integration, and desktop integration are independently platform-specific.
 
 For icon coverage, use `tarlink registry icons . --fix` before normal registry
 validation. Review unresolved candidates manually. Icons remain

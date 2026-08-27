@@ -1,6 +1,10 @@
-# Manifest v3
+# Manifest v3 (historical)
 
-Manifest v3 is strict YAML containing exactly one document. It stores a
+Manifest v3 was retired by TarLink v0.13.0 and is not accepted by the runtime
+registry loader. The current authoring contract is [manifest v4](manifest-v4.md).
+This document remains only as a historical description of the former format.
+
+Manifest v3 was strict YAML containing exactly one document. It stored a
 platform-specific history of TarLink-approved releases. Each release may
 declare one explicit inner archive using `nested-archive`; extraction is
 bounded to exactly two layers and uses one cumulative resource budget.
@@ -60,13 +64,10 @@ unsafe paths are rejected.
 `verification.digest` pins the exact artifact bytes approved by the official
 registry. A maintainer may calculate that digest locally from the selected
 official upstream HTTPS artifact; upstream does not need to publish a separate
-checksum file. `verification.source` remains required in schema v3 so the live
-registry stays consumable by existing v0.11.x clients. It records an honest
-official upstream release page or artifact-origin location as informational
-metadata, not independent checksum provenance, and TarLink never fetches or
-cryptographically binds it at runtime. While v0.11.x remains on the live path,
-use a distinct official release-page or artifact-origin metadata URL rather
-than repeating the artifact URL. Do not fabricate a checksum URL.
+checksum file. `verification.source` was required in schema v3. It recorded an
+honest official upstream release page or artifact-origin location as
+informational metadata, not independent checksum provenance, and TarLink never
+fetched or cryptographically bound it at runtime.
 
 Executable names default to the basename of `path`; explicit names remain
 valid, and resolved names must be unique. `create-bin-link` defaults to true.
@@ -103,4 +104,4 @@ releases remain opaque: their payload is never extracted, so they cannot
 declare an archive-contained `path` icon, but they may declare a verified
 remote icon that is installed as a separate external file.
 
-The canonical example is [manifest-v3.example.yaml](../schema/manifest-v3.example.yaml).
+The historical example is [manifest-v3.example.yaml](../schema/manifest-v3.example.yaml).

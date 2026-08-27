@@ -82,12 +82,12 @@ func (core *Core) RegistryIcons(ctx context.Context, options RegistryIconOptions
 		declared := false
 		for _, platform := range platforms {
 			m := variants[platform]
-			item.Manifests = append(item.Manifests, filepath.ToSlash(filepath.Join("apps", id, platform.OS+"-"+platform.Arch+".yaml")))
 			if m.Desktop.Enabled {
 				missing = missing || m.Desktop.Icon.IsZero()
 				declared = declared || !m.Desktop.Icon.IsZero()
 			}
 		}
+		item.Manifests = []string{filepath.ToSlash(filepath.Join("apps", id, "manifest.yaml"))}
 		if !missing {
 			item.Status = "present"
 			report.Results = append(report.Results, item)
@@ -97,7 +97,7 @@ func (core *Core) RegistryIcons(ctx context.Context, options RegistryIconOptions
 		report.Missing++
 		if options.Fix {
 			if declared {
-				item.Error = "platform manifests do not share one missing icon state"
+				item.Error = "platform definitions do not share one missing icon state"
 				report.Results = append(report.Results, item)
 				continue
 			}
@@ -334,37 +334,55 @@ func addRemoteIcon(data []byte, icon fixedRegistryIcon) ([]byte, error) {
 	if err != nil && !strings.Contains(err.Error(), "desktop icon must be explicitly declared or null") {
 		return nil, err
 	}
-	if parsed != nil && !parsed.Desktop.Icon.IsZero() {
-		return nil, errors.New("manifest icon is no longer missing")
+	if parsed != nil {
+		for _, platform := range parsed.Platforms {
+			if platform.Desktop.Enabled && !platform.Desktop.Icon.IsZero() {
+				return nil, errors.New("manifest icon is no longer missing")
+			}
+		}
 	}
 	lines := strings.SplitAfter(string(data), "\n")
-	desktopLine := -1
-	indent := 0
+	type replacement struct{ index, indent int }
+	var replacements []replacement
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(strings.TrimSuffix(line, "\n"))
-		if trimmed == "desktop:" {
-			desktopLine = i
-			indent = len(line) - len(strings.TrimLeft(line, " "))
-			break
-		}
-	}
-	if desktopLine < 0 {
-		return nil, errors.New("manifest desktop mapping is missing")
-	}
-	insert := len(lines)
-	for i := desktopLine + 1; i < len(lines); i++ {
-		line := strings.TrimSuffix(lines[i], "\n")
-		if strings.TrimSpace(line) == "" {
+		indent := len(line) - len(strings.TrimLeft(line, " "))
+		if trimmed != "desktop:" || indent != 4 {
 			continue
 		}
-		level := len(line) - len(strings.TrimLeft(line, " "))
-		if level <= indent {
-			insert = i
-			break
+		enabled := false
+		iconNull := -1
+		for next := i + 1; next < len(lines); next++ {
+			candidate := strings.TrimSuffix(lines[next], "\n")
+			if strings.TrimSpace(candidate) == "" {
+				continue
+			}
+			level := len(candidate) - len(strings.TrimLeft(candidate, " "))
+			if level <= indent {
+				break
+			}
+			if level == indent+2 && strings.TrimSpace(candidate) == "enabled: true" {
+				enabled = true
+			}
+			if level == indent+2 && strings.TrimSpace(candidate) == "icon: null" {
+				iconNull = next
+			}
 		}
+		if !enabled {
+			continue
+		}
+		if iconNull < 0 {
+			return nil, errors.New("enabled platform desktop icon is not null")
+		}
+		replacements = append(replacements, replacement{index: iconNull, indent: indent})
 	}
-	addition := strings.Repeat(" ", indent+2) + "icon:\n" + strings.Repeat(" ", indent+4) + "url: " + icon.URL + "\n" + strings.Repeat(" ", indent+4) + "sha256: " + icon.SHA256 + "\n"
-	lines = append(lines[:insert], append([]string{addition}, lines[insert:]...)...)
+	if len(replacements) == 0 {
+		return nil, errors.New("manifest desktop mapping is missing")
+	}
+	for i := len(replacements) - 1; i >= 0; i-- {
+		at := replacements[i]
+		lines[at.index] = strings.Repeat(" ", at.indent+2) + "icon:\n" + strings.Repeat(" ", at.indent+4) + "url: " + icon.URL + "\n" + strings.Repeat(" ", at.indent+4) + "sha256: " + icon.SHA256 + "\n"
+	}
 	output := []byte(strings.Join(lines, ""))
 	if _, err := manifest.ParseBytes(output); err != nil {
 		return nil, fmt.Errorf("validate updated manifest: %w", err)

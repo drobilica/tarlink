@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -255,78 +254,52 @@ func loadManifests(appsRoot string) (map[string]map[manifest.Platform]*manifest.
 		if err != nil {
 			return nil, err
 		}
-		if len(children) == 0 || len(children) > 2 {
-			return nil, fmt.Errorf("application directory %q must contain one or two platform manifests", entry.Name())
+		if len(children) != 1 || children[0].Name() != "manifest.yaml" {
+			return nil, fmt.Errorf("application directory %q must contain exactly manifest.yaml", entry.Name())
 		}
-		appVariants := make(map[manifest.Platform]*manifest.Manifest, len(children))
-		var representative *manifest.Manifest
-		for _, child := range children {
-			expected, ok := platformFilename(child.Name())
+		appVariants := make(map[manifest.Platform]*manifest.Manifest, 2)
+		filePath := filepath.Join(directory, "manifest.yaml")
+		info, err := os.Lstat(filePath)
+		if err != nil {
+			return nil, err
+		}
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("application manifest %q must be a regular file", "manifest.yaml")
+		}
+		file, err := os.Open(filePath)
+		if err != nil {
+			return nil, err
+		}
+		item, parseErr := manifest.Parse(file)
+		closeErr := file.Close()
+		if parseErr != nil {
+			return nil, fmt.Errorf("validate %s manifest: %w", entry.Name(), parseErr)
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if item.ID != entry.Name() {
+			return nil, fmt.Errorf("manifest ID %q does not match directory %q", item.ID, entry.Name())
+		}
+		foldedName := strings.ToLower(item.Name)
+		if previous, duplicate := names[foldedName]; duplicate && previous != item.ID {
+			return nil, fmt.Errorf("duplicate application name %q for %s and %s", item.Name, previous, item.ID)
+		}
+		names[foldedName] = item.ID
+		for key := range item.Platforms {
+			platform, ok := manifest.ParsePlatformKey(key)
 			if !ok {
-				return nil, fmt.Errorf("application directory %q contains unexpected file %q", entry.Name(), child.Name())
+				return nil, fmt.Errorf("unsupported platform %q", key)
 			}
-			filePath := filepath.Join(directory, child.Name())
-			info, err := os.Lstat(filePath)
-			if err != nil {
-				return nil, err
+			resolved, resolveErr := item.ResolvePlatform(key)
+			if resolveErr != nil {
+				return nil, fmt.Errorf("resolve %s: %w", key, resolveErr)
 			}
-			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-				return nil, fmt.Errorf("application manifest %q must be a regular file", child.Name())
-			}
-			file, err := os.Open(filePath)
-			if err != nil {
-				return nil, err
-			}
-			item, parseErr := manifest.Parse(file)
-			closeErr := file.Close()
-			if parseErr != nil {
-				return nil, fmt.Errorf("validate %s manifest: %w", entry.Name(), parseErr)
-			}
-			if closeErr != nil {
-				return nil, closeErr
-			}
-			if item.ID != entry.Name() {
-				return nil, fmt.Errorf("manifest ID %q does not match directory %q", item.ID, entry.Name())
-			}
-			if item.Platform != expected {
-				return nil, fmt.Errorf("manifest %q platform %s/%s does not match filename %q", child.Name(), item.Platform.OS, item.Platform.Arch, child.Name())
-			}
-			if _, duplicate := appVariants[item.Platform]; duplicate {
-				return nil, fmt.Errorf("duplicate platform %s/%s for application %q", item.Platform.OS, item.Platform.Arch, item.ID)
-			}
-			if representative == nil {
-				representative = item
-			} else if !sameApplicationMetadata(representative, item) {
-				return nil, fmt.Errorf("platform manifests for application %q have inconsistent shared metadata", item.ID)
-			}
-			foldedName := strings.ToLower(item.Name)
-			if previous, duplicate := names[foldedName]; duplicate && previous != item.ID {
-				return nil, fmt.Errorf("duplicate application name %q for %s and %s", item.Name, previous, item.ID)
-			}
-			names[foldedName] = item.ID
-			appVariants[item.Platform] = item
+			appVariants[platform] = resolved
 		}
 		variants[entry.Name()] = appVariants
 	}
 	return variants, nil
-}
-
-func platformFilename(name string) (manifest.Platform, bool) {
-	switch name {
-	case "linux-amd64.yaml":
-		return manifest.Platform{OS: "linux", Arch: "amd64"}, true
-	case "linux-arm64.yaml":
-		return manifest.Platform{OS: "linux", Arch: "arm64"}, true
-	default:
-		return manifest.Platform{}, false
-	}
-}
-
-func sameApplicationMetadata(left, right *manifest.Manifest) bool {
-	return left.ID == right.ID && left.Name == right.Name && left.Summary == right.Summary &&
-		left.Homepage == right.Homepage && reflect.DeepEqual(left.Categories, right.Categories) &&
-		reflect.DeepEqual(left.Requirements, right.Requirements) &&
-		reflect.DeepEqual(left.Desktop, right.Desktop)
 }
 
 func rejectSymlinks(root string) error {

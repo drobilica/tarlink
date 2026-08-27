@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -112,86 +111,47 @@ func Changed(root, oldRoot string) (Selection, error) {
 	return changedFromCatalog(root, oldRoot, catalog)
 }
 
-func changedFromCatalog(root, oldRoot string, _ *registry.Catalog) (Selection, error) {
-	current, err := manifestFiles(root)
+func changedFromCatalog(_ string, oldRoot string, catalog *registry.Catalog) (Selection, error) {
+	current := platformDefinitions(catalog)
+	previous, err := comparisonDefinitions(oldRoot)
 	if err != nil {
 		return Selection{}, err
 	}
-	old, err := manifestFiles(oldRoot)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return Selection{}, err
-	}
-	// An approved v3 manifest must not disappear in a later registry
-	// generation.  Keep the migration behavior for retired v1 manifests:
-	// those cannot be parsed by the v3 parser and are intentionally ignored.
-	for path, oldPath := range old {
-		if _, exists := current[path]; exists {
-			continue
-		}
-		previous, parseErr := parseManifest(oldPath)
-		if parseErr == nil && previous.Schema == manifest.SchemaV3 {
-			return Selection{}, fmt.Errorf("approved manifest %s was removed", path)
+	for key, before := range previous {
+		if _, exists := current[key]; !exists {
+			return Selection{}, fmt.Errorf("approved platform definition was removed: %s %s/%s", before.ID, before.Platform.OS, before.Platform.Arch)
 		}
 	}
-	selected := make(map[string]struct{})
-	for path, currentPath := range current {
-		oldPath, exists := old[path]
+
+	selected := make(map[string]*manifest.Manifest)
+	for key, after := range current {
+		before, exists := previous[key]
 		if !exists {
-			item, parseErr := parseManifest(currentPath)
-			if parseErr != nil {
-				return Selection{}, fmt.Errorf("parse changed manifest %s: %w", path, parseErr)
-			}
-			for _, item := range releaseProjections(item) {
-				selected[projectionKeyForPath(currentPath, item)] = struct{}{}
-			}
+			selectProjections(selected, after)
 			continue
 		}
-		before, beforeErr := parseManifest(oldPath)
-		after, afterErr := parseManifest(currentPath)
-		// A historical manifest may be unreadable only because the current
-		// pre-1.0 parser deliberately removed its schema. Structural validation
-		// already validated the current tree; without a comparable old manifest,
-		// a schema-only migration must not turn every unchanged artifact into an
-		// audit target.
-		if afterErr != nil {
-			selected[currentPath] = struct{}{}
+		if after.Revision < before.Revision {
+			return Selection{}, fmt.Errorf("package revision decreased for %s %s/%s: current revision: %d, previous: %d", after.ID, after.Platform.OS, after.Platform.Arch, after.Revision, before.Revision)
+		}
+		materiallyChanged := affectsMaterialization(before, after)
+		if materiallyChanged && after.Revision <= before.Revision {
+			return Selection{}, fmt.Errorf("package definition changed without revision bump: %s %s-%s current revision: %d required: >= %d", after.ID, after.Platform.Arch, after.Platform.OS, after.Revision, before.Revision+1)
+		}
+		added, compareErr := historyChanges(before, after)
+		if compareErr != nil {
+			return Selection{}, fmt.Errorf("compare %s %s/%s: %w", after.ID, after.Platform.OS, after.Platform.Arch, compareErr)
+		}
+		if materiallyChanged || after.Revision > before.Revision {
+			selectProjections(selected, after)
 			continue
 		}
-		if beforeErr == nil {
-			if after.Revision < before.Revision {
-				return Selection{}, fmt.Errorf("package revision decreased for %s: current revision: %d, previous: %d", after.ID, after.Revision, before.Revision)
-			}
-			if affectsMaterialization(before, after) && after.Revision <= before.Revision {
-				return Selection{}, fmt.Errorf("package definition changed without revision bump: %s %s-%s current revision: %d required: >= %d", after.ID, after.Platform.Arch, after.Platform.OS, after.Revision, before.Revision+1)
-			}
-			added, err := historyChanges(before, after)
-			if err != nil {
-				return Selection{}, fmt.Errorf("compare %s: %w", path, err)
-			}
-			if affectsMaterialization(before, after) || after.Revision > before.Revision {
-				for _, item := range releaseProjections(after) {
-					selected[projectionKeyForPath(currentPath, item)] = struct{}{}
-				}
-			} else {
-				for _, item := range added {
-					selected[projectionKeyForPath(currentPath, item)] = struct{}{}
-				}
-			}
+		for _, item := range added {
+			selected[projectionIdentity(item)] = item
 		}
 	}
-	var items []*manifest.Manifest
-	for key := range selected {
-		path, releaseKey := splitProjectionKey(key)
-		item, err := parseManifest(path)
-		if err != nil {
-			return Selection{}, fmt.Errorf("parse changed manifest %s: %w", path, err)
-		}
-		for _, projected := range releaseProjections(item) {
-			if projected.Release.Channel+"\x00"+projected.Release.Version == releaseKey {
-				items = append(items, projected)
-				break
-			}
-		}
+	items := make([]*manifest.Manifest, 0, len(selected))
+	for _, item := range selected {
+		items = append(items, item)
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].ID != items[j].ID {
@@ -221,28 +181,31 @@ func releaseProjections(item *manifest.Manifest) []*manifest.Manifest {
 	return result
 }
 
-func projectionKeyForPath(path string, item *manifest.Manifest) string {
-	return projectionKeyParts(path, item)
-}
-
-func projectionKeyParts(path string, item *manifest.Manifest) string {
-	return path + "\x00" + item.Release.Channel + "\x00" + item.Release.Version
-}
-
-func splitProjectionKey(key string) (string, string) {
-	parts := strings.SplitN(key, "\x00", 2)
-	if len(parts) != 2 {
-		return key, ""
+func platformDefinitions(catalog *registry.Catalog) map[string]*manifest.Manifest {
+	result := make(map[string]*manifest.Manifest)
+	if catalog == nil {
+		return result
 	}
-	return parts[0], parts[1]
+	for id, variants := range catalog.Variants {
+		for platform, item := range variants {
+			result[platformIdentity(id, platform)] = item
+		}
+	}
+	return result
 }
 
-func mustParseProjections(path string) []*manifest.Manifest {
-	item, err := parseManifest(path)
-	if err != nil {
-		return nil
+func platformIdentity(id string, platform manifest.Platform) string {
+	return id + "\x00" + platform.OS + "\x00" + platform.Arch
+}
+
+func projectionIdentity(item *manifest.Manifest) string {
+	return platformIdentity(item.ID, item.Platform) + "\x00" + item.Release.Channel + "\x00" + item.Release.Version
+}
+
+func selectProjections(selected map[string]*manifest.Manifest, item *manifest.Manifest) {
+	for _, projected := range releaseProjections(item) {
+		selected[projectionIdentity(projected)] = projected
 	}
-	return releaseProjections(item)
 }
 
 func historyChanges(before, after *manifest.Manifest) ([]*manifest.Manifest, error) {
@@ -342,45 +305,13 @@ func affectsMaterialization(before, after *manifest.Manifest) bool {
 		return true
 	}
 	return before.Platform != after.Platform ||
+		before.Name != after.Name ||
+		!reflect.DeepEqual(before.Categories, after.Categories) ||
+		!reflect.DeepEqual(before.Requirements, after.Requirements) ||
 		!reflect.DeepEqual(before.Application, after.Application) ||
 		before.Desktop.Enabled != after.Desktop.Enabled ||
 		before.Desktop.Executable != after.Desktop.Executable ||
 		before.Desktop.WorkingDirectory != after.Desktop.WorkingDirectory ||
 		!reflect.DeepEqual(before.Desktop.Categories, after.Desktop.Categories) ||
 		before.Desktop.Icon != after.Desktop.Icon
-}
-
-func manifestFiles(root string) (map[string]string, error) {
-	result := make(map[string]string)
-	if root == "" {
-		return result, nil
-	}
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if entry.IsDir() || !entry.Type().IsRegular() {
-			return nil
-		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		slash := filepath.ToSlash(relative)
-		if strings.HasPrefix(slash, "apps/") && strings.HasSuffix(slash, ".yaml") {
-			result[slash] = path
-		}
-		return nil
-	})
-	return result, err
-}
-
-func parseManifest(path string) (*manifest.Manifest, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	item, parseErr := manifest.Parse(file)
-	closeErr := file.Close()
-	return item, errors.Join(parseErr, closeErr)
 }

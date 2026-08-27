@@ -110,7 +110,9 @@ target_date=$(gh api "repos/$repo/commits/$target_sha" --jq '.commit.committer.d
     printf '_No closed issues._\n'
   fi
   printf '\n## Upgrade notes\n\n'
-  if (( breaking_count > 0 )) || [[ "$generated" == *'Removed / Breaking Changes'* || "$generated" == *'Breaking Changes'* || "$generated" == *'Upgrade Notes'* ]]; then
+  if [[ $tag == v0.13.0 ]]; then
+    printf 'Update TarLink to v0.13.0 or newer before consuming the schema-v4 official registry.\n'
+  elif (( breaking_count > 0 )) || [[ "$generated" == *'Removed / Breaking Changes'* || "$generated" == *'Breaking Changes'* || "$generated" == *'Upgrade Notes'* ]]; then
     printf 'Review the breaking or upgrade changes above before upgrading.\n'
   else
     printf 'No migration required.\n'

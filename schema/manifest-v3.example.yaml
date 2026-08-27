@@ -1,4 +1,5 @@
-# Canonical manifest v3 example. Values are intentionally the reviewed
+# Historical manifest v3 example. Schema v3 is retired and not accepted by the
+# runtime registry loader. Values are intentionally the reviewed
 # Blender 5.2.0 Linux amd64 release; this file is documentation, not a
 # second registry source.
 schema: 3

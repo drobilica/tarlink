@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-const validManifest = `schema: 3
+const validManifest = `schema: 4
 id: blender
 name: Blender
 summary: 3D creation suite
@@ -14,42 +14,62 @@ homepage: https://www.blender.org/
 categories:
   - game-development
   - graphics
-platform:
-  os: linux
-  arch: amd64
-release:
-  default-channel: stable
-  channels:
-    stable:
-      current: "5.2.0"
-  releases:
-    - channel: stable
-      version: "5.2.0"
-      url: https://download.blender.org/release/Blender5.2/blender.tar.xz
-      verification:
-        algorithm: sha256
-        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256
-      archive: tar.xz
-application:
-  executables:
-    - name: blender
-      path: blender
-desktop:
-  enabled: true
-  categories:
-    - Graphics
-  icon:
-    path: icons/blender.png
+platforms:
+  linux-amd64:
+    release:
+      default-channel: stable
+      channels:
+        stable:
+          current: "5.2.0"
+      releases:
+        - channel: stable
+          version: "5.2.0"
+          url: https://download.blender.org/release/Blender5.2/blender.tar.xz
+          verification:
+            algorithm: sha256
+            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256
+          archive: tar.xz
+    application:
+      executables:
+        - name: blender
+          path: blender
+    desktop:
+      enabled: true
+      categories:
+        - Graphics
+      icon:
+        path: icons/blender.png
 `
 
+func parseAMD64(reader *strings.Reader) (*Manifest, error) {
+	document, err := Parse(reader)
+	if err != nil {
+		return nil, err
+	}
+	return document.ResolvePlatform(PlatformLinuxAMD64)
+}
+
+func parseAMD64Bytes(data []byte) (*Manifest, error) {
+	return parseAMD64(strings.NewReader(string(data)))
+}
+
+func validDualManifest() string {
+	arm := strings.Replace(validManifest, "linux-amd64:", "linux-arm64:", 1)
+	start := strings.Index(arm, "  linux-arm64:")
+	return validManifest + arm[start:]
+}
+
 func TestParseValidManifest(t *testing.T) {
-	m, err := Parse(strings.NewReader(validManifest))
+	m, err := parseAMD64(strings.NewReader(validManifest))
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
 	if m.ID != "blender" || m.Release.Version != "5.2.0" {
 		t.Fatalf("unexpected manifest: %#v", m)
+	}
+	if m.Revision != 1 {
+		t.Fatalf("default revision = %d, want 1", m.Revision)
 	}
 	if m.Desktop.Icon.Path != "icons/blender.png" {
 		t.Fatalf("desktop icon = %#v", m.Desktop.Icon)
@@ -61,7 +81,7 @@ func TestParseValidManifest(t *testing.T) {
 
 func TestParseAcceptsLocallyVerifiedReleasePageSource(t *testing.T) {
 	value := strings.Replace(validManifest, "source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256", "source: https://www.blender.org/download/releases/5-2", 1)
-	m, err := Parse(strings.NewReader(value))
+	m, err := parseAMD64(strings.NewReader(value))
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
@@ -72,42 +92,46 @@ func TestParseAcceptsLocallyVerifiedReleasePageSource(t *testing.T) {
 
 func TestParseTreatsVerificationSourceAsInformational(t *testing.T) {
 	value := strings.Replace(validManifest, "source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256", "source: https://download.blender.org/release/Blender5.2/blender.tar.xz", 1)
-	if _, err := Parse(strings.NewReader(value)); err != nil {
+	if _, err := parseAMD64(strings.NewReader(value)); err != nil {
 		t.Fatalf("Parse() informational source error = %v", err)
 	}
 }
 
 func TestExecutableIntegrationFields(t *testing.T) {
-	value := strings.Replace(validManifest, "    - name: blender\n      path: blender", "    - path: bin/blender", 1)
-	value = strings.Replace(value, "  categories:\n    - Graphics\n  icon:", "  executable: blender\n  working-directory: application-root\n  categories:\n    - Graphics\n  icon:", 1)
-	m, err := Parse(strings.NewReader(value))
+	value := strings.Replace(validManifest, "        - name: blender\n          path: blender", "        - path: bin/blender", 1)
+	value = strings.Replace(value, "      categories:\n        - Graphics\n      icon:", "      executable: blender\n      working-directory: application-root\n      categories:\n        - Graphics\n      icon:", 1)
+	m, err := parseAMD64(strings.NewReader(value))
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
 	if m.Application.Executables[0].Name != "blender" || !m.Application.Executables[0].WantsBinLink() {
 		t.Fatalf("derived executable = %#v", m.Application.Executables[0])
 	}
-	value = strings.Replace(validManifest, "      path: blender", "      path: blender\n      create-bin-link: false", 1)
-	value = strings.Replace(value, "  categories:\n    - Graphics\n  icon:", "  executable: blender\n  working-directory: application-root\n  categories:\n    - Graphics\n  icon:", 1)
-	m, err = Parse(strings.NewReader(value))
+	value = strings.Replace(validManifest, "          path: blender", "          path: blender\n          create-bin-link: false", 1)
+	value = strings.Replace(value, "      categories:\n        - Graphics\n      icon:", "      executable: blender\n      working-directory: application-root\n      categories:\n        - Graphics\n      icon:", 1)
+	m, err = parseAMD64(strings.NewReader(value))
 	if err != nil || m.Application.Executables[0].CreateBinLink == nil || *m.Application.Executables[0].CreateBinLink != false || m.Desktop.Executable != "blender" {
 		t.Fatalf("explicit integration fields = %#v, %v", m, err)
 	}
 }
 
 func TestRejectsAmbiguousDesktopAndWorkingDirectory(t *testing.T) {
-	value := strings.Replace(validManifest, "    - name: blender\n      path: blender", "    - name: one\n      path: one\n    - name: two\n      path: two", 1)
-	if _, err := Parse(strings.NewReader(value)); err == nil {
+	value := strings.Replace(validManifest, "        - name: blender\n          path: blender", "        - name: one\n          path: one\n        - name: two\n          path: two", 1)
+	if _, err := parseAMD64(strings.NewReader(value)); err == nil {
 		t.Fatal("desktop with multiple executables accepted")
 	}
-	value = strings.Replace(validManifest, "  categories:\n    - Graphics", "  working-directory: /tmp\n  categories:\n    - Graphics", 1)
-	if _, err := Parse(strings.NewReader(value)); err == nil {
+	value = strings.Replace(validManifest, "      categories:\n        - Graphics", "      working-directory: /tmp\n      categories:\n        - Graphics", 1)
+	if _, err := parseAMD64(strings.NewReader(value)); err == nil {
 		t.Fatal("arbitrary working directory accepted")
 	}
 }
 
 func remoteIconBlock(url string) string {
 	return "  icon:\n    url: " + url + "\n    sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+}
+
+func platformIndent(block string) string {
+	return "    " + strings.ReplaceAll(block, "\n", "\n    ")
 }
 
 func TestParseAcceptsVerifiedRemoteIcon(t *testing.T) {
@@ -120,8 +144,8 @@ func TestParseAcceptsVerifiedRemoteIcon(t *testing.T) {
 		"https://download.blender.org/icons/hicolor/512x512/apps/blender.png",
 	} {
 		t.Run(url, func(t *testing.T) {
-			value := strings.Replace(validManifest, "  icon:\n    path: icons/blender.png", remoteIconBlock(url), 1)
-			m, err := Parse(strings.NewReader(value))
+			value := strings.Replace(validManifest, "      icon:\n        path: icons/blender.png", platformIndent(remoteIconBlock(url)), 1)
+			m, err := parseAMD64(strings.NewReader(value))
 			if err != nil {
 				t.Fatalf("Parse() remote icon error = %v", err)
 			}
@@ -133,13 +157,13 @@ func TestParseAcceptsVerifiedRemoteIcon(t *testing.T) {
 }
 
 func TestParseRequiresExplicitDesktopIconDisposition(t *testing.T) {
-	omitted := strings.Replace(validManifest, "  icon:\n    path: icons/blender.png\n", "", 1)
-	if _, err := Parse(strings.NewReader(omitted)); err == nil || !strings.Contains(err.Error(), "desktop icon must be explicitly declared or null") {
+	omitted := strings.Replace(validManifest, "      icon:\n        path: icons/blender.png\n", "", 1)
+	if _, err := parseAMD64(strings.NewReader(omitted)); err == nil || !strings.Contains(err.Error(), "desktop icon must be explicitly declared or null") {
 		t.Fatalf("omitted desktop icon error = %v", err)
 	}
 
-	accepted := strings.Replace(validManifest, "  icon:\n    path: icons/blender.png", "  icon: null", 1)
-	m, err := Parse(strings.NewReader(accepted))
+	accepted := strings.Replace(validManifest, "      icon:\n        path: icons/blender.png", "      icon: null", 1)
+	m, err := parseAMD64(strings.NewReader(accepted))
 	if err != nil {
 		t.Fatalf("explicit null icon error = %v", err)
 	}
@@ -165,8 +189,8 @@ func TestParseRejectsInvalidDesktopIcon(t *testing.T) {
 	}
 	for name, block := range tests {
 		t.Run(name, func(t *testing.T) {
-			value := strings.Replace(validManifest, "  icon:\n    path: icons/blender.png", block, 1)
-			if _, err := Parse(strings.NewReader(value)); err == nil {
+			value := strings.Replace(validManifest, "      icon:\n        path: icons/blender.png", platformIndent(block), 1)
+			if _, err := parseAMD64(strings.NewReader(value)); err == nil {
 				t.Fatal("invalid desktop icon unexpectedly accepted")
 			}
 		})
@@ -174,25 +198,25 @@ func TestParseRejectsInvalidDesktopIcon(t *testing.T) {
 }
 
 func TestParseRejectsIconWhenDesktopDisabled(t *testing.T) {
-	value := strings.Replace(strings.Replace(validManifest, "enabled: true", "enabled: false", 1), "categories:\n    - Graphics", "categories: []", 1)
-	if _, err := Parse(strings.NewReader(value)); err == nil {
+	value := strings.Replace(strings.Replace(validManifest, "enabled: true", "enabled: false", 1), "categories:\n        - Graphics", "categories: []", 1)
+	if _, err := parseAMD64(strings.NewReader(value)); err == nil {
 		t.Fatal("desktop icon without desktop integration accepted")
 	}
 }
 
 func TestParseRejectsAppImageArchiveIcon(t *testing.T) {
 	appImage := strings.Replace(validManifest, "archive: tar.xz", "archive: appimage", 1)
-	appImage = strings.Replace(appImage, "      path: blender", "      path: appimage", 1)
-	if _, err := Parse(strings.NewReader(appImage)); err == nil {
+	appImage = strings.Replace(appImage, "          path: blender", "          path: appimage", 1)
+	if _, err := parseAMD64(strings.NewReader(appImage)); err == nil {
 		t.Fatal("AppImage archive-contained icon unexpectedly accepted")
 	}
 }
 
 func TestParseAcceptsAppImageRemoteIcon(t *testing.T) {
 	appImage := strings.Replace(validManifest, "archive: tar.xz", "archive: appimage", 1)
-	appImage = strings.Replace(appImage, "      path: blender", "      path: appimage", 1)
-	value := strings.Replace(appImage, "  icon:\n    path: icons/blender.png", remoteIconBlock("https://pcsx2.net/app/AppIconLarge.png"), 1)
-	m, err := Parse(strings.NewReader(value))
+	appImage = strings.Replace(appImage, "          path: blender", "          path: appimage", 1)
+	value := strings.Replace(appImage, "      icon:\n        path: icons/blender.png", platformIndent(remoteIconBlock("https://pcsx2.net/app/AppIconLarge.png")), 1)
+	m, err := parseAMD64(strings.NewReader(value))
 	if err != nil {
 		t.Fatalf("Parse() AppImage remote icon error = %v", err)
 	}
@@ -248,9 +272,68 @@ func TestIconSizeFromPNG(t *testing.T) {
 }
 
 func TestParseAcceptsArm64Manifest(t *testing.T) {
-	arm64Manifest := strings.Replace(validManifest, "arch: amd64", "arch: arm64", 1)
-	if _, err := Parse(strings.NewReader(arm64Manifest)); err != nil {
+	arm64Manifest := strings.Replace(validManifest, "linux-amd64:", "linux-arm64:", 1)
+	document, err := Parse(strings.NewReader(arm64Manifest))
+	if err == nil {
+		_, err = document.ResolvePlatform(PlatformLinuxARM64)
+	}
+	if err != nil {
 		t.Fatalf("Parse() arm64 error = %v", err)
+	}
+}
+
+func TestParseValidDualPlatformManifestWithIndependentRevisions(t *testing.T) {
+	value := strings.Replace(validDualManifest(), "linux-amd64:\n", "linux-amd64:\n    revision: 2\n", 1)
+	value = strings.Replace(value, "linux-arm64:\n", "linux-arm64:\n    revision: 7\n", 1)
+	document, err := Parse(strings.NewReader(value))
+	if err != nil {
+		t.Fatal(err)
+	}
+	amd64, err := document.ResolvePlatform(PlatformLinuxAMD64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arm64, err := document.ResolvePlatform(PlatformLinuxARM64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if amd64.Revision != 2 || arm64.Revision != 7 {
+		t.Fatalf("independent revisions = amd64 %d, arm64 %d", amd64.Revision, arm64.Revision)
+	}
+}
+
+func TestResolvePlatformIsExactAndHasNoFallback(t *testing.T) {
+	document, err := Parse(strings.NewReader(validManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := document.ResolvePlatform(PlatformLinuxARM64); err == nil {
+		t.Fatal("absent arm64 platform unexpectedly resolved")
+	}
+	for _, key := range []string{"linux-x64", "x86_64", "linux-riscv64"} {
+		if _, err := document.ResolvePlatform(key); err == nil {
+			t.Fatalf("unsupported platform alias %q unexpectedly resolved", key)
+		}
+	}
+}
+
+func TestParseRejectsInvalidPlatformMappings(t *testing.T) {
+	tests := map[string]string{
+		"empty":                strings.Replace(validManifest, "platforms:\n"+validManifest[strings.Index(validManifest, "  linux-amd64:"):], "platforms: {}\n", 1),
+		"null entry":           strings.Replace(validManifest, validManifest[strings.Index(validManifest, "  linux-amd64:"):], "  linux-amd64: null\n", 1),
+		"unknown key":          strings.Replace(validManifest, "linux-amd64:", "linux-x64:", 1),
+		"missing release":      strings.Replace(validManifest, "    release:\n", "    missing-release:\n", 1),
+		"duplicate platform":   validManifest + validManifest[strings.Index(validManifest, "  linux-amd64:"):],
+		"zero revision":        strings.Replace(validManifest, "linux-amd64:\n", "linux-amd64:\n    revision: 00\n", 1),
+		"signed zero revision": strings.Replace(validManifest, "linux-amd64:\n", "linux-amd64:\n    revision: +0\n", 1),
+		"hex zero revision":    strings.Replace(validManifest, "linux-amd64:\n", "linux-amd64:\n    revision: 0x0\n", 1),
+	}
+	for name, value := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse(strings.NewReader(value)); err == nil {
+				t.Fatal("invalid platform mapping unexpectedly accepted")
+			}
+		})
 	}
 }
 
@@ -258,14 +341,14 @@ func TestParseAcceptsWellFormedSHA512Verification(t *testing.T) {
 	sha512Manifest := strings.Replace(validManifest,
 		"algorithm: sha256\n    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 		"algorithm: sha512\n    digest: "+strings.Repeat("0", 128), 1)
-	if _, err := Parse(strings.NewReader(sha512Manifest)); err != nil {
+	if _, err := parseAMD64(strings.NewReader(sha512Manifest)); err != nil {
 		t.Fatalf("Parse() SHA-512 error = %v", err)
 	}
 }
 
 func TestRequirements(t *testing.T) {
-	valid := strings.Replace(validManifest, "platform:\n", "requirements:\n  - original-game-data\nplatform:\n", 1)
-	item, err := Parse(strings.NewReader(valid))
+	valid := strings.Replace(validManifest, "platforms:\n", "requirements:\n  - original-game-data\nplatforms:\n", 1)
+	item, err := parseAMD64(strings.NewReader(valid))
 	if err != nil || len(item.Requirements) != 1 || item.Requirements[0] != "original-game-data" {
 		t.Fatalf("requirements parse = %#v, error = %v", item, err)
 	}
@@ -277,8 +360,8 @@ func TestRequirements(t *testing.T) {
 		"number":    "requirements:\n  - 1\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			mutated := strings.Replace(validManifest, "platform:\n", "requirements:\n"+value+"platform:\n", 1)
-			if _, err := Parse(strings.NewReader(mutated)); err == nil {
+			mutated := strings.Replace(validManifest, "platforms:\n", "requirements:\n"+value+"platforms:\n", 1)
+			if _, err := parseAMD64(strings.NewReader(mutated)); err == nil {
 				t.Fatal("invalid requirements unexpectedly accepted")
 			}
 		})
@@ -290,9 +373,9 @@ func TestParseApplicationCategories(t *testing.T) {
 		t.Run(category, func(t *testing.T) {
 			value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", "categories:\n  - "+category, 1)
 			if category == "games" || category == "recompilation" {
-				value = strings.Replace(value, "      path: blender", "      path: blender\n      create-bin-link: true", 1)
+				value = strings.Replace(value, "          path: blender", "          path: blender\n          create-bin-link: true", 1)
 			}
-			if _, err := Parse(strings.NewReader(value)); err != nil {
+			if _, err := parseAMD64(strings.NewReader(value)); err != nil {
 				t.Fatalf("Parse() category %q error = %v", category, err)
 			}
 		})
@@ -303,13 +386,13 @@ func TestGameManifestRequiresExplicitBinLinkDecision(t *testing.T) {
 	for _, category := range []string{"games", "recompilation"} {
 		t.Run(category, func(t *testing.T) {
 			value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", "categories:\n  - "+category, 1)
-			if _, err := Parse(strings.NewReader(value)); err == nil || !strings.Contains(err.Error(), "create-bin-link must be explicit") {
+			if _, err := parseAMD64(strings.NewReader(value)); err == nil || !strings.Contains(err.Error(), "create-bin-link must be explicit") {
 				t.Fatalf("manifest without explicit bin-link decision error = %v", err)
 			}
 			for _, decision := range []string{"true", "false"} {
 				t.Run(decision, func(t *testing.T) {
-					withDecision := strings.Replace(value, "      path: blender", "      path: blender\n      create-bin-link: "+decision, 1)
-					if _, err := Parse(strings.NewReader(withDecision)); err != nil {
+					withDecision := strings.Replace(value, "          path: blender", "          path: blender\n          create-bin-link: "+decision, 1)
+					if _, err := parseAMD64(strings.NewReader(withDecision)); err != nil {
 						t.Fatalf("explicit decision %s rejected: %v", decision, err)
 					}
 				})
@@ -317,9 +400,9 @@ func TestGameManifestRequiresExplicitBinLinkDecision(t *testing.T) {
 		})
 	}
 	value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", "categories:\n  - games", 1)
-	value = strings.Replace(value, "desktop:\n  enabled: true", "desktop:\n  enabled: true\n  executable: blender", 1)
-	value = strings.Replace(value, "      path: blender", "      path: blender\n      create-bin-link: true\n    - name: helper\n      path: helper\n      create-bin-link: false", 1)
-	m, err := Parse(strings.NewReader(value))
+	value = strings.Replace(value, "    desktop:\n      enabled: true", "    desktop:\n      enabled: true\n      executable: blender", 1)
+	value = strings.Replace(value, "          path: blender", "          path: blender\n          create-bin-link: true\n        - name: helper\n          path: helper\n          create-bin-link: false", 1)
+	m, err := parseAMD64(strings.NewReader(value))
 	if err != nil {
 		t.Fatalf("independent bin-link decisions parse error = %v\nmanifest:\n%s", err, value)
 	}
@@ -331,15 +414,15 @@ func TestGameManifestRequiresExplicitBinLinkDecision(t *testing.T) {
 func TestValidateHistoryRejectsAmbiguousAndUnreviewedTargets(t *testing.T) {
 	tests := map[string]string{
 		"unknown default channel":             strings.Replace(validManifest, "default-channel: stable", "default-channel: nightly", 1),
-		"unknown channel head":                strings.Replace(validManifest, "  channels:\n    stable:\n      current: \"5.2.0\"", "  channels:\n    stable:\n      current: \"missing\"", 1),
-		"duplicate release":                   strings.Replace(validManifest, "      archive: tar.xz\napplication:", "      archive: tar.xz\n    - channel: stable\n      version: \"5.2.0\"\n      url: https://download.blender.org/release/Blender5.2/blender.tar.xz\n      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n      archive: tar.xz\napplication:", 1),
-		"same version across channels":        strings.Replace(validManifest, "    - channel: stable\n      version: \"5.2.0\"", "    - channel: nightly\n      version: \"5.2.0\"\n      url: https://download.blender.org/release/Blender5.2/blender.tar.xz\n      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n      archive: tar.xz\n    - channel: stable\n      version: \"5.2.0\"", 1),
+		"unknown channel head":                strings.Replace(validManifest, "      channels:\n        stable:\n          current: \"5.2.0\"", "      channels:\n        stable:\n          current: \"missing\"", 1),
+		"duplicate release":                   strings.Replace(validManifest, "          archive: tar.xz\n    application:", "          archive: tar.xz\n        - channel: stable\n          version: \"5.2.0\"\n          url: https://download.blender.org/release/Blender5.2/blender.tar.xz\n          verification:\n            algorithm: sha256\n            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n            source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n          archive: tar.xz\n    application:", 1),
+		"same version across channels":        strings.Replace(validManifest, "        - channel: stable\n          version: \"5.2.0\"", "        - channel: nightly\n          version: \"5.2.0\"\n          url: https://download.blender.org/release/Blender5.2/blender.tar.xz\n          verification:\n            algorithm: sha256\n            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n            source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n          archive: tar.xz\n        - channel: stable\n          version: \"5.2.0\"", 1),
 		"version conflicts with channel name": strings.Replace(validManifest, "version: \"5.2.0\"", "version: stable", 1),
-		"malformed channel":                   strings.Replace(validManifest, "stable:\n      current", "Stable:\n      current", 1),
+		"malformed channel":                   strings.Replace(validManifest, "stable:\n          current", "Stable:\n          current", 1),
 	}
 	for name, value := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Parse(strings.NewReader(value)); err == nil {
+			if _, err := parseAMD64(strings.NewReader(value)); err == nil {
 				t.Fatal("invalid history unexpectedly accepted")
 			}
 		})
@@ -347,7 +430,7 @@ func TestValidateHistoryRejectsAmbiguousAndUnreviewedTargets(t *testing.T) {
 }
 
 func TestResolveDefaultUsesExplicitChannelHead(t *testing.T) {
-	manifest, err := Parse(strings.NewReader(validManifest))
+	manifest, err := parseAMD64(strings.NewReader(validManifest))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,8 +445,8 @@ func TestResolveDefaultUsesExplicitChannelHead(t *testing.T) {
 }
 
 func TestReleaseNestedArchiveIsReleaseScoped(t *testing.T) {
-	data := strings.Replace(validManifest, "      archive: tar.xz\napplication:", "      archive: tar.xz\n      nested-archive:\n        path: packages/payload.zip\n        archive: zip\napplication:", 1)
-	parsed, err := ParseBytes([]byte(data))
+	data := strings.Replace(validManifest, "          archive: tar.xz\n    application:", "          archive: tar.xz\n          nested-archive:\n            path: packages/payload.zip\n            archive: zip\n    application:", 1)
+	parsed, err := parseAMD64Bytes([]byte(data))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,8 +456,8 @@ func TestReleaseNestedArchiveIsReleaseScoped(t *testing.T) {
 }
 
 func TestRejectsEmptyNestedArchiveDeclaration(t *testing.T) {
-	data := strings.Replace(validManifest, "      archive: tar.xz\napplication:", "      archive: tar.xz\n      nested-archive: {}\napplication:", 1)
-	if _, err := ParseBytes([]byte(data)); err == nil {
+	data := strings.Replace(validManifest, "          archive: tar.xz\n    application:", "          archive: tar.xz\n          nested-archive: {}\n    application:", 1)
+	if _, err := parseAMD64Bytes([]byte(data)); err == nil {
 		t.Fatal("empty nested archive declaration unexpectedly accepted")
 	}
 }
@@ -387,7 +470,7 @@ func TestParseRejectsUnknownAndDuplicateApplicationCategories(t *testing.T) {
 	for name, categories := range tests {
 		t.Run(name, func(t *testing.T) {
 			value := strings.Replace(validManifest, "categories:\n  - game-development\n  - graphics", categories, 1)
-			if _, err := Parse(strings.NewReader(value)); err == nil {
+			if _, err := parseAMD64(strings.NewReader(value)); err == nil {
 				t.Fatal("Parse() unexpectedly succeeded")
 			}
 		})
@@ -398,13 +481,13 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 	tests := map[string]func(string) string{
 		"unknown field": func(s string) string { return s + "script: echo unsafe\n" },
 		"script-like nested field": func(s string) string {
-			return strings.Replace(s, "      path: blender", "      path: blender\n      command: ./blender", 1)
+			return strings.Replace(s, "          path: blender", "          path: blender\n          command: ./blender", 1)
 		},
 		"missing verification": func(s string) string {
-			return strings.Replace(s, "      verification:\n        algorithm: sha256\n        digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
+			return strings.Replace(s, "          verification:\n            algorithm: sha256\n            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n            source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
 		},
 		"missing verification source": func(s string) string {
-			return strings.Replace(s, "        source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
+			return strings.Replace(s, "            source: https://download.blender.org/release/Blender5.2/blender.tar.xz.sha256\n", "", 1)
 		},
 		"malformed digest": func(s string) string {
 			return strings.Replace(s, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "xyz", 1)
@@ -427,21 +510,25 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 		"noncanonical URL path": func(s string) string {
 			return strings.Replace(s, "/release/Blender5.2/blender.tar.xz", "/release/Blender5.2/../blender.tar.xz", 1)
 		},
-		"invalid ID":          func(s string) string { return strings.Replace(s, "id: blender", "id: ../Blender", 1) },
-		"absolute executable": func(s string) string { return strings.Replace(s, "      path: blender", "      path: /blender", 1) },
-		"path traversal":      func(s string) string { return strings.Replace(s, "      path: blender", "      path: ../blender", 1) },
+		"invalid ID": func(s string) string { return strings.Replace(s, "id: blender", "id: ../Blender", 1) },
+		"absolute executable": func(s string) string {
+			return strings.Replace(s, "          path: blender", "          path: /blender", 1)
+		},
+		"path traversal": func(s string) string {
+			return strings.Replace(s, "          path: blender", "          path: ../blender", 1)
+		},
 		"icon when disabled": func(s string) string {
-			return strings.Replace(strings.Replace(s, "enabled: true", "enabled: false", 1), "categories:\n    - Graphics\n  icon:", "categories: []\n  icon:", 1)
+			return strings.Replace(strings.Replace(s, "enabled: true", "enabled: false", 1), "categories:\n        - Graphics\n      icon:", "categories: []\n      icon:", 1)
 		},
 		"Windows path": func(s string) string {
-			return strings.Replace(s, "      path: blender", `      path: 'C:\\blender.exe'`, 1)
+			return strings.Replace(s, "          path: blender", `          path: 'C:\\blender.exe'`, 1)
 		},
-		"unsupported archive": func(s string) string { return strings.Replace(s, "archive: tar.xz", "archive: 7z", 1) },
-		"unsupported OS":      func(s string) string { return strings.Replace(s, "os: linux", "os: windows", 1) },
-		"second document":     func(s string) string { return s + "---\nschema: 3\n" },
-		"YAML alias":          func(s string) string { return strings.Replace(s, "name: Blender", "name: &n Blender", 1) },
+		"unsupported archive":  func(s string) string { return strings.Replace(s, "archive: tar.xz", "archive: 7z", 1) },
+		"unsupported platform": func(s string) string { return strings.Replace(s, "linux-amd64:", "windows-amd64:", 1) },
+		"second document":      func(s string) string { return s + "---\nschema: 4\n" },
+		"YAML alias":           func(s string) string { return strings.Replace(s, "name: Blender", "name: &n Blender", 1) },
 		"missing desktop enabled": func(s string) string {
-			return strings.Replace(s, "  enabled: true\n", "", 1)
+			return strings.Replace(s, "      enabled: true\n", "", 1)
 		},
 		"missing desktop block": func(s string) string {
 			return s[:strings.Index(s, "desktop:\n")]
@@ -449,7 +536,7 @@ func TestParseRejectsInvalidManifest(t *testing.T) {
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := Parse(strings.NewReader(mutate(validManifest))); err == nil {
+			if _, err := parseAMD64(strings.NewReader(mutate(validManifest))); err == nil {
 				t.Fatal("Parse() unexpectedly succeeded")
 			}
 		})
@@ -473,7 +560,7 @@ func FuzzParse(f *testing.F) {
 	f.Add([]byte(validManifest))
 	f.Add([]byte("schema: 3\nid: ../x\n"))
 	f.Fuzz(func(t *testing.T, input []byte) {
-		_, _ = ParseBytes(input)
+		_, _ = parseAMD64Bytes(input)
 	})
 }
 
