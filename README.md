@@ -2,7 +2,7 @@
 
 ### A rootless Linux application manager for verified portable software.
 
-TarLink installs user-owned applications from an official, platform-specific
+TarLink installs user-owned applications from an official
 registry. Applications are versioned, verified, and easy to roll back—without
 `sudo`, system-wide installation, or taking over your package manager.
 
@@ -86,8 +86,8 @@ application's default channel and current version before mutation.
 
 The live catalog is maintained in the [official TarLink registry](https://github.com/drobilica/tarlink-registry),
 not in this README. It covers development tools, portable utilities, and game,
-emulator, and recompilation projects. Registry entries are platform-specific,
-so availability depends on the Linux architecture published by each upstream.
+emulator, and recompilation projects. Registry availability is platform-specific,
+so it depends on the Linux architecture published by each upstream.
 
 ## Security
 

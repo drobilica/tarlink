@@ -1,6 +1,6 @@
 # TarLink architecture
 
-TarLink is a rootless, single-user application manager for Linux amd64 and arm64. A version-4 application manifest stores shared metadata once and a complete, explicitly reviewed release and integration definition for each supported platform. Release entries may explicitly declare one inner archive extraction layer. Every application is stored at `apps/<id>/manifest.yaml`. The client resolves its exact `runtime.GOOS`/`runtime.GOARCH` pair to one canonical platform entry and refuses an absent platform; there is no alias, compatibility filename, or cross-platform fallback.
+TarLink is a rootless, single-user application manager for Linux amd64 and arm64. Each application is one strict schema-v5 manifest that stores shared application, release, and integration metadata once. Release entries may explicitly declare one inner archive extraction layer. Every application is stored at `apps/<id>/manifest.yaml`, and each retained release declares its exact supported platforms as artifact keys such as `artifacts.linux-amd64` and `artifacts.linux-arm64`; unsupported platforms are omitted. The client resolves its exact `runtime.GOOS`/`runtime.GOARCH` pair to the matching artifact key in the selected release and refuses an absent platform; there is no alias, compatibility filename, or cross-platform fallback. Executables declare one shared path or explicit per-platform paths, exactly as the schema allows, with no inherited defaults.
 
 ## Interface boundaries
 
@@ -18,7 +18,7 @@ itself.
 compiled official registry URL
         │ HTTPS, bounded archive, validated apps/ tree
         ▼
-strict v4 manifest and exact platform/channel/version resolution
+strict v5 manifest and exact platform/channel/version resolution
         │ exact approved HTTPS artifact URL + SHA-256 or SHA-512 digest
         ▼
 bounded download ── digest verification ── staging directory
@@ -43,7 +43,7 @@ replaces the canonical owned binary.
 ## Installation flow
 
 1. Load or refresh the validated official registry and resolve the application manifest.
-2. Resolve the exact `GOOS`/`GOARCH` manifest and require it to match the running client.
+2. Resolve the exact `GOOS`/`GOARCH` artifact key in the application manifest and require it to match the running client.
 3. Acquire the lifecycle and per-application locks and inspect strict, layout-bound state.
 4. Download the declared HTTPS artifact with timeouts, redirect and size bounds. Redirects must remain HTTPS.
 5. Verify the exact artifact bytes with the manifest's lowercase SHA-256 or SHA-512 digest before extraction or staging.
