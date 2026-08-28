@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,66 @@ func TestParseRepositoryRejectsHostileForms(t *testing.T) {
 		if got, err := ParseRepository(in); err == nil {
 			t.Errorf("accepted hostile repository %q as %q", in, got)
 		}
+	}
+}
+
+func TestParseReleaseAssetURL(t *testing.T) {
+	target, err := ParseReleaseAssetURL("https://github.com/OWNER/REPO/releases/download/v1%2Fbeta/app-linux-x64.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Repository != "owner/repo" || target.Tag != "v1/beta" || target.Asset != "app-linux-x64.zip" {
+		t.Fatalf("target=%#v", target)
+	}
+	for _, raw := range []string{
+		"http://github.com/o/r/releases/download/v1/a.zip",
+		"https://github.com.evil/o/r/releases/download/v1/a.zip",
+		"https://github.com/o/r/releases/download/v1/a.zip?x=1",
+		"https://github.com/o/r/releases/download/v1/a.zip/",
+		"https://github.com/o/r/releases/tag/v1/a.zip",
+		"https://github.com/o/r/releases/download/v1/../a.zip",
+	} {
+		if _, err := ParseReleaseAssetURL(raw); err == nil {
+			t.Errorf("accepted %q", raw)
+		}
+	}
+}
+
+func TestInferPlatformConservative(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{"app-linux-x64.zip", "linux-amd64"},
+		{"app-linux-amd64.tar.gz", "linux-amd64"},
+		{"app-linux-x86_64.tar.xz", "linux-amd64"},
+		{"app-linux64.zip", "linux-amd64"},
+		{"app-linux-aarch64.tar.gz", "linux-arm64"},
+		{"app-linux-arm64.tar.gz", "linux-arm64"},
+		{"app-x64.zip", ""},
+		{"app-arm64.zip", ""},
+		{"app-windows-x64.zip", ""},
+	} {
+		if got := InferPlatform(tc.name); got != tc.want {
+			t.Errorf("InferPlatform(%q)=%q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestResolveReleaseAssetExactIdentity(t *testing.T) {
+	body := `{"id":20,"tag_name":"v1","assets":[{"id":30,"name":"app.zip","browser_download_url":"https://objects.example/app.zip","size":4,"state":"uploaded"}]}`
+	c := &Client{APIBase: "https://api.example", HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/repos/o/r/releases/tags/v1" {
+			t.Fatalf("request path=%s", r.URL.Path)
+		}
+		return response(200, body), nil
+	})}}
+	target := ReleaseAssetTarget{Repository: "o/r", Tag: "v1", Asset: "app.zip"}
+	resolved, err := c.ResolveReleaseAsset(context.Background(), target)
+	if err != nil || resolved.Repository != "o/r" || resolved.Release.ID != 20 || resolved.Asset.ID != 30 {
+		t.Fatalf("resolved=%#v err=%v", resolved, err)
+	}
+	_, err = c.ResolveReleaseAsset(context.Background(), ReleaseAssetTarget{Repository: "o/r", Tag: "v1", Asset: "missing.zip"})
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != APIErrorNotFound {
+		t.Fatalf("missing err=%v", err)
 	}
 }
 
@@ -578,8 +639,60 @@ func TestInspectReportsExecutablesAndNestedEvidence(t *testing.T) {
 			t.Fatal("nested archive evidence must not be an unsupported blocker")
 		}
 	}
-	if len(r.Executables) != 2 || len(r.Nested) != 1 || len(r.Blockers) != 0 {
+	if len(r.Executables) != 1 || r.Executables[0] != "game" || len(r.Nested) != 1 || len(r.Blockers) != 0 {
 		t.Fatalf("%#v", r)
+	}
+}
+
+func TestInspectFindsRankedArchiveIconsWithoutRegularFileNoise(t *testing.T) {
+	var buf bytes.Buffer
+	z := zip.NewWriter(&buf)
+	readme, _ := z.Create("README.txt")
+	_, _ = readme.Write([]byte("not an executable"))
+	icon, _ := z.Create("resources/icons/icon.png")
+	_, _ = icon.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'})
+	logo, _ := z.Create("logo.svg")
+	_, _ = logo.Write([]byte("<svg/>"))
+	_ = z.Close()
+	d := testDir(t)
+	p := filepath.Join(d, "icons.zip")
+	if err := os.WriteFile(p, buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := Inspect(context.Background(), Artifact{Path: p, Size: int64(buf.Len())}, archive.FormatZip, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(r.Executables) != 0 || len(r.Icons) != 1 || r.Icons[0] != "resources/icons/icon.png" {
+		t.Fatalf("inspection=%#v", r)
+	}
+}
+
+func TestInspectRetainsEquallyStrongArchiveIconCandidates(t *testing.T) {
+	var buffer bytes.Buffer
+	z := zip.NewWriter(&buffer)
+	for _, name := range []string{"icons/icon.png", "assets/icons/logo.png"} {
+		w, err := z.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = w.Write([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := z.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "icons.zip")
+	if err := os.WriteFile(path, buffer.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Inspect(context.Background(), Artifact{Path: path, Size: int64(buffer.Len())}, archive.FormatZip, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Icons, []string{"assets/icons/logo.png", "icons/icon.png"}) {
+		t.Fatalf("icons=%#v", result.Icons)
 	}
 }
 

@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,6 @@ import (
 	"github.com/drobilica/tarlink/internal/freshness"
 	"github.com/drobilica/tarlink/internal/research"
 	"github.com/drobilica/tarlink/internal/version"
-	"go.yaml.in/yaml/v3"
 )
 
 const help = `TarLink manages verified portable Linux applications.
@@ -56,9 +56,8 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry validate <path>
   tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]
   tarlink registry freshness <app> [--json]
-  tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
-  tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]
-  tarlink registry inspect --file <repositories.yaml> [--json]
+  tarlink registry inspect <owner/repo | release-asset-url | manifest.yaml | directory> [--json] [--refresh]
+  tarlink registry add <release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]
   tarlink registry candidates [--changed] [--json]
   tarlink registry blockers [--capability <capability>] [--json]
   tarlink registry icons <path> [--app <id>] [--fix] [--json]
@@ -84,8 +83,8 @@ var commandHelp = map[string]string{
 var registryCommandHelp = map[string]string{
 	"validate": "usage: tarlink registry validate <path>", "freshness": "usage: tarlink registry freshness <app> [--json]",
 	"check":      "usage: tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]",
-	"provenance": "usage: tarlink registry provenance <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]",
-	"inspect":    "usage: tarlink registry inspect <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]",
+	"inspect":    "usage: tarlink registry inspect <owner/repo | release-asset-url | manifest.yaml | directory> [--json] [--refresh]",
+	"add":        "usage: tarlink registry add <release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]",
 	"candidates": "usage: tarlink registry candidates [--changed] [--json]", "blockers": "usage: tarlink registry blockers [--capability <capability>] [--json]",
 	"icons": "usage: tarlink registry icons <path> [--app <id>] [--fix] [--json]",
 }
@@ -94,6 +93,7 @@ type Runner struct {
 	Service   app.Service
 	Stdout    io.Writer
 	Stderr    io.Writer
+	Stdin     io.Reader
 	LaunchTUI func(context.Context, app.Service, io.Writer, io.Writer) error
 }
 
@@ -103,6 +103,9 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	}
 	if r.Stderr == nil {
 		r.Stderr = io.Discard
+	}
+	if r.Stdin == nil {
+		r.Stdin = strings.NewReader("")
 	}
 	if len(arguments) == 0 {
 		if r.LaunchTUI == nil {
@@ -178,72 +181,35 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			}
 			break
 		}
-		if len(arguments) >= 3 && (arguments[1] == "provenance" || arguments[1] == "inspect") {
-			if arguments[1] == "inspect" && len(arguments) >= 4 && arguments[2] == "--file" {
-				path, jsonOutput, parseErr := batchInspectArguments(arguments[3:])
+		if len(arguments) >= 3 && arguments[1] == "inspect" {
+			target := arguments[2]
+			_, directErr := research.ParseReleaseAssetURL(target)
+			_, localErr := os.Lstat(target)
+			if directErr == nil || localErr == nil {
+				target, jsonOutput, refresh, parseErr := registryInspectArguments(arguments[2:])
 				if parseErr != nil {
-					return r.invalid("usage: tarlink registry inspect --file <path> [--json]")
+					return r.invalid(registryCommandHelp["inspect"])
 				}
-				b, readErr := os.ReadFile(path)
-				if readErr != nil {
-					return r.fail(readErr)
-				}
-				var input struct {
-					Repositories []string `yaml:"repositories"`
-				}
-				if readErr = yaml.Unmarshal(b, &input); readErr != nil || len(input.Repositories) == 0 {
-					if readErr == nil {
-						readErr = errors.New("batch input requires repositories")
-					}
-					return r.fail(readErr)
-				}
-				service, ok := r.Service.(app.ResearchService)
+				service, ok := r.Service.(app.RegistryOnboardingService)
 				if !ok {
-					return r.fail(errors.New("registry research is unavailable"))
+					return r.fail(errors.New("registry onboarding is unavailable"))
 				}
-				results := make([]app.ResearchResult, 0, len(input.Repositories))
-				for _, repo := range input.Repositories {
-					v, researchErr := service.Research(ctx, app.ResearchOptions{Repository: repo, Inspect: true})
-					if researchErr != nil && v.Status == "" {
-						v = app.ResearchResult{Repository: research.Repository(repo), Status: "ERROR", Error: &app.ResearchError{ReasonCode: "INSPECTION_ERROR", Message: researchErr.Error()}}
-					}
-					results = append(results, v)
+				value, inspectErr := service.InspectRegistry(ctx, app.RegistryInspectOptions{Target: target, Refresh: refresh})
+				if inspectErr != nil {
+					return r.fail(inspectErr)
 				}
 				if jsonOutput {
-					if e := writeJSON(r.Stdout, map[string]any{"results": results}); e != nil {
-						return r.fail(e)
-					}
-					break
-				}
-				counts := map[string]int{}
-				for _, v := range results {
-					status := v.Status
-					if status == "" {
-						status = "ERROR"
-					}
-					counts[status]++
-				}
-				if _, err = fmt.Fprintf(r.Stdout, "READY_FOR_REVIEW %d\nBLOCKED %d\nERROR %d\n", counts["READY_FOR_REVIEW"], counts["BLOCKED"], counts["ERROR"]); err != nil {
-					break
-				}
-				for _, v := range results {
-					_, err = fmt.Fprintf(r.Stdout, "%-20s %-10s %s\n", v.Repository, v.Status, strings.Join(func() []string {
-						if v.Inspection != nil {
-							return v.Inspection.Blockers
-						}
-						return nil
-					}(), ", "))
-					if err != nil {
-						return r.fail(err)
-					}
+					err = writeJSON(r.Stdout, value)
+				} else {
+					err = r.printRegistryInspection(value)
 				}
 				break
 			}
 			opts, jsonOutput, parseErr := researchArguments(arguments[2:])
 			if parseErr != nil {
-				return r.invalid("usage: tarlink registry " + arguments[1] + " <owner/repo> [--release <tag>] [--asset <name>] [--json] [--refresh]")
+				return r.invalid(registryCommandHelp["inspect"])
 			}
-			opts.Inspect = arguments[1] == "inspect"
+			opts.Inspect = true
 			service, ok := r.Service.(app.ResearchService)
 			if !ok {
 				return r.fail(errors.New("registry research is unavailable"))
@@ -277,6 +243,55 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				return r.fail(researchErr)
 			}
 			err = r.printResearch(value, jsonOutput)
+			break
+		}
+		if len(arguments) >= 3 && arguments[1] == "add" {
+			options, jsonOutput, dryRun, output, parseErr := registryAddArguments(arguments[2:])
+			if parseErr != nil {
+				return r.invalid(registryCommandHelp["add"])
+			}
+			service, ok := r.Service.(app.RegistryOnboardingService)
+			if !ok {
+				return r.fail(errors.New("registry onboarding is unavailable"))
+			}
+			value, addErr := service.AddRegistry(ctx, options)
+			if addErr != nil {
+				return r.fail(addErr)
+			}
+			if !options.NonInteractive && value.Status == "needs-input" {
+				if err = r.printCandidate(value.Candidate); err != nil {
+					break
+				}
+				options, value.Candidate, err = r.promptRegistryAdd(options, value.Candidate, value.Required)
+				if err == nil {
+					value, err = app.CompleteRegistryCandidate(value.Candidate, options)
+				}
+			}
+			if jsonOutput {
+				err = writeJSON(r.Stdout, value)
+				if value.Status == "needs-input" && err == nil {
+					return 2
+				}
+				break
+			}
+			if err != nil {
+				break
+			}
+			if value.Status == "needs-input" {
+				return r.fail(fmt.Errorf("registry add needs input: %s", requiredFields(value.Required)))
+			}
+			if dryRun {
+				_, err = fmt.Fprintf(r.Stdout, "Candidate manifest (dry run):\n%s", value.YAML)
+				break
+			}
+			if output != "" {
+				err = writeNewFile(output, value.YAML)
+				if err == nil {
+					_, err = fmt.Fprintf(r.Stdout, "Wrote candidate manifest to %s\n", output)
+				}
+				break
+			}
+			_, err = r.Stdout.Write(value.YAML)
 			break
 		}
 		if arguments[1] == "candidates" {
@@ -378,7 +393,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			}
 			break
 		}
-		return r.invalid("usage: tarlink registry <validate|check|freshness|provenance|inspect|candidates|blockers|icons> ...")
+		return r.invalid("usage: tarlink registry <validate|check|freshness|inspect|add|candidates|blockers|icons> ...")
 	case "refresh":
 		if len(arguments) != 1 {
 			return r.invalid("usage: tarlink refresh")
@@ -758,6 +773,250 @@ func researchArguments(arguments []string) (app.ResearchOptions, bool, error) {
 		}
 	}
 	return opts, jsonOutput, nil
+}
+
+func registryInspectArguments(arguments []string) (string, bool, bool, error) {
+	if len(arguments) == 0 || strings.HasPrefix(arguments[0], "--") {
+		return "", false, false, errors.New("target required")
+	}
+	target, jsonOutput, refresh := arguments[0], false, false
+	for _, value := range arguments[1:] {
+		switch value {
+		case "--json":
+			jsonOutput = true
+		case "--refresh":
+			refresh = true
+		default:
+			return "", false, false, errors.New("unknown option")
+		}
+	}
+	return target, jsonOutput, refresh, nil
+}
+
+func registryAddArguments(arguments []string) (app.RegistryAddOptions, bool, bool, string, error) {
+	if len(arguments) == 0 || strings.HasPrefix(arguments[0], "--") {
+		return app.RegistryAddOptions{}, false, false, "", errors.New("release asset URL required")
+	}
+	options := app.RegistryAddOptions{Target: arguments[0]}
+	jsonOutput, dryRun, output := false, false, ""
+	for i := 1; i < len(arguments); i++ {
+		switch arguments[i] {
+		case "--non-interactive":
+			options.NonInteractive = true
+		case "--json":
+			jsonOutput = true
+		case "--dry-run":
+			dryRun = true
+		case "--refresh":
+			options.Refresh = true
+		case "--id", "--name", "--summary", "--categories", "--output":
+			if i+1 >= len(arguments) || strings.HasPrefix(arguments[i+1], "--") {
+				return app.RegistryAddOptions{}, false, false, "", errors.New("option value required")
+			}
+			value := arguments[i+1]
+			switch arguments[i] {
+			case "--id":
+				options.ID = value
+			case "--name":
+				options.Name = value
+			case "--summary":
+				options.Summary = value
+			case "--categories":
+				options.Categories = splitCSV(value)
+			case "--output":
+				output = value
+			}
+			i++
+		case "--create-bin-link":
+			value := true
+			options.CreateBinLink = &value
+		case "--no-create-bin-link":
+			value := false
+			options.CreateBinLink = &value
+		default:
+			return app.RegistryAddOptions{}, false, false, "", errors.New("unknown option")
+		}
+	}
+	if jsonOutput && !options.NonInteractive {
+		return app.RegistryAddOptions{}, false, false, "", errors.New("--json requires --non-interactive")
+	}
+	if dryRun && output != "" {
+		return app.RegistryAddOptions{}, false, false, "", errors.New("--dry-run and --output are mutually exclusive")
+	}
+	return options, jsonOutput, dryRun, output, nil
+}
+
+func splitCSV(value string) []string {
+	var result []string
+	for _, part := range strings.Split(value, ",") {
+		if part = strings.TrimSpace(part); part != "" {
+			result = append(result, part)
+		}
+	}
+	return result
+}
+
+func (r Runner) promptRegistryAdd(options app.RegistryAddOptions, candidate app.RegistryCandidate, required []app.RegistryRequiredInput) (app.RegistryAddOptions, app.RegistryCandidate, error) {
+	reader := bufio.NewReader(r.Stdin)
+	needs := map[string]bool{}
+	for _, value := range required {
+		needs[value.Field] = true
+	}
+	if needs["executable"] {
+		selected, err := r.promptCandidate(reader, "Executable", candidate.Executables, false)
+		if err != nil {
+			return options, candidate, err
+		}
+		candidate.Executable = selected
+	}
+	if needs["icon"] {
+		selected, err := r.promptCandidate(reader, "Archive icon", candidate.Icons, true)
+		if err != nil {
+			return options, candidate, err
+		}
+		candidate.Icon = selected
+	}
+	if needs["platform"] || needs["archive"] || needs["artifact"] || needs["nested-archive"] {
+		return options, candidate, errors.New("candidate has unresolved artifact facts; supply a less ambiguous official release asset")
+	}
+	if len(options.Categories) == 0 {
+		value, err := r.promptLine(reader, "Category (comma-separated): ")
+		if err != nil {
+			return options, candidate, err
+		}
+		options.Categories = splitCSV(value)
+		if len(options.Categories) == 0 {
+			return options, candidate, errors.New("at least one category is required")
+		}
+	}
+	if options.CreateBinLink == nil && (containsCategory(options.Categories, "games") || containsCategory(options.Categories, "recompilation")) {
+		value, err := r.promptLine(reader, "Create CLI bin link? [y/N]: ")
+		if err != nil {
+			return options, candidate, err
+		}
+		answer := strings.ToLower(strings.TrimSpace(value))
+		selected := answer == "y" || answer == "yes"
+		options.CreateBinLink = &selected
+	}
+	return options, candidate, nil
+}
+
+func (r Runner) promptLine(reader *bufio.Reader, label string) (string, error) {
+	if _, err := io.WriteString(r.Stdout, label); err != nil {
+		return "", err
+	}
+	value, err := reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimSpace(value), nil
+}
+func (r Runner) promptCandidate(reader *bufio.Reader, label string, candidates []string, optional bool) (string, error) {
+	for index, value := range candidates {
+		if _, err := fmt.Fprintf(r.Stdout, "%s %d: %s\n", label, index+1, value); err != nil {
+			return "", err
+		}
+	}
+	suffix := ""
+	if optional {
+		suffix = " (0 for none)"
+	}
+	value, err := r.promptLine(reader, label+" selection"+suffix+": ")
+	if err != nil {
+		return "", err
+	}
+	if optional && (value == "" || value == "0") {
+		return "", nil
+	}
+	var index int
+	if _, err := fmt.Sscan(value, &index); err != nil || index < 1 || index > len(candidates) {
+		return "", errors.New("invalid candidate selection")
+	}
+	return candidates[index-1], nil
+}
+func containsCategory(values []string, wanted string) bool {
+	for _, value := range values {
+		if value == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func (r Runner) printCandidate(value app.RegistryCandidate) error {
+	_, err := fmt.Fprintf(r.Stdout, "GitHub repository       ✓ %s\nRelease                 ✓ %s\nAsset                   ✓ %s\nPlatform                %s\nArchive                 %s\nSHA-256                 %s\nExecutable              %s\nIcon                    %s\n\n", value.Repository, value.Release, value.Asset, checkValue(value.Platform), checkValue(value.Archive), checkValue(value.SHA256), checkValue(value.Executable), checkValue(value.Icon))
+	return err
+}
+func checkValue(value string) string {
+	if value == "" {
+		return "?"
+	}
+	return "✓ " + value
+}
+func requiredFields(values []app.RegistryRequiredInput) string {
+	fields := make([]string, 0, len(values))
+	for _, value := range values {
+		fields = append(fields, value.Field)
+	}
+	return strings.Join(fields, ", ")
+}
+
+func (r Runner) printRegistryInspection(value app.RegistryInspectionResult) error {
+	if value.Manifest != nil {
+		mark := "✓"
+		if !value.Manifest.Valid {
+			mark = "✗"
+		}
+		if _, err := fmt.Fprintf(r.Stdout, "%s\n\n", value.Manifest.ID); err != nil {
+			return err
+		}
+		if !value.Manifest.Valid {
+			_, err := fmt.Fprintf(r.Stdout, "%s %s\n", mark, value.Manifest.Error)
+			return err
+		}
+		for _, check := range value.Manifest.Checks {
+			if _, err := fmt.Fprintf(r.Stdout, "%s %s\n", mark, check); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if value.Directory != nil {
+		if _, err := fmt.Fprintf(r.Stdout, "Registry inspection\n\nManifests: %d\nValid:     %d\nWarnings:  %d\nInvalid:   %d\n\n", value.Directory.Manifests, value.Directory.Valid, value.Directory.Warnings, value.Directory.Invalid); err != nil {
+			return err
+		}
+		for _, result := range value.Directory.Results {
+			mark := "✓"
+			if !result.Valid {
+				mark = "✗"
+			}
+			if _, err := fmt.Fprintf(r.Stdout, "%s %s\n", mark, result.Path); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if value.Candidate != nil {
+		if err := r.printCandidate(*value.Candidate); err != nil {
+			return err
+		}
+		if len(value.Required) != 0 {
+			_, err := fmt.Fprintf(r.Stdout, "Needs input: %s\n", requiredFields(value.Required))
+			return err
+		}
+		return nil
+	}
+	return nil
+}
+
+func writeNewFile(path string, data []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	_, err = file.Write(data)
+	return err
 }
 
 func candidateArguments(a []string) (bool, bool, error) {

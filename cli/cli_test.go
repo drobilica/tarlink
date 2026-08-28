@@ -132,10 +132,16 @@ func (f *researchService) Research(_ context.Context, options app.ResearchOption
 	return f.result, f.err
 }
 
-func TestRegistryProvenanceJSONSelectors(t *testing.T) {
+func TestRegistryProvenanceCommandIsRemoved(t *testing.T) {
+	if code := (Runner{Service: &researchService{}, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo"}); code != 2 {
+		t.Fatalf("provenance exit code = %d, want 2", code)
+	}
+}
+
+func TestRegistryInspectRepositoryJSONSelectors(t *testing.T) {
 	var out bytes.Buffer
 	service := &researchService{result: app.ResearchResult{Repository: "owner/repo", Release: research.Release{ID: 10, Tag: "v1"}, Asset: research.Asset{ID: 20, Name: "linux.zip", Digest: "sha256:abc"}, Provenance: research.Provenance{Verdict: research.Acceptable, Algorithm: "sha256", Digest: "sha256:abc", Message: "ok"}}}
-	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo", "--release", "v1", "--asset", "linux.zip", "--refresh", "--json"})
+	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1", "--asset", "linux.zip", "--refresh", "--json"})
 	if code != 0 {
 		t.Fatalf("code=%d output=%q", code, out.String())
 	}
@@ -164,7 +170,7 @@ func TestRegistryResearchProviderFailureIsStructuredErrorResult(t *testing.T) {
 		},
 		err: &app.ResearchFailure{ReasonCode: "RATE_LIMITED", Kind: research.APIErrorRateLimited, HTTPStatus: 429, Err: errors.New("GitHub API rate limit exceeded")},
 	}
-	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo", "--json"})
+	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
 	if code == 0 {
 		t.Fatal("provider failure returned success")
 	}
@@ -186,7 +192,7 @@ func TestRegistryResearchJSONHasStableResultShape(t *testing.T) {
 			Provenance: research.Provenance{Verdict: verdict, ReasonCode: "TEST", Message: "fixture"},
 			Status:     map[research.Verdict]string{research.Acceptable: "READY_FOR_REVIEW", research.Rejected: "BLOCKED", research.Error: "ERROR"}[verdict],
 		}}
-		if code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo", "--json"}); code != 0 {
+		if code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"}); code != 0 {
 			t.Fatalf("verdict %s code=%d", verdict, code)
 		}
 		var got map[string]any

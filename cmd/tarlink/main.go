@@ -18,7 +18,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	runner := cli.Runner{Stdout: os.Stdout, Stderr: os.Stderr}
+	runner := cli.Runner{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
 	if err := app.CheckEnvironment(); err != nil {
 		os.Exit(runner.Fail(err))
 	}

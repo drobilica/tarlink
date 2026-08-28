@@ -68,7 +68,7 @@ func TestCoreResearchProviderFailureIsStructuredAndCLIJSONOnly(t *testing.T) {
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	code := (cli.Runner{Service: core, Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"registry", "provenance", "Owner/Repo", "--json"})
+	code := (cli.Runner{Service: core, Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"registry", "inspect", "Owner/Repo", "--json"})
 	if code == 0 {
 		t.Fatal("CLI returned success for provider failure")
 	}
@@ -121,78 +121,27 @@ func jsonResponse(status int, body string) *http.Response {
 	return &http.Response{StatusCode: status, Status: http.StatusText(status), Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}
 }
 
-func TestCoreResearchCLISelectorsAndVerdicts(t *testing.T) {
-	digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	tests := []struct {
-		name string
-		args []string
-		body string
-		want string
-		code bool
-	}{
-		{"explicit valid", []string{"registry", "provenance", "owner/repo", "--release", "v1.2.3", "--asset", "linux.zip", "--json"}, researchReleaseJSON(researchAssetJSON(20, "linux.zip", digest)), "ACCEPTABLE", false},
-		{"omitted unambiguous", []string{"registry", "provenance", "owner/repo", "--json"}, researchReleaseJSON(researchAssetJSON(20, "linux.zip", digest)), "ACCEPTABLE", false},
-		{"ambiguous assets", []string{"registry", "provenance", "owner/repo", "--json"}, researchReleaseJSON(researchAssetJSON(20, "a.zip", digest) + "," + researchAssetJSON(21, "b.zip", digest)), "INVALID_SELECTION", true},
-		{"rejected provenance", []string{"registry", "provenance", "owner/repo", "--json"}, researchReleaseJSON(researchAssetJSON(20, "linux.zip", "")), "NO_AUTHORITATIVE_DIGEST", false},
-		{"asset not found", []string{"registry", "provenance", "owner/repo", "--asset", "missing.zip", "--json"}, researchReleaseJSON(researchAssetJSON(20, "linux.zip", digest)), "ASSET_NOT_FOUND", true},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			core := newResearchCore(t, func(r *http.Request) *http.Response {
-				body := test.body
-				if strings.Contains(r.URL.Path, "/tags/") && strings.HasPrefix(body, "[") {
-					body = strings.TrimSuffix(strings.TrimPrefix(body, "["), "]")
-				}
-				return jsonResponse(http.StatusOK, body)
-			})
-			var out, errOut strings.Builder
-			code := (cli.Runner{Service: core, Stdout: &out, Stderr: &errOut}).Run(context.Background(), test.args)
-			if (code != 0) != test.code {
-				t.Fatalf("exit=%d stderr=%s stdout=%s", code, errOut.String(), out.String())
-			}
-			if test.code {
-				if !strings.Contains(out.String(), `"reason_code":"`+test.want+`"`) {
-					t.Fatalf("missing reason %s: %s", test.want, out.String())
-				}
-			} else if test.name == "rejected provenance" {
-				if !strings.Contains(out.String(), `"verdict":"REJECTED"`) || !strings.Contains(out.String(), `"reason_code":"`+test.want+`"`) {
-					t.Fatalf("missing rejected provenance fields: %s", out.String())
-				}
-			} else if strings.Contains(out.String(), `"status"`) {
-				t.Fatalf("provenance-only result unexpectedly has status: %s", out.String())
-			} else if !strings.Contains(out.String(), `"verdict":"`+test.want+`"`) {
-				t.Fatalf("missing verdict %s: %s", test.want, out.String())
-			}
-		})
-	}
-}
-
-func TestCoreResearchCLIRefreshAndReleaseNotFound(t *testing.T) {
+func TestResearchSelectorsAndRefreshRemainAvailableToInspection(t *testing.T) {
 	digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	calls := 0
 	core := newResearchCore(t, func(r *http.Request) *http.Response {
 		calls++
-		if strings.Contains(r.URL.Path, "/tags/") {
-			return jsonResponse(http.StatusNotFound, `{"message":"Not Found"}`)
-		}
 		return jsonResponse(http.StatusOK, researchReleaseJSON(researchAssetJSON(20, "linux.zip", digest)))
 	})
-	run := func(args ...string) int {
-		return (cli.Runner{Service: core, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), args)
+	result, err := core.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo"})
+	if err != nil || result.Asset.Name != "linux.zip" || result.Provenance.Verdict != research.Acceptable {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	if run("registry", "provenance", "owner/repo", "--json") != 0 || run("registry", "provenance", "owner/repo", "--json") != 0 {
-		t.Fatal("fresh/cache lookup failed")
+	_, err = core.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo"})
+	if err != nil {
+		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatalf("expected discovery cache hit, calls=%d", calls)
 	}
-	if run("registry", "provenance", "owner/repo", "--refresh", "--json") != 0 || calls != 2 {
+	_, err = core.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo", Refresh: true})
+	if err != nil || calls != 2 {
 		t.Fatalf("refresh did not bypass cache, calls=%d", calls)
-	}
-	var out strings.Builder
-	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo", "--release", "missing", "--json"})
-	if code == 0 || !strings.Contains(out.String(), `"reason_code":"RELEASE_NOT_FOUND"`) {
-		t.Fatalf("release lookup output=%s code=%d", out.String(), code)
 	}
 }
 
@@ -202,7 +151,7 @@ func TestCoreResearchCLIMalformedRepository(t *testing.T) {
 		return nil
 	})
 	var out strings.Builder
-	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "github.com/owner/repo", "--json"})
+	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "github.com/owner/repo", "--json"})
 	if code == 0 || !strings.Contains(out.String(), `"reason_code":"INVALID_REPOSITORY"`) {
 		t.Fatalf("malformed repository output=%s code=%d", out.String(), code)
 	}

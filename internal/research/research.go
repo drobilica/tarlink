@@ -34,9 +34,13 @@ const DiscoveryTTL = 24 * time.Hour
 const maxResponseBytes int64 = 4 << 20
 const maxArtifactBytes int64 = 8 << 30
 const MaxIconBytes int64 = 4 << 20
+const maxArchiveIconBytes int64 = 1 << 20
 
 var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 var gitObjectPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var linuxAMD64Pattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])linux[-_.]?(x64|amd64|x86[-_.]?64)([^a-z0-9]|$)`)
+var linuxARM64Pattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])linux[-_.]?(arm64|aarch64)([^a-z0-9]|$)`)
+var linux64Pattern = regexp.MustCompile(`(?i)(^|[^a-z0-9])linux64([^a-z0-9]|$)`)
 
 type Repository string
 
@@ -59,6 +63,75 @@ func ParseRepository(raw string) (Repository, error) {
 	// GitHub repository names are case-insensitive. Lowercase is the one
 	// canonical representation used for cache and evidence identity.
 	return Repository(strings.ToLower(raw)), nil
+}
+
+// ReleaseAssetTarget identifies one exact GitHub release download URL. The
+// URL is retained for display, while Repository, Tag, and Asset are the
+// identity used to query and verify GitHub metadata.
+type ReleaseAssetTarget struct {
+	Repository Repository `json:"repository"`
+	Tag        string     `json:"tag"`
+	Asset      string     `json:"asset"`
+	URL        string     `json:"url"`
+}
+
+// ParseReleaseAssetURL parses only canonical GitHub release download URLs.
+// Release tags may contain slashes; the final path component is always the
+// exact asset name.
+func ParseReleaseAssetURL(raw string) (ReleaseAssetTarget, error) {
+	original := strings.TrimSpace(raw)
+	u, err := url.Parse(original)
+	if err != nil || u.Scheme != "https" || !strings.EqualFold(u.Host, "github.com") || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(original, "#") || u.Opaque != "" {
+		return ReleaseAssetTarget{}, fmt.Errorf("invalid GitHub release asset URL %q", raw)
+	}
+	encoded := strings.TrimPrefix(u.EscapedPath(), "/")
+	if encoded == "" || strings.HasSuffix(encoded, "/") {
+		return ReleaseAssetTarget{}, fmt.Errorf("invalid GitHub release asset URL %q", raw)
+	}
+	encodedParts := strings.Split(encoded, "/")
+	if len(encodedParts) < 6 {
+		return ReleaseAssetTarget{}, fmt.Errorf("invalid GitHub release asset URL %q", raw)
+	}
+	parts := make([]string, len(encodedParts))
+	for i, encodedPart := range encodedParts {
+		part, unescapeErr := url.PathUnescape(encodedPart)
+		if unescapeErr != nil || part == "" || part == "." || part == ".." || strings.ContainsAny(part, "\\\x00\r\n") {
+			return ReleaseAssetTarget{}, fmt.Errorf("invalid GitHub release asset URL %q", raw)
+		}
+		parts[i] = part
+	}
+	if !strings.EqualFold(parts[2], "releases") || !strings.EqualFold(parts[3], "download") {
+		return ReleaseAssetTarget{}, fmt.Errorf("invalid GitHub release asset URL %q", raw)
+	}
+	repo, err := ParseRepository(strings.Join(parts[:2], "/"))
+	if err != nil {
+		return ReleaseAssetTarget{}, fmt.Errorf("invalid GitHub release asset URL %q", raw)
+	}
+	tag := strings.Join(parts[4:len(parts)-1], "/")
+	asset := parts[len(parts)-1]
+	if tag == "" || asset == "" || strings.ContainsAny(tag, "?#\x00\r\n") || strings.ContainsAny(asset, "/\\\x00\r\n") {
+		return ReleaseAssetTarget{}, fmt.Errorf("invalid GitHub release asset URL %q", raw)
+	}
+	return ReleaseAssetTarget{Repository: repo, Tag: tag, Asset: asset, URL: original}, nil
+}
+
+// InferPlatform returns a platform only when the asset name contains a
+// strong, explicit Linux architecture marker. Generic x64/arm64 names are
+// intentionally left unresolved.
+func InferPlatform(assetName string) string {
+	name := strings.TrimSpace(assetName)
+	if linuxAMD64Pattern.MatchString(name) {
+		return "linux-amd64"
+	}
+	if linuxARM64Pattern.MatchString(name) {
+		return "linux-arm64"
+	}
+	// linux64 is a conventional shorthand for Linux amd64, but only accept
+	// it as a complete token to avoid interpreting unrelated names.
+	if linux64Pattern.MatchString(name) {
+		return "linux-amd64"
+	}
+	return ""
 }
 
 type Release struct {
@@ -375,6 +448,9 @@ func (c *Client) DiscoverRelease(ctx context.Context, raw, tag string) (Release,
 	if in.ID <= 0 || in.Tag == "" {
 		return Release{}, &APIError{Kind: APIErrorMalformed, Message: "malformed GitHub release metadata"}
 	}
+	if in.Tag != tag {
+		return Release{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub release tag identity mismatch"}
+	}
 	r := Release{ID: in.ID, Repository: repo, Tag: in.Tag, Draft: in.Draft, Prerelease: in.Prerelease, CreatedAt: in.CreatedAt, PublishedAt: in.PublishedAt}
 	if r.Repository != repo {
 		return Release{}, &APIError{Kind: APIErrorMalformed, Message: "release repository identity mismatch"}
@@ -393,6 +469,47 @@ func (c *Client) DiscoverRelease(ctx context.Context, raw, tag string) (Release,
 		_ = writeJSON(cache, discoveryFile{Version: 1, FetchedAt: c.now(), Releases: []Release{r}})
 	}
 	return r, nil
+}
+
+// ResolvedReleaseAsset is the verified association between a direct download
+// target and the release/asset metadata returned by GitHub.
+type ResolvedReleaseAsset struct {
+	Repository Repository `json:"repository"`
+	Release    Release    `json:"release"`
+	Asset      Asset      `json:"asset"`
+}
+
+// ResolveReleaseAsset performs an exact release-by-tag lookup and selects the
+// exact named asset. It never guesses an asset from a release listing.
+func (c *Client) ResolveReleaseAsset(ctx context.Context, target ReleaseAssetTarget) (ResolvedReleaseAsset, error) {
+	repo, err := ParseRepository(string(target.Repository))
+	if err != nil || repo != target.Repository || target.Tag == "" || target.Asset == "" {
+		return ResolvedReleaseAsset{}, &APIError{Kind: APIErrorMalformed, Message: "invalid release asset target"}
+	}
+	release, err := c.DiscoverRelease(ctx, string(repo), target.Tag)
+	if err != nil {
+		return ResolvedReleaseAsset{}, err
+	}
+	if release.Repository != repo || release.Tag != target.Tag {
+		return ResolvedReleaseAsset{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub release identity mismatch"}
+	}
+	var selected Asset
+	for _, asset := range release.Assets {
+		if asset.Name != target.Asset {
+			continue
+		}
+		if selected.ID != 0 {
+			return ResolvedReleaseAsset{}, &APIError{Kind: APIErrorMalformed, Message: "duplicate GitHub asset identity"}
+		}
+		selected = asset
+	}
+	if selected.ID == 0 {
+		return ResolvedReleaseAsset{}, &APIError{Kind: APIErrorNotFound, Message: fmt.Sprintf("GitHub release asset %q was not found", target.Asset)}
+	}
+	if selected.Repository != repo || selected.ReleaseID != release.ID || selected.Name != target.Asset || selected.State != "uploaded" || !validDownloadURL(selected.URL) {
+		return ResolvedReleaseAsset{}, &APIError{Kind: APIErrorMalformed, Message: "GitHub asset identity mismatch"}
+	}
+	return ResolvedReleaseAsset{Repository: repo, Release: release, Asset: selected}, nil
 }
 
 // RepositoryFile identifies one immutable regular file in a GitHub
@@ -953,6 +1070,7 @@ type Inspection struct {
 	ArtifactType    string            `json:"artifact_type"`
 	ComputedDigests map[string]string `json:"computed_digests,omitempty"`
 	Executables     []string          `json:"executables,omitempty"`
+	Icons           []string          `json:"icons,omitempty"`
 	Nested          []string          `json:"nested,omitempty"`
 	Blockers        []string          `json:"blockers,omitempty"`
 }
@@ -1128,6 +1246,12 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 	}
 	inspection.ArtifactType = string(format)
 	result := inspection
+	type candidate struct {
+		path  string
+		score int
+	}
+	var executableCandidates []candidate
+	var iconCandidates []candidate
 	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -1141,14 +1265,21 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 			if e != nil {
 				return e
 			}
-			var magic [6]byte
-			n, e := io.ReadFull(f, magic[:])
+			// A single bounded read supplies all static evidence used for this
+			// pass. Never execute or invoke a type detector on extracted files.
+			var evidence [4096]byte
+			n, e := io.ReadFull(f, evidence[:])
 			_ = f.Close()
 			if e != nil && e != io.ErrUnexpectedEOF && e != io.EOF {
 				return e
 			}
-			result.Executables = append(result.Executables, rel)
-			if (strings.HasSuffix(strings.ToLower(info.Name()), ".zip") && n >= 2 && bytes.Equal(magic[:2], []byte("PK"))) || (strings.HasSuffix(strings.ToLower(info.Name()), ".tar.gz") && n >= 2 && bytes.Equal(magic[:2], []byte{0x1f, 0x8b})) || (strings.HasSuffix(strings.ToLower(info.Name()), ".tar.xz") && n >= 6 && bytes.Equal(magic[:], []byte{0xfd, '7', 'z', 'X', 'Z', 0})) {
+			if score := executableCandidateScore(rel, info, evidence[:n]); score >= 80 {
+				executableCandidates = append(executableCandidates, candidate{path: rel, score: score})
+			}
+			if score := archiveIconCandidateScore(rel, info, evidence[:n]); score > 0 {
+				iconCandidates = append(iconCandidates, candidate{path: rel, score: score})
+			}
+			if (strings.HasSuffix(strings.ToLower(info.Name()), ".zip") && n >= 2 && bytes.Equal(evidence[:2], []byte("PK"))) || (strings.HasSuffix(strings.ToLower(info.Name()), ".tar.gz") && n >= 2 && bytes.Equal(evidence[:2], []byte{0x1f, 0x8b})) || (strings.HasSuffix(strings.ToLower(info.Name()), ".tar.xz") && n >= 6 && bytes.Equal(evidence[:6], []byte{0xfd, '7', 'z', 'X', 'Z', 0})) {
 				result.Nested = append(result.Nested, rel)
 			}
 		}
@@ -1157,8 +1288,112 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 	if walkErr != nil {
 		return Inspection{}, walkErr
 	}
+	sort.Slice(executableCandidates, func(i, j int) bool {
+		if executableCandidates[i].score != executableCandidates[j].score {
+			return executableCandidates[i].score > executableCandidates[j].score
+		}
+		return executableCandidates[i].path < executableCandidates[j].path
+	})
+	if len(executableCandidates) != 0 {
+		// Retain only candidates close to the strongest static evidence. This
+		// avoids treating bundled build fixtures and helper tools as peers of a
+		// root application executable, while preserving genuine ties for review.
+		minimum := executableCandidates[0].score - 10
+		for _, item := range executableCandidates {
+			if item.score < minimum {
+				break
+			}
+			result.Executables = append(result.Executables, item.path)
+		}
+	}
+	sort.Slice(iconCandidates, func(i, j int) bool {
+		if iconCandidates[i].score != iconCandidates[j].score {
+			return iconCandidates[i].score > iconCandidates[j].score
+		}
+		return iconCandidates[i].path < iconCandidates[j].path
+	})
+	if len(iconCandidates) != 0 {
+		minimum := iconCandidates[0].score - 10
+		for _, item := range iconCandidates {
+			if item.score < minimum {
+				break
+			}
+			result.Icons = append(result.Icons, item.path)
+		}
+	}
 	if len(result.Executables) == 0 {
 		result.Blockers = append(result.Blockers, "NO_EXECUTABLE")
 	}
 	return result, nil
+}
+
+func executableCandidateScore(rel string, info os.FileInfo, evidence []byte) int {
+	if info == nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return 0
+	}
+	elf := len(evidence) >= 4 && bytes.Equal(evidence[:4], []byte{0x7f, 'E', 'L', 'F'})
+	shebang := bytes.HasPrefix(evidence, []byte("#!"))
+	executableMode := info.Mode()&0o111 != 0
+	if !elf && !shebang && !executableMode {
+		return 0
+	}
+	score := 40
+	if executableMode {
+		score += 30
+	}
+	if elf {
+		score += 30
+	} else if shebang {
+		score += 20
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) == 1 {
+		score += 30
+	}
+	for _, part := range parts[:len(parts)-1] {
+		switch strings.ToLower(part) {
+		case "bin", "sbin":
+			score += 20
+		case "test", "tests", "doc", "docs", "examples", "example", "tools", "tool", "scripts", "lib", "vendor", ".github":
+			score -= 50
+		}
+	}
+	return score
+}
+
+func archiveIconCandidateScore(rel string, info os.FileInfo, evidence []byte) int {
+	if info == nil || !info.Mode().IsRegular() || info.Size() < 0 || info.Size() > maxArchiveIconBytes {
+		return 0
+	}
+	ext := strings.ToLower(filepath.Ext(rel))
+	if ext != ".png" && ext != ".svg" {
+		return 0
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	base := strings.ToLower(parts[len(parts)-1])
+	base = strings.TrimSuffix(base, ext)
+	score := 0
+	if base == "icon" || base == "logo" || strings.Contains(base, "icon") || strings.Contains(base, "logo") {
+		score += 60
+	}
+	for _, part := range parts[:len(parts)-1] {
+		if strings.EqualFold(part, "icon") || strings.EqualFold(part, "icons") {
+			score += 40
+			break
+		}
+		switch strings.ToLower(part) {
+		case "doc", "docs", "test", "tests", "examples", "example", "lib", "vendor", ".github":
+			score -= 50
+		}
+	}
+	if score < 60 {
+		return 0
+	}
+	// A PNG signature gives a small additional signal; SVG is deliberately
+	// accepted by extension because valid SVG files begin with optional XML,
+	// comments, or whitespace rather than one fixed magic sequence.
+	if ext == ".png" && len(evidence) >= 8 && bytes.Equal(evidence[:8], []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
+		score += 10
+	}
+	return score
 }
