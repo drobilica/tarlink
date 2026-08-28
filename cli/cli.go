@@ -89,8 +89,37 @@ var registryCommandHelp = map[string]string{
 	"icons": "usage: tarlink registry icons <path> [--app <id>] [--fix] [--json]",
 }
 
+// RegistryMaintainerCommand reports whether arguments select a registry
+// maintainer subcommand that runs on the maintainer composition path and
+// therefore must not require the application runtime. Lifecycle-backed
+// registry subcommands (check, freshness) are excluded.
+func RegistryMaintainerCommand(arguments []string) bool {
+	if len(arguments) < 2 || arguments[0] != "registry" {
+		return false
+	}
+	switch arguments[1] {
+	case "validate", "inspect", "add", "candidates", "blockers", "icons":
+		return true
+	}
+	return false
+}
+
+// RegistryTools is the CLI's composition slot for registry-maintainer
+// capabilities. Each capability is optional; a command whose capability is
+// absent reports it as unavailable. Maintainer commands must not require the
+// application runtime (Service).
+type RegistryTools struct {
+	Validation app.RegistryValidationService
+	Research   app.ResearchService
+	Onboarding app.RegistryOnboardingService
+	Candidates app.CandidateService
+	Blockers   app.BlockerService
+	Icons      app.RegistryIconService
+}
+
 type Runner struct {
 	Service   app.Service
+	Registry  RegistryTools
 	Stdout    io.Writer
 	Stderr    io.Writer
 	Stdin     io.Reader
@@ -132,7 +161,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			return 0
 		}
 	}
-	if r.Service == nil && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" {
+	if r.Service == nil && !RegistryMaintainerCommand(arguments) && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" {
 		return r.fail(errors.New("TarLink core is unavailable"))
 	}
 	var err error
@@ -143,7 +172,10 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			break
 		}
 		if len(arguments) == 3 && arguments[1] == "validate" {
-			err = r.Service.ValidateRegistry(ctx, arguments[2])
+			if r.Registry.Validation == nil {
+				return r.fail(errors.New("registry validation is unavailable"))
+			}
+			err = r.Registry.Validation.ValidateRegistry(ctx, arguments[2])
 			if err == nil {
 				_, err = fmt.Fprintln(r.Stdout, "Registry is valid")
 			}
@@ -190,11 +222,10 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				if parseErr != nil {
 					return r.invalid(registryCommandHelp["inspect"])
 				}
-				service, ok := r.Service.(app.RegistryOnboardingService)
-				if !ok {
+				if r.Registry.Onboarding == nil {
 					return r.fail(errors.New("registry onboarding is unavailable"))
 				}
-				value, inspectErr := service.InspectRegistry(ctx, app.RegistryInspectOptions{Target: target, Refresh: refresh})
+				value, inspectErr := r.Registry.Onboarding.InspectRegistry(ctx, app.RegistryInspectOptions{Target: target, Refresh: refresh})
 				if inspectErr != nil {
 					return r.fail(inspectErr)
 				}
@@ -210,11 +241,10 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				return r.invalid(registryCommandHelp["inspect"])
 			}
 			opts.Inspect = true
-			service, ok := r.Service.(app.ResearchService)
-			if !ok {
+			if r.Registry.Research == nil {
 				return r.fail(errors.New("registry research is unavailable"))
 			}
-			value, researchErr := service.Research(ctx, opts)
+			value, researchErr := r.Registry.Research.Research(ctx, opts)
 			if researchErr != nil {
 				if jsonOutput {
 					// The app facade returns a structured ERROR result for provider
@@ -250,11 +280,10 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			if parseErr != nil {
 				return r.invalid(registryCommandHelp["add"])
 			}
-			service, ok := r.Service.(app.RegistryOnboardingService)
-			if !ok {
+			if r.Registry.Onboarding == nil {
 				return r.fail(errors.New("registry onboarding is unavailable"))
 			}
-			value, addErr := service.AddRegistry(ctx, options)
+			value, addErr := r.Registry.Onboarding.AddRegistry(ctx, options)
 			if addErr != nil {
 				return r.fail(addErr)
 			}
@@ -299,13 +328,12 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			if parseErr != nil {
 				return r.invalid("usage: tarlink registry candidates [--changed] [--json]")
 			}
-			service, ok := r.Service.(app.CandidateService)
-			if !ok {
+			if r.Registry.Candidates == nil {
 				return r.fail(errors.New("candidate ledger is unavailable"))
 			}
 			if changed {
 				var v research.CandidateChanges
-				v, err = service.CandidateChanges(ctx)
+				v, err = r.Registry.Candidates.CandidateChanges(ctx)
 				if err == nil {
 					if jsonOutput {
 						err = writeJSON(r.Stdout, v)
@@ -315,7 +343,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				}
 			} else {
 				var v research.CandidateLedger
-				v, err = service.CandidateLedger()
+				v, err = r.Registry.Candidates.CandidateLedger()
 				if err == nil {
 					if jsonOutput {
 						err = writeJSON(r.Stdout, v)
@@ -336,13 +364,12 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			if parseErr != nil {
 				return r.invalid("usage: tarlink registry blockers [--capability <capability>] [--json]")
 			}
-			service, ok := r.Service.(app.BlockerService)
-			if !ok {
+			if r.Registry.Blockers == nil {
 				return r.fail(errors.New("blocker analysis is unavailable"))
 			}
 			if capability == "" {
 				var v []research.BlockerSummary
-				v, err = service.Blockers("")
+				v, err = r.Registry.Blockers.Blockers("")
 				if err == nil {
 					if jsonOutput {
 						err = writeJSON(r.Stdout, v)
@@ -357,7 +384,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				}
 			} else {
 				var v []research.CapabilityResult
-				v, err = service.CapabilityPreflight(capability)
+				v, err = r.Registry.Blockers.CapabilityPreflight(capability)
 				if err == nil {
 					if jsonOutput {
 						err = writeJSON(r.Stdout, v)
@@ -373,12 +400,11 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			if parseErr != nil {
 				return r.invalid(registryCommandHelp["icons"])
 			}
-			service, ok := r.Service.(app.RegistryIconService)
-			if !ok {
+			if r.Registry.Icons == nil {
 				return r.fail(errors.New("registry icon maintenance is unavailable"))
 			}
 			var report app.RegistryIconReport
-			report, err = service.RegistryIcons(ctx, options)
+			report, err = r.Registry.Icons.RegistryIcons(ctx, options)
 			if err == nil {
 				if jsonOutput {
 					err = writeJSON(r.Stdout, report)

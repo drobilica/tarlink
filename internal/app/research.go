@@ -50,14 +50,14 @@ type ResearchFailure struct {
 func (e *ResearchFailure) Error() string { return e.Err.Error() }
 func (e *ResearchFailure) Unwrap() error { return e.Err }
 
-func (core *Core) Research(ctx context.Context, options ResearchOptions) (ResearchResult, error) {
+func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (ResearchResult, error) {
 	repo, err := research.ParseRepository(options.Repository)
 	if err != nil {
 		return ResearchResult{}, &ResearchFailure{ReasonCode: "INVALID_REPOSITORY", Err: err}
 	}
-	client := &research.Client{CacheRoot: filepath.Join(core.layout.Cache, "registry-research"), Refresh: options.Refresh}
-	if core.syncer != nil && core.syncer.Client != nil {
-		client.HTTP = core.syncer.Client.HTTP
+	client := &research.Client{CacheRoot: filepath.Join(m.layout.Cache, "registry-research"), Refresh: options.Refresh}
+	if m.client != nil {
+		client.HTTP = m.client.HTTP
 	}
 	var releases []research.Release
 	// A tag selector has an exact GitHub endpoint in the research client when
@@ -112,12 +112,12 @@ func (core *Core) Research(ctx context.Context, options ResearchOptions) (Resear
 		var inspection research.Inspection
 		var inspectErr error
 		if verification.Verdict == research.Acceptable {
-			inspection, inspectErr = client.InspectAsset(ctx, asset, verification, researchFormat(asset.Name), core.goarch)
+			inspection, inspectErr = client.InspectAsset(ctx, asset, verification, researchFormat(asset.Name), research.TargetArchitecture(asset.Name))
 		} else {
 			artifact, fetchErr := client.FetchUnverified(ctx, asset)
 			if fetchErr == nil {
 				defer func() { _ = artifact.Cleanup() }()
-				inspection, inspectErr = research.Inspect(ctx, artifact, researchFormat(asset.Name), core.goarch)
+				inspection, inspectErr = research.Inspect(ctx, artifact, researchFormat(asset.Name), research.TargetArchitecture(asset.Name))
 			} else {
 				inspectErr = fetchErr
 			}

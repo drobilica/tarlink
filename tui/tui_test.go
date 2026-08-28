@@ -48,7 +48,6 @@ func (f *fakeService) Versions(context.Context, string) ([]app.Version, error) {
 func (f *fakeService) SyncRegistry(context.Context, app.ProgressSink) (time.Time, error) {
 	return time.Time{}, nil
 }
-func (f *fakeService) ValidateRegistry(context.Context, string) error { return nil }
 func (f *fakeService) CheckTarLinkVersion(context.Context) (app.TarLinkVersion, error) {
 	return app.TarLinkVersion{}, nil
 }

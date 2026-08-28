@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -31,7 +32,6 @@ type fakeService struct {
 	applications   []app.Application
 	uninstalled    []string
 	uninstalledAll bool
-	validatedRoot  string
 	tarlinkVersion app.TarLinkVersion
 	upgradeValue   app.TarLinkVersion
 	pathConflicts  []app.PathConflict
@@ -79,10 +79,6 @@ func (f *fakeService) SyncRegistry(context.Context, app.ProgressSink) (time.Time
 	f.synced = true
 	return time.Date(2026, 8, 27, 12, 34, 56, 0, time.UTC), nil
 }
-func (f *fakeService) ValidateRegistry(_ context.Context, root string) error {
-	f.validatedRoot = root
-	return nil
-}
 func (f *fakeService) CheckTarLinkVersion(context.Context) (app.TarLinkVersion, error) {
 	return f.tarlinkVersion, nil
 }
@@ -109,7 +105,6 @@ type freshnessService struct {
 }
 
 type researchService struct {
-	fakeService
 	result  app.ResearchResult
 	err     error
 	options app.ResearchOptions
@@ -133,7 +128,7 @@ func (f *researchService) Research(_ context.Context, options app.ResearchOption
 }
 
 func TestRegistryProvenanceCommandIsRemoved(t *testing.T) {
-	if code := (Runner{Service: &researchService{}, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo"}); code != 2 {
+	if code := (Runner{Service: &fakeService{}, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "provenance", "owner/repo"}); code != 2 {
 		t.Fatalf("provenance exit code = %d, want 2", code)
 	}
 }
@@ -141,7 +136,7 @@ func TestRegistryProvenanceCommandIsRemoved(t *testing.T) {
 func TestRegistryInspectRepositoryJSONSelectors(t *testing.T) {
 	var out bytes.Buffer
 	service := &researchService{result: app.ResearchResult{Repository: "owner/repo", Release: research.Release{ID: 10, Tag: "v1"}, Asset: research.Asset{ID: 20, Name: "linux.zip", Digest: "sha256:abc"}, Provenance: research.Provenance{Verdict: research.Acceptable, Algorithm: "sha256", Digest: "sha256:abc", Message: "ok"}}}
-	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1", "--asset", "linux.zip", "--refresh", "--json"})
+	code := (Runner{Registry: RegistryTools{Research: service}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1", "--asset", "linux.zip", "--refresh", "--json"})
 	if code != 0 {
 		t.Fatalf("code=%d output=%q", code, out.String())
 	}
@@ -153,7 +148,7 @@ func TestRegistryInspectRepositoryJSONSelectors(t *testing.T) {
 func TestRegistryResearchJSONErrorIsJSONOnly(t *testing.T) {
 	var out bytes.Buffer
 	service := &researchService{err: &app.ResearchFailure{ReasonCode: "ASSET_NOT_FOUND", Err: errors.New("asset not found")}}
-	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
+	code := (Runner{Registry: RegistryTools{Research: service}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
 	if code == 0 || !bytes.Contains(out.Bytes(), []byte(`"reason_code":"ASSET_NOT_FOUND"`)) || !bytes.Contains(out.Bytes(), []byte(`"error"`)) {
 		t.Fatalf("code=%d output=%q", code, out.String())
 	}
@@ -170,7 +165,7 @@ func TestRegistryResearchProviderFailureIsStructuredErrorResult(t *testing.T) {
 		},
 		err: &app.ResearchFailure{ReasonCode: "RATE_LIMITED", Kind: research.APIErrorRateLimited, HTTPStatus: 429, Err: errors.New("GitHub API rate limit exceeded")},
 	}
-	code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
+	code := (Runner{Registry: RegistryTools{Research: service}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
 	if code == 0 {
 		t.Fatal("provider failure returned success")
 	}
@@ -192,7 +187,7 @@ func TestRegistryResearchJSONHasStableResultShape(t *testing.T) {
 			Provenance: research.Provenance{Verdict: verdict, ReasonCode: "TEST", Message: "fixture"},
 			Status:     map[research.Verdict]string{research.Acceptable: "READY_FOR_REVIEW", research.Rejected: "BLOCKED", research.Error: "ERROR"}[verdict],
 		}}
-		if code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"}); code != 0 {
+		if code := (Runner{Registry: RegistryTools{Research: service}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"}); code != 0 {
 			t.Fatalf("verdict %s code=%d", verdict, code)
 		}
 		var got map[string]any
@@ -214,7 +209,7 @@ func TestRegistryInspectHumanOutputIncludesArchiveFacts(t *testing.T) {
 		Provenance: research.Provenance{Verdict: research.Acceptable, Algorithm: "sha256", Digest: "abc", Message: "ok"}, Status: "READY_FOR_REVIEW",
 		Inspection: &research.Inspection{ArtifactType: "tar.gz", Executables: []string{"app"}, Nested: []string{"data.zip"}},
 	}}
-	if code := (Runner{Service: service, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo"}); code != 0 {
+	if code := (Runner{Registry: RegistryTools{Research: service}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo"}); code != 0 {
 		t.Fatalf("inspect code=%d output=%q", code, out.String())
 	}
 	for _, field := range []string{"Executables: app", "Nested archives: data.zip"} {
@@ -449,12 +444,49 @@ func TestInstallSelectorPreflightUsesApplicationID(t *testing.T) {
 	}
 }
 
+type registryValidationService struct {
+	root string
+	err  error
+}
+
+func (f *registryValidationService) ValidateRegistry(_ context.Context, root string) error {
+	f.root = root
+	return f.err
+}
+
 func TestRegistryValidateCommand(t *testing.T) {
-	service := &fakeService{}
+	service := &registryValidationService{}
 	var out, errOut bytes.Buffer
-	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "validate", "/registry"})
-	if code != 0 || service.validatedRoot != "/registry" || out.String() != "Registry is valid\n" {
-		t.Fatalf("code=%d root=%q stdout=%q stderr=%q", code, service.validatedRoot, out.String(), errOut.String())
+	code := (Runner{Registry: RegistryTools{Validation: service}, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "validate", "/registry"})
+	if code != 0 || service.root != "/registry" || out.String() != "Registry is valid\n" {
+		t.Fatalf("code=%d root=%q stdout=%q stderr=%q", code, service.root, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryValidateCommandFailurePath(t *testing.T) {
+	service := &registryValidationService{err: errors.New("registry validation failed")}
+	var out, errOut bytes.Buffer
+	code := (Runner{Registry: RegistryTools{Validation: service}, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "validate", "/registry"})
+	if code == 0 || !strings.Contains(errOut.String(), "registry validation failed") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryValidationCapabilityUnavailable(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := (Runner{Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "validate", "/registry"})
+	if code == 0 || !strings.Contains(errOut.String(), "registry validation is unavailable") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryMaintainerHelpNeedsNoRuntime(t *testing.T) {
+	for _, args := range [][]string{{"registry", "validate", "--help"}, {"registry", "icons", "--help"}} {
+		var out, errOut bytes.Buffer
+		code := (Runner{Stdout: &out, Stderr: &errOut}).Run(context.Background(), args)
+		if code != 0 || !bytes.Contains(out.Bytes(), []byte("usage: tarlink registry")) {
+			t.Fatalf("args=%v code=%d output=%q stderr=%q", args, code, out.String(), errOut.String())
+		}
 	}
 }
 
@@ -483,5 +515,62 @@ func TestRegistryCheckCommandRejectsAmbiguousScope(t *testing.T) {
 	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry", "--app", "fixture", "--all-artifacts"})
 	if code == 0 || !bytes.Contains([]byte(errOut.String()), []byte("usage: tarlink registry check")) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+type blockerService struct {
+	results []research.BlockerSummary
+}
+
+func (f *blockerService) Blockers(string) ([]research.BlockerSummary, error) {
+	return f.results, nil
+}
+func (f *blockerService) CapabilityPreflight(string) ([]research.CapabilityResult, error) {
+	return nil, errors.New("unused")
+}
+
+func TestRegistryBlockersRunsWithoutOperationalService(t *testing.T) {
+	service := &blockerService{results: []research.BlockerSummary{{Blocker: "UNSUPPORTED_ARTIFACT", Count: 3}}}
+	var out, errOut bytes.Buffer
+	code := (Runner{Registry: RegistryTools{Blockers: service}, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "blockers"})
+	want := fmt.Sprintf("%-32s %d\n", "UNSUPPORTED_ARTIFACT", 3)
+	if code != 0 || out.String() != want {
+		t.Fatalf("code=%d stdout=%q want=%q stderr=%q", code, out.String(), want, errOut.String())
+	}
+}
+
+func TestRegistryCheckRequiresOperationalService(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := (Runner{Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry"})
+	if code == 0 || !strings.Contains(errOut.String(), "TarLink core is unavailable") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryFreshnessRequiresOperationalService(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := (Runner{Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "freshness", "pcsx2"})
+	if code == 0 || !strings.Contains(errOut.String(), "TarLink core is unavailable") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryMaintainerCommandClassifier(t *testing.T) {
+	for _, subcommand := range []string{"validate", "inspect", "add", "candidates", "blockers", "icons"} {
+		if !RegistryMaintainerCommand([]string{"registry", subcommand, "argument"}) {
+			t.Fatalf("registry %s should be a maintainer command", subcommand)
+		}
+	}
+	for _, arguments := range [][]string{
+		{"registry", "check", "/registry"},
+		{"registry", "freshness", "pcsx2"},
+		{"registry"},
+		{"install", "blender"},
+		{"list"},
+		{"version"},
+	} {
+		if RegistryMaintainerCommand(arguments) {
+			t.Fatalf("args %v must not be a maintainer command", arguments)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,5 +60,49 @@ func TestValidateRejectsSymlinkAndDirectory(t *testing.T) {
 	directory := t.TempDir()
 	if err := ValidatePath(directory, "amd64"); err == nil {
 		t.Fatal("directory unexpectedly accepted")
+	}
+}
+
+func TestValidateSupportedTarget(t *testing.T) {
+	if err := ValidateSupportedTarget(fixture(t, 2, 0x3e)); err != nil {
+		t.Fatalf("valid amd64 AppImage rejected: %v", err)
+	}
+	if err := ValidateSupportedTarget(fixture(t, 2, 0xb7)); err != nil {
+		t.Fatalf("valid arm64 AppImage rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name   string
+		errMsg string
+	}{
+		{"unsupported machine", "architecture mismatch"},
+		{"short file", ""},
+		{"non-ELF", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var path string
+			switch tc.name {
+			case "unsupported machine":
+				path = fixture(t, 2, 0x03)
+			case "short file":
+				path = filepath.Join(t.TempDir(), "short")
+				if err := os.WriteFile(path, []byte("not an AppImage"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "non-ELF":
+				data := make([]byte, 64)
+				data[0] = 'x'
+				path = filepath.Join(t.TempDir(), "non-elf")
+				if err := os.WriteFile(path, data, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := ValidateSupportedTarget(path)
+			if err == nil {
+				t.Fatal("artifact unexpectedly accepted")
+			}
+			if tc.errMsg != "" && !strings.Contains(err.Error(), tc.errMsg) {
+				t.Fatalf("error %q does not contain %q", err, tc.errMsg)
+			}
+		})
 	}
 }

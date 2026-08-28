@@ -117,6 +117,23 @@ func TestInferPlatformConservative(t *testing.T) {
 	}
 }
 
+func TestTargetArchitectureFromAssetName(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{"app-linux-x64.zip", "amd64"},
+		{"app-linux-amd64.tar.gz", "amd64"},
+		{"app-linux64.zip", "amd64"},
+		{"app-linux-aarch64.tar.gz", "arm64"},
+		{"app-linux-arm64.tar.gz", "arm64"},
+		{"app-x64.zip", ""},
+		{"app-arm64.zip", ""},
+		{"app-linux-x64.AppImage", "amd64"},
+	} {
+		if got := TargetArchitecture(tc.name); got != tc.want {
+			t.Errorf("TargetArchitecture(%q)=%q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestResolveReleaseAssetExactIdentity(t *testing.T) {
 	body := `{"id":20,"tag_name":"v1","assets":[{"id":30,"name":"app.zip","browser_download_url":"https://objects.example/app.zip","size":4,"state":"uploaded"}]}`
 	c := &Client{APIBase: "https://api.example", HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
@@ -712,32 +729,64 @@ func TestInspectArchiveCancellationIsError(t *testing.T) {
 	}
 }
 
-func TestInspectAppImageArchitectureBlocker(t *testing.T) {
-	b := make([]byte, 64)
-	copy(b[:4], []byte{0x7f, 'E', 'L', 'F'})
-	b[4] = 2
-	b[5] = 1
-	b[6] = 1
-	copy(b[8:11], []byte{'A', 'I', 2})
-	b[16] = 2
-	b[18] = 0xb7
-	d := testDir(t)
-	p := filepath.Join(d, "x.AppImage")
-	if err := os.WriteFile(p, b, 0755); err != nil {
-		t.Fatal(err)
-	}
-	r, e := Inspect(context.Background(), Artifact{Path: p, Size: int64(len(b))}, "appimage", "amd64")
-	if e != nil {
-		t.Fatal(e)
-	}
-	found := false
-	for _, x := range r.Blockers {
-		if x == "UNSUPPORTED_ARCH" {
-			found = true
+func TestInspectAppImageArchitectureSemantics(t *testing.T) {
+	arm64 := make([]byte, 64)
+	copy(arm64[:4], []byte{0x7f, 'E', 'L', 'F'})
+	arm64[4] = 2
+	arm64[5] = 1
+	arm64[6] = 1
+	copy(arm64[8:11], []byte{'A', 'I', 2})
+	arm64[16] = 2
+	arm64[18] = 0xb7
+	unsupported := make([]byte, 64)
+	copy(unsupported, arm64)
+	unsupported[18] = 0x03
+	write := func(t *testing.T, data []byte) string {
+		t.Helper()
+		p := filepath.Join(testDir(t), "x.AppImage")
+		if err := os.WriteFile(p, data, 0755); err != nil {
+			t.Fatal(err)
 		}
+		return p
 	}
-	if !found {
-		t.Fatalf("%#v", r)
+	inspect := func(t *testing.T, path, expected string) Inspection {
+		t.Helper()
+		r, e := Inspect(context.Background(), Artifact{Path: path, Size: 64}, "appimage", expected)
+		if e != nil {
+			t.Fatal(e)
+		}
+		return r
+	}
+	blocked := func(r Inspection) bool {
+		for _, x := range r.Blockers {
+			if x == "UNSUPPORTED_ARCH" {
+				return true
+			}
+		}
+		return false
+	}
+	for _, tc := range []struct {
+		name        string
+		data        []byte
+		expected    string
+		wantBlocked bool
+	}{
+		{"arm64-elf-expected-amd64-name-contradiction", arm64, "amd64", true},
+		{"arm64-elf-expected-arm64", arm64, "arm64", false},
+		{"arm64-elf-ambiguous-name", arm64, "", false},
+		{"unsupported-elf-machine-ambiguous-name", unsupported, "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inspect(t, write(t, tc.data), tc.expected)
+			if blocked(got) != tc.wantBlocked {
+				t.Fatalf("UNSUPPORTED_ARCH=%v, want %v (%#v)", blocked(got), tc.wantBlocked, got)
+			}
+		})
+	}
+	explicit := inspect(t, write(t, arm64), "arm64")
+	ambiguous := inspect(t, write(t, arm64), "")
+	if explicit.ArtifactType != ambiguous.ArtifactType || !reflect.DeepEqual(explicit.ComputedDigests, ambiguous.ComputedDigests) || !reflect.DeepEqual(explicit.Blockers, ambiguous.Blockers) {
+		t.Fatalf("ambiguous expectedArch changed the inspection: %#v vs %#v", explicit, ambiguous)
 	}
 }
 

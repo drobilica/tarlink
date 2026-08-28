@@ -134,6 +134,21 @@ func InferPlatform(assetName string) string {
 	return ""
 }
 
+// TargetArchitecture derives the expected target architecture of a release
+// asset from artifact-name evidence only. It returns "amd64", "arm64", or ""
+// when the name does not encode an architecture. An empty result is
+// ambiguity to be handled explicitly, never a reason to fall back to the
+// host architecture.
+func TargetArchitecture(assetName string) string {
+	switch InferPlatform(assetName) {
+	case "linux-amd64":
+		return "amd64"
+	case "linux-arm64":
+		return "arm64"
+	}
+	return ""
+}
+
 type Release struct {
 	ID          int64      `json:"id"`
 	Repository  Repository `json:"repository"`
@@ -1091,28 +1106,36 @@ const (
 
 var inspectParserHook func() error
 
-func Inspect(ctx context.Context, artifact Artifact, format archive.Format, arch string) (Inspection, error) {
+// Inspect analyzes one verified or locally sourced artifact. The expectedArch
+// must come from TargetArchitecture, which derives it from artifact-name
+// evidence only; "" means the asset name does not determine an architecture
+// and is handled explicitly, never by falling back to the host architecture.
+func Inspect(ctx context.Context, artifact Artifact, format archive.Format, expectedArch string) (Inspection, error) {
 	if artifact.Path == "" {
 		return Inspection{}, errors.New("artifact path is empty")
 	}
-	return inspectVerified(ctx, artifact, format, arch)
+	return inspectVerified(ctx, artifact, format, expectedArch)
 }
 
 // InspectAsset reacquires and verifies the exact immutable asset immediately
 // before parsing. A cache mutation is treated as corruption and retried once.
-func (c *Client) InspectAsset(ctx context.Context, asset Asset, p Provenance, format archive.Format, arch string) (Inspection, error) {
+// The expectedArch must come from TargetArchitecture, which derives it from
+// artifact-name evidence only; "" means the asset name does not determine an
+// architecture and is handled explicitly, never by falling back to the host
+// architecture.
+func (c *Client) InspectAsset(ctx context.Context, asset Asset, p Provenance, format archive.Format, expectedArch string) (Inspection, error) {
 	a, err := c.Fetch(ctx, asset, p)
 	if err != nil {
 		return Inspection{}, err
 	}
-	r, err := inspectVerified(ctx, a, format, arch)
+	r, err := inspectVerified(ctx, a, format, expectedArch)
 	if err != nil && errors.Is(err, ErrCacheCorrupt) {
 		_ = os.Remove(a.Path)
 		a, err = c.Fetch(ctx, asset, p)
 		if err != nil {
 			return Inspection{}, err
 		}
-		r, err := inspectVerified(ctx, a, format, arch)
+		r, err := inspectVerified(ctx, a, format, expectedArch)
 		if errors.Is(err, ErrCacheCorrupt) {
 			_ = os.Remove(a.Path)
 		}
@@ -1121,7 +1144,7 @@ func (c *Client) InspectAsset(ctx context.Context, asset Asset, p Provenance, fo
 	return r, err
 }
 
-func inspectVerified(ctx context.Context, artifact Artifact, format archive.Format, arch string) (Inspection, error) {
+func inspectVerified(ctx context.Context, artifact Artifact, format archive.Format, expectedArch string) (Inspection, error) {
 	if ctx != nil && ctx.Err() != nil {
 		return Inspection{}, &InspectError{Kind: InspectErrorCanceled, Cause: ctx.Err()}
 	}
@@ -1205,7 +1228,13 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 		if ce != nil {
 			return Inspection{}, ce
 		}
-		if err := appimage.ValidatePath(copyPath, arch); err != nil {
+		var err error
+		if expectedArch != "" {
+			err = appimage.ValidatePath(copyPath, expectedArch)
+		} else {
+			err = appimage.ValidateSupportedTarget(copyPath)
+		}
+		if err != nil {
 			if strings.Contains(err.Error(), "architecture mismatch") {
 				return Inspection{ArtifactType: "appimage", ComputedDigests: inspection.ComputedDigests, Blockers: []string{"UNSUPPORTED_ARCH"}}, nil
 			}

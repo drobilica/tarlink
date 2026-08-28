@@ -356,17 +356,6 @@ func (core *Core) SyncRegistry(ctx context.Context, sink ProgressSink) (time.Tim
 	return checkedAt, nil
 }
 
-func (core *Core) ValidateRegistry(_ context.Context, root string) error {
-	absolute, err := filepath.Abs(root)
-	if err != nil {
-		return classify("registry validate", err)
-	}
-	if _, err := registry.ValidateTree(absolute); err != nil {
-		return classify("registry validate", err)
-	}
-	return nil
-}
-
 func (core *Core) syncRegistry(ctx context.Context, sink ProgressSink) error {
 	_, err := core.syncRegistryAt(ctx, sink)
 	return err

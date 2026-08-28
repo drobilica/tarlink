@@ -7,31 +7,31 @@ import (
 	"github.com/drobilica/tarlink/internal/research"
 )
 
-func (core *Core) candidateLedger() (research.CandidateLedger, error) {
+func candidateLedger() (research.CandidateLedger, error) {
 	return research.LoadLedger(filepath.Join("registry-research", "candidates.yaml"))
 }
 
-func (core *Core) CandidateChanges(ctx context.Context) (research.CandidateChanges, error) {
-	l, err := core.candidateLedger()
+func (m *Maintainer) CandidateChanges(ctx context.Context) (research.CandidateChanges, error) {
+	l, err := candidateLedger()
 	if err != nil {
 		return research.CandidateChanges{}, err
 	}
-	c := &research.Client{CacheRoot: filepath.Join(core.layout.Cache, "registry-research")}
-	if core.syncer != nil && core.syncer.Client != nil {
-		c.HTTP = core.syncer.Client.HTTP
+	c := &research.Client{CacheRoot: filepath.Join(m.layout.Cache, "registry-research")}
+	if m.client != nil {
+		c.HTTP = m.client.HTTP
 	}
 	return research.DetectChanges(ctx, c, l), nil
 }
-func (core *Core) CandidateLedger() (research.CandidateLedger, error) { return core.candidateLedger() }
-func (core *Core) Blockers(capability string) ([]research.BlockerSummary, error) {
-	l, e := core.candidateLedger()
+func (m *Maintainer) CandidateLedger() (research.CandidateLedger, error) { return candidateLedger() }
+func (m *Maintainer) Blockers(capability string) ([]research.BlockerSummary, error) {
+	l, e := candidateLedger()
 	if e != nil {
 		return nil, e
 	}
 	return research.SummarizeBlockers(l, capability)
 }
-func (core *Core) CapabilityPreflight(capability string) ([]research.CapabilityResult, error) {
-	l, e := core.candidateLedger()
+func (m *Maintainer) CapabilityPreflight(capability string) ([]research.CapabilityResult, error) {
+	l, e := candidateLedger()
 	if e != nil {
 		return nil, e
 	}

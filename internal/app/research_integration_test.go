@@ -54,11 +54,8 @@ func TestCoreResearchProviderFailureIsStructuredAndCLIJSONOnly(t *testing.T) {
 			Request:    r,
 		}, nil
 	})}}
-	core, err := app.NewCore(layout, client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, researchErr := core.Research(context.Background(), app.ResearchOptions{Repository: "Owner/Repo"})
+	m := app.NewMaintainer(layout, client)
+	result, researchErr := m.Research(context.Background(), app.ResearchOptions{Repository: "Owner/Repo"})
 	if researchErr == nil || result.Repository != "owner/repo" || result.Provenance.Verdict != research.Error || result.Status != "ERROR" {
 		t.Fatalf("result=%+v err=%v", result, researchErr)
 	}
@@ -68,7 +65,7 @@ func TestCoreResearchProviderFailureIsStructuredAndCLIJSONOnly(t *testing.T) {
 
 	var stdout strings.Builder
 	var stderr strings.Builder
-	code := (cli.Runner{Service: core, Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"registry", "inspect", "Owner/Repo", "--json"})
+	code := (cli.Runner{Registry: cli.RegistryTools{Research: m}, Stdout: &stdout, Stderr: &stderr}).Run(context.Background(), []string{"registry", "inspect", "Owner/Repo", "--json"})
 	if code == 0 {
 		t.Fatal("CLI returned success for provider failure")
 	}
@@ -81,7 +78,7 @@ func TestCoreResearchProviderFailureIsStructuredAndCLIJSONOnly(t *testing.T) {
 	}
 }
 
-func newResearchCore(t *testing.T, handler func(*http.Request) *http.Response) *app.Core {
+func newResearchMaintainer(t *testing.T, handler func(*http.Request) *http.Response) *app.Maintainer {
 	t.Helper()
 	home := t.TempDir()
 	layout, err := filesystem.LayoutFor(home, func(name string) string {
@@ -102,11 +99,8 @@ func newResearchCore(t *testing.T, handler func(*http.Request) *http.Response) *
 	client := &download.Client{HTTP: &http.Client{Transport: researchRoundTrip(func(r *http.Request) (*http.Response, error) {
 		return handler(r), nil
 	})}}
-	core, err := app.NewCore(layout, client)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return core
+	m := app.NewMaintainer(layout, client)
+	return m
 }
 
 func researchReleaseJSON(assets string) string {
@@ -124,34 +118,34 @@ func jsonResponse(status int, body string) *http.Response {
 func TestResearchSelectorsAndRefreshRemainAvailableToInspection(t *testing.T) {
 	digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	calls := 0
-	core := newResearchCore(t, func(r *http.Request) *http.Response {
+	m := newResearchMaintainer(t, func(r *http.Request) *http.Response {
 		calls++
 		return jsonResponse(http.StatusOK, researchReleaseJSON(researchAssetJSON(20, "linux.zip", digest)))
 	})
-	result, err := core.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo"})
+	result, err := m.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo"})
 	if err != nil || result.Asset.Name != "linux.zip" || result.Provenance.Verdict != research.Acceptable {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	_, err = core.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo"})
+	_, err = m.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
 		t.Fatalf("expected discovery cache hit, calls=%d", calls)
 	}
-	_, err = core.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo", Refresh: true})
+	_, err = m.Research(context.Background(), app.ResearchOptions{Repository: "owner/repo", Refresh: true})
 	if err != nil || calls != 2 {
 		t.Fatalf("refresh did not bypass cache, calls=%d", calls)
 	}
 }
 
 func TestCoreResearchCLIMalformedRepository(t *testing.T) {
-	core := newResearchCore(t, func(*http.Request) *http.Response {
+	m := newResearchMaintainer(t, func(*http.Request) *http.Response {
 		t.Fatal("malformed repository made a network request")
 		return nil
 	})
 	var out strings.Builder
-	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "github.com/owner/repo", "--json"})
+	code := (cli.Runner{Registry: cli.RegistryTools{Research: m}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "github.com/owner/repo", "--json"})
 	if code == 0 || !strings.Contains(out.String(), `"reason_code":"INVALID_REPOSITORY"`) {
 		t.Fatalf("malformed repository output=%s code=%d", out.String(), code)
 	}
@@ -159,7 +153,7 @@ func TestCoreResearchCLIMalformedRepository(t *testing.T) {
 
 func TestCoreResearchCLIInspectWithoutGitHubDigestReportsArtifactBlocker(t *testing.T) {
 	body := strings.Replace(researchReleaseJSON(researchAssetJSON(20, "linux.bin", "")), `"size":1`, `"size":14`, 1)
-	core := newResearchCore(t, func(r *http.Request) *http.Response {
+	m := newResearchMaintainer(t, func(r *http.Request) *http.Response {
 		if strings.Contains(r.URL.Host, "objects.example.test") {
 			return jsonResponse(http.StatusOK, "not an archive")
 		}
@@ -169,7 +163,7 @@ func TestCoreResearchCLIInspectWithoutGitHubDigestReportsArtifactBlocker(t *test
 		return jsonResponse(http.StatusOK, body)
 	})
 	var out strings.Builder
-	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1.2.3", "--asset", "linux.bin", "--json"})
+	code := (cli.Runner{Registry: cli.RegistryTools{Research: m}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1.2.3", "--asset", "linux.bin", "--json"})
 	if code != 0 || !strings.Contains(out.String(), `"status":"BLOCKED"`) || !strings.Contains(out.String(), `"blockers":["UNSUPPORTED_ARTIFACT"]`) || strings.Contains(out.String(), `"blockers":["NO_AUTHORITATIVE_DIGEST"]`) {
 		t.Fatalf("blocked inspection output=%s code=%d", out.String(), code)
 	}
@@ -193,7 +187,7 @@ func TestCoreResearchCLIInspectComputesDigestWithoutGitHubDigest(t *testing.T) {
 	}
 	payload := archiveBytes.Bytes()
 	asset := `{"id":20,"name":"linux.tar.gz","browser_download_url":"https://objects.example.test/linux.tar.gz","size":` + strconv.Itoa(len(payload)) + `,"digest":"","content_type":"application/gzip","state":"uploaded"}`
-	core := newResearchCore(t, func(r *http.Request) *http.Response {
+	m := newResearchMaintainer(t, func(r *http.Request) *http.Response {
 		if strings.Contains(r.URL.Host, "objects.example.test") {
 			return jsonResponse(http.StatusOK, string(payload))
 		}
@@ -204,7 +198,7 @@ func TestCoreResearchCLIInspectComputesDigestWithoutGitHubDigest(t *testing.T) {
 		return jsonResponse(http.StatusOK, body)
 	})
 	var out strings.Builder
-	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
+	code := (cli.Runner{Registry: cli.RegistryTools{Research: m}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
 	if code != 0 || !strings.Contains(out.String(), `"status":"READY_FOR_REVIEW"`) || !strings.Contains(out.String(), `"artifact_type":"tar.gz"`) || !strings.Contains(out.String(), `"computed_digests"`) || strings.Contains(out.String(), `"blockers":["NO_AUTHORITATIVE_DIGEST"]`) {
 		t.Fatalf("ready inspection output=%s code=%d", out.String(), code)
 	}
@@ -213,7 +207,7 @@ func TestCoreResearchCLIInspectComputesDigestWithoutGitHubDigest(t *testing.T) {
 func TestCoreResearchCLIInspectionDownloadFailurePreservesEvidence(t *testing.T) {
 	digest := "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	body := researchReleaseJSON(researchAssetJSON(20, "linux.tar.gz", digest))
-	core := newResearchCore(t, func(r *http.Request) *http.Response {
+	m := newResearchMaintainer(t, func(r *http.Request) *http.Response {
 		if strings.Contains(r.URL.Host, "objects.example.test") {
 			return jsonResponse(http.StatusBadGateway, "upstream unavailable")
 		}
@@ -223,7 +217,7 @@ func TestCoreResearchCLIInspectionDownloadFailurePreservesEvidence(t *testing.T)
 		return jsonResponse(http.StatusOK, body)
 	})
 	var out strings.Builder
-	code := (cli.Runner{Service: core, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1.2.3", "--asset", "linux.tar.gz", "--json"})
+	code := (cli.Runner{Registry: cli.RegistryTools{Research: m}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1.2.3", "--asset", "linux.tar.gz", "--json"})
 	if code == 0 {
 		t.Fatal("download failure returned success")
 	}

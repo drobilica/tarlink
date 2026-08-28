@@ -164,12 +164,18 @@ type Service interface {
 	Search(context.Context, string) ([]Application, error)
 	Versions(context.Context, string) ([]Version, error)
 	SyncRegistry(context.Context, ProgressSink) (time.Time, error)
-	ValidateRegistry(context.Context, string) error
 	CheckTarLinkVersion(context.Context) (TarLinkVersion, error)
 	CheckTarLinkVersionFresh(context.Context) (TarLinkVersion, error)
 	UpgradeTarLink(context.Context, ProgressSink) (TarLinkVersion, error)
 	CheckInstallPath(string) ([]integration.PathConflict, error)
 	Doctor(context.Context) (DoctorReport, error)
+}
+
+// RegistryValidationService validates a registry tree on disk. It is
+// maintainer-only and deliberately separate from Service: it requires no
+// application runtime state.
+type RegistryValidationService interface {
+	ValidateRegistry(context.Context, string) error
 }
 
 // FreshnessService exposes advisory upstream-release checks used by registry

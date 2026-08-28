@@ -102,12 +102,12 @@ type RegistryOnboardingService interface {
 	AddRegistry(context.Context, RegistryAddOptions) (RegistryAddResult, error)
 }
 
-func (core *Core) InspectRegistry(ctx context.Context, options RegistryInspectOptions) (RegistryInspectionResult, error) {
+func (m *Maintainer) InspectRegistry(ctx context.Context, options RegistryInspectOptions) (RegistryInspectionResult, error) {
 	if strings.TrimSpace(options.Target) == "" {
 		return RegistryInspectionResult{}, errors.New("inspection target is required")
 	}
 	if target, err := research.ParseReleaseAssetURL(options.Target); err == nil {
-		candidate, required, err := core.deriveRegistryCandidate(ctx, target, options.Refresh)
+		candidate, required, err := m.deriveRegistryCandidate(ctx, target, options.Refresh)
 		if err != nil {
 			return RegistryInspectionResult{}, err
 		}
@@ -146,12 +146,12 @@ func (core *Core) InspectRegistry(ctx context.Context, options RegistryInspectOp
 	return RegistryInspectionResult{Status: status, Directory: &directory}, nil
 }
 
-func (core *Core) AddRegistry(ctx context.Context, options RegistryAddOptions) (RegistryAddResult, error) {
+func (m *Maintainer) AddRegistry(ctx context.Context, options RegistryAddOptions) (RegistryAddResult, error) {
 	target, err := research.ParseReleaseAssetURL(options.Target)
 	if err != nil {
 		return RegistryAddResult{}, errors.New("registry add requires an exact GitHub release asset URL")
 	}
-	candidate, required, err := core.deriveRegistryCandidate(ctx, target, options.Refresh)
+	candidate, required, err := m.deriveRegistryCandidate(ctx, target, options.Refresh)
 	if err != nil {
 		return RegistryAddResult{}, err
 	}
@@ -200,10 +200,10 @@ func CompleteRegistryCandidate(candidate RegistryCandidate, options RegistryAddO
 	return RegistryAddResult{Status: "ready", Candidate: candidate, Manifest: document, YAML: yamlBytes}, nil
 }
 
-func (core *Core) deriveRegistryCandidate(ctx context.Context, target research.ReleaseAssetTarget, refresh bool) (RegistryCandidate, []RegistryRequiredInput, error) {
-	client := &research.Client{CacheRoot: filepath.Join(core.layout.Cache, "registry-research"), Refresh: refresh}
-	if core.syncer != nil && core.syncer.Client != nil {
-		client.HTTP = core.syncer.Client.HTTP
+func (m *Maintainer) deriveRegistryCandidate(ctx context.Context, target research.ReleaseAssetTarget, refresh bool) (RegistryCandidate, []RegistryRequiredInput, error) {
+	client := &research.Client{CacheRoot: filepath.Join(m.layout.Cache, "registry-research"), Refresh: refresh}
+	if m.client != nil {
+		client.HTTP = m.client.HTTP
 	}
 	resolved, err := client.ResolveReleaseAsset(ctx, target)
 	if err != nil {
@@ -217,14 +217,14 @@ func (core *Core) deriveRegistryCandidate(ctx context.Context, target research.R
 	}
 	var inspection research.Inspection
 	if provenance.Verdict == research.Acceptable {
-		inspection, err = client.InspectAsset(ctx, asset, provenance, format, core.goarch)
+		inspection, err = client.InspectAsset(ctx, asset, provenance, format, research.TargetArchitecture(asset.Name))
 	} else {
 		artifact, fetchErr := client.FetchUnverified(ctx, asset)
 		if fetchErr != nil {
 			return RegistryCandidate{}, nil, fetchErr
 		}
 		defer artifact.Cleanup()
-		inspection, err = research.Inspect(ctx, artifact, format, core.goarch)
+		inspection, err = research.Inspect(ctx, artifact, format, research.TargetArchitecture(asset.Name))
 	}
 	if err != nil {
 		return RegistryCandidate{}, nil, err

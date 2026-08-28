@@ -4,13 +4,33 @@ TarLink is a rootless, single-user application manager for Linux amd64 and arm64
 
 ## Interface boundaries
 
-`internal/app` is the UI-independent core. It owns registry freshness,
-application lifecycle, and TarLink self-upgrade operations. `cli` owns argument
-parsing, streams, JSON, and exit codes. `tui` owns Bubble Tea state and views,
-using Bubbles for reusable terminal components and Lip Gloss for styling and
-layout. Both frontends call the same core service and progress model; neither
-performs release discovery, checksum verification, or filesystem replacement
-itself.
+`internal/app` is the UI-independent core. It composes two separate dependency
+graphs inside the same Linux binary, chosen by the CLI before the frontends
+run. The application runtime (`app.NewCore`) owns the full Linux runtime —
+registry freshness and sync, catalog, lifecycle (install/update/uninstall/
+rollback), and TarLink self-upgrade — along with `doctor`. The
+registry-maintainer graph (`app.NewMaintainer`) is a small composition root
+holding only a filesystem layout and a download client; it owns registry
+validation, research, artifact inspection, candidate onboarding, ledger/blocker
+analysis, and icon maintenance. Maintainer tooling shares no lifecycle
+dependencies and performs no installation, self-upgrade, registry sync, or
+host-platform resolution, so its commands never require the application
+runtime. `registry check`, which exercises the real install/uninstall lifecycle
+in a temporary layout without executing application binaries, and `registry
+freshness`, which resolves the host platform's approved manifest variant from
+the validated cache, both deliberately remain on the application runtime.
+`cli` owns argument parsing, streams, JSON, and exit codes. `tui` owns Bubble
+Tea state and views, using Bubbles for reusable terminal components and Lip
+Gloss for styling and layout. Both frontends call the same runtime core service
+and progress model; neither performs release discovery, checksum verification,
+or filesystem replacement itself.
+
+Runtime platform resolution is an exact `GOOS`/`GOARCH` match for installation,
+unchanged. Registry-maintainer artifact analysis instead derives the target
+architecture from artifact evidence only — the asset name's platform markers
+cross-checked against the artifact's own ELF header — and never from the
+maintainer's host; ambiguity is reported as a required maintainer input rather
+than inheriting the host architecture.
 
 ## Trust boundaries
 

@@ -29,11 +29,24 @@ func main() {
 	if err != nil {
 		os.Exit(runner.Fail(err))
 	}
-	service, err := app.NewCore(layout, download.NewClient())
-	if err != nil {
-		os.Exit(runner.Fail(err))
+	client := download.NewClient()
+	if cli.RegistryMaintainerCommand(os.Args[1:]) {
+		maintainer := app.NewMaintainer(layout, client)
+		runner.Registry = cli.RegistryTools{
+			Validation: maintainer,
+			Research:   maintainer,
+			Onboarding: maintainer,
+			Candidates: maintainer,
+			Blockers:   maintainer,
+			Icons:      maintainer,
+		}
+	} else {
+		core, err := app.NewCore(layout, client)
+		if err != nil {
+			os.Exit(runner.Fail(err))
+		}
+		runner.Service = core
 	}
-	runner.Service = service
 	runner.LaunchTUI = func(ctx context.Context, service app.Service, stdout, _ io.Writer) error {
 		return tui.Run(ctx, service, os.Stdin, stdout)
 	}

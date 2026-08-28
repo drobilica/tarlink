@@ -48,7 +48,7 @@ var registryIconPaths = []string{
 
 // RegistryIcons audits icon declarations entirely from the validated local
 // registry. Network access and manifest writes occur only when Fix is true.
-func (core *Core) RegistryIcons(ctx context.Context, options RegistryIconOptions) (RegistryIconReport, error) {
+func (m *Maintainer) RegistryIcons(ctx context.Context, options RegistryIconOptions) (RegistryIconReport, error) {
 	root, err := filepath.Abs(options.Root)
 	if err != nil {
 		return RegistryIconReport{}, err
@@ -101,7 +101,7 @@ func (core *Core) RegistryIcons(ctx context.Context, options RegistryIconOptions
 				report.Results = append(report.Results, item)
 				continue
 			}
-			icon, fixErr := core.fixRegistryIcon(ctx, root, variants, item.Manifests)
+			icon, fixErr := m.fixRegistryIcon(ctx, root, variants, item.Manifests)
 			if fixErr != nil {
 				item.Error = fixErr.Error()
 			} else {
@@ -117,7 +117,7 @@ func (core *Core) RegistryIcons(ctx context.Context, options RegistryIconOptions
 
 type fixedRegistryIcon struct{ URL, SHA256 string }
 
-func (core *Core) fixRegistryIcon(ctx context.Context, root string, variants map[manifest.Platform]*manifest.Manifest, paths []string) (fixedRegistryIcon, error) {
+func (m *Maintainer) fixRegistryIcon(ctx context.Context, root string, variants map[manifest.Platform]*manifest.Manifest, paths []string) (fixedRegistryIcon, error) {
 	var repository, tag string
 	for _, item := range variants {
 		repo, releaseTag, err := githubReleaseIdentity(item.Release.URL)
@@ -131,8 +131,8 @@ func (core *Core) fixRegistryIcon(ctx context.Context, root string, variants map
 		}
 	}
 	client := &research.Client{}
-	if core.syncer != nil && core.syncer.Client != nil {
-		client.HTTP = core.syncer.Client.HTTP
+	if m.client != nil {
+		client.HTTP = m.client.HTTP
 	}
 	type candidate struct {
 		file  research.RepositoryFile

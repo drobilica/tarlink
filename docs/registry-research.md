@@ -51,6 +51,15 @@ The locally calculated SHA-256 is the generated manifest digest. GitHub's
 supported digest, when supplied, is compared as corroborating evidence;
 absence is not a blocker.
 
+`registry inspect` derives the expected target architecture from artifact
+evidence only: the asset name's platform markers, cross-checked against the
+artifact's own ELF header. It never uses the maintainer's host architecture.
+When the asset name does not encode an architecture, AppImages are checked
+against TarLink's supported targets (amd64/arm64); unresolved ambiguity is
+reported as a `platform`/`ambiguous_platform` required maintainer input rather
+than inherited from the host, and name/ELF contradictions surface
+deterministically as `UNSUPPORTED_ARCH` evidence.
+
 For archives, inspection detects content type from the bytes, safely extracts
 once within the existing bounds, and ranks static executable and icon
 candidates. It never executes application files. A local `manifest.yaml` is
