@@ -8,18 +8,21 @@
   "agent": {
     "explore": {
       "mode": "subagent",
-      "model": "opencode-go/deepseek-v4-flash"
+      "model": "opencode-go/deepseek-v4-flash",
+      "steps": 10
     },
 
     "general": {
       "mode": "subagent",
-      "model": "opencode-go/deepseek-v4-flash"
+      "model": "opencode-go/glm-5.3-flash",
+      "steps": 20
     },
 
     "review": {
       "description": "Independently review TarLink changes for correctness, regressions, security issues, unnecessary complexity, atomicity problems, and missing tests. Do not modify files.",
       "mode": "subagent",
       "model": "opencode-go/gpt-5.6-luna",
+      "steps": 12,
       "permission": {
         "edit": "deny"
       }
