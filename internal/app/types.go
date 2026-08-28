@@ -134,6 +134,10 @@ type UpdateAllResult struct {
 	FailureCodes map[string]ErrorCode `json:"failure_codes,omitempty"`
 }
 
+type UninstallAllResult struct {
+	Warnings []string `json:"warnings,omitempty"`
+}
+
 type Version struct {
 	Version     string `json:"version"`
 	Fingerprint string `json:"fingerprint,omitempty"`
@@ -155,8 +159,8 @@ type Service interface {
 	Install(context.Context, string, ProgressSink) (Result, error)
 	Update(context.Context, string, ProgressSink) (Result, error)
 	UpdateAll(context.Context, ProgressSink) (UpdateAllResult, error)
-	Uninstall(context.Context, string, ProgressSink) error
-	UninstallAll(context.Context, ProgressSink) error
+	Uninstall(context.Context, string, ProgressSink) (Result, error)
+	UninstallAll(context.Context, ProgressSink) (UninstallAllResult, error)
 	Rollback(context.Context, string, ProgressSink) (Result, error)
 	List(context.Context) ([]Application, error)
 	ListAvailable(context.Context) ([]Application, error)

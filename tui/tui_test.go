@@ -29,8 +29,12 @@ func (f *fakeService) Update(context.Context, string, app.ProgressSink) (app.Res
 func (f *fakeService) UpdateAll(context.Context, app.ProgressSink) (app.UpdateAllResult, error) {
 	return app.UpdateAllResult{}, nil
 }
-func (f *fakeService) Uninstall(context.Context, string, app.ProgressSink) error { return nil }
-func (f *fakeService) UninstallAll(context.Context, app.ProgressSink) error      { return nil }
+func (f *fakeService) Uninstall(context.Context, string, app.ProgressSink) (app.Result, error) {
+	return app.Result{}, nil
+}
+func (f *fakeService) UninstallAll(context.Context, app.ProgressSink) (app.UninstallAllResult, error) {
+	return app.UninstallAllResult{}, nil
+}
 func (f *fakeService) Rollback(context.Context, string, app.ProgressSink) (app.Result, error) {
 	return app.Result{}, nil
 }

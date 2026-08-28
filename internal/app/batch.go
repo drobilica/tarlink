@@ -110,7 +110,8 @@ func (core *Core) UninstallBatch(ctx context.Context, ids []string, sink Progres
 				sink(value)
 			}
 		}
-		if uninstallErr := core.installer.UninstallSubject(ctx, id, core.progress(progress, id)); uninstallErr != nil {
+		warnings, uninstallErr := core.installer.UninstallSubject(ctx, id, core.progress(progress, id))
+		if uninstallErr != nil {
 			if ctx.Err() != nil {
 				result.Canceled = true
 				return result, ctx.Err()
@@ -118,7 +119,7 @@ func (core *Core) UninstallBatch(ctx context.Context, ids []string, sink Progres
 			result.Failed[id] = uninstallErr.Error()
 			continue
 		}
-		result.Completed = append(result.Completed, Result{AppID: id})
+		result.Completed = append(result.Completed, Result{AppID: id, Warnings: warnings})
 	}
 	return result, nil
 }

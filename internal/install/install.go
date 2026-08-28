@@ -253,68 +253,367 @@ func (manager *Manager) rollbackUnlocked(ctx context.Context, appID string, prog
 	return manager.activateRetained(appID, installed, progress)
 }
 
-func (manager *Manager) Uninstall(ctx context.Context, appID string, progress Progress) error {
+func (manager *Manager) Uninstall(ctx context.Context, appID string, progress Progress) ([]string, error) {
 	return manager.UninstallSubject(ctx, appID, func(stage, _ string, current, total int64) { manager.report(progress, stage, current, total) })
 }
 
-func (manager *Manager) UninstallSubject(ctx context.Context, appID string, progress SubjectProgress) error {
-	return manager.WithLifecycle(ctx, func() error { return manager.uninstallUnlocked(ctx, appID, progress) })
+func (manager *Manager) UninstallSubject(ctx context.Context, appID string, progress SubjectProgress) ([]string, error) {
+	var warnings []string
+	err := manager.WithLifecycle(ctx, func() error {
+		var err error
+		warnings, err = manager.uninstallUnlocked(ctx, appID, progress)
+		return err
+	})
+	return warnings, err
 }
 
-func (manager *Manager) uninstallUnlocked(ctx context.Context, appID string, progress SubjectProgress) error {
+func (manager *Manager) uninstallUnlocked(ctx context.Context, appID string, progress SubjectProgress) ([]string, error) {
 	lock, err := manager.lock(ctx, appID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer lock.Release()
 	for _, root := range []string{manager.Layout.States, manager.Layout.Apps} {
 		if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, root); err != nil && !os.IsNotExist(err) {
-			return err
+			return nil, err
 		}
 	}
 	installed, err := state.LoadForApp(manager.Layout, appID)
 	if os.IsNotExist(err) {
-		return ErrNotInstalled
+		return nil, ErrNotInstalled
 	}
 	if err != nil {
-		return err
+		if errors.Is(err, state.ErrCorrupt) {
+			return manager.uninstallDegradedLocked(ctx, appID, progress)
+		}
+		return nil, err
 	}
 	if err := installed.ValidateForLayout(manager.Layout); err != nil {
-		return err
+		return manager.uninstallDegradedLocked(ctx, appID, progress)
 	}
 	spec, err := manager.integrationSpec(installed, "", nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	conflicts, err := integration.RemovalConflicts(spec)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(conflicts) > 0 {
-		return &UninstallConflictError{Path: conflicts[0]}
+		return nil, &UninstallConflictError{Path: conflicts[0]}
 	}
 	if err := integration.ValidateOwnedForRemoval(spec); err != nil {
-		return err
+		return nil, err
 	}
 	manager.report(progress, "cleaning", 0, 0)
 	if err := manager.inject("before_uninstall"); err != nil {
-		return err
+		return nil, err
 	}
 	if err := integration.RemoveOwned(spec); err != nil {
-		return err
+		return nil, err
 	}
 	appRoot := filepath.Join(manager.Layout.Apps, appID)
 	if err := filesystem.SafeRemoveIfExists(manager.Layout.Apps, appRoot); err != nil {
-		return err
+		return nil, err
 	}
 	statePath, err := manager.Layout.StatePath(appID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := removeStateFile(statePath); err != nil {
+		return nil, err
+	}
+	return nil, nil
+}
+
+// UninstallDegradedLocked removes an application whose state file is corrupt
+// under the per-application lock. It derives everything from the canonical
+// layout and the application ID and never trusts the corrupt state file.
+func (manager *Manager) UninstallDegradedLocked(ctx context.Context, appID string, progress SubjectProgress) ([]string, error) {
+	lock, err := manager.lock(ctx, appID)
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Release()
+	return manager.uninstallDegradedLocked(ctx, appID, progress)
+}
+
+// uninstallDegradedLocked blasts through a corrupt state file using only the
+// layout and appID. Integrations are removed first, then the payload, then the
+// state file; every error is a hard failure so a retry stays possible. Paths
+// whose TarLink ownership cannot be proven are left in place and reported.
+func (manager *Manager) uninstallDegradedLocked(ctx context.Context, appID string, progress SubjectProgress) ([]string, error) {
+	var warnings []string
+	manager.report(progress, "cleaning", 0, 0)
+	payloadRoot := filepath.Join(manager.Layout.Apps, appID)
+
+	// Canonical desktop entry: remove it only when its ownership marker and
+	// its Exec/TryExec payload reference both prove TarLink ownership. It is
+	// checked before the bin link sweep so entries whose Exec value is the
+	// executable link remain provable through that link.
+	desktopPath := filepath.Join(manager.Layout.Desktop, "tarlink-"+appID+".desktop")
+	info, err := os.Lstat(desktopPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+	case err != nil:
+		return nil, err
+	case info.Mode()&os.ModeSymlink != 0:
+		warnings = append(warnings, fmt.Sprintf("desktop entry %s is a symlink; left in place", desktopPath))
+	case !info.Mode().IsRegular():
+		warnings = append(warnings, fmt.Sprintf("desktop entry %s is not a regular file; left in place", desktopPath))
+	case info.Size() > 64<<10:
+		warnings = append(warnings, fmt.Sprintf("desktop entry %s exceeds the size limit; left in place", desktopPath))
+	default:
+		file, err := os.Open(desktopPath)
+		if err != nil {
+			return nil, err
+		}
+		content, readErr := io.ReadAll(io.LimitReader(file, 64<<10+1))
+		closeErr := file.Close()
+		if readErr != nil || closeErr != nil || len(content) > 64<<10 {
+			warnings = append(warnings, fmt.Sprintf("desktop entry %s exceeds the size limit; left in place", desktopPath))
+			break
+		}
+		lines := strings.Split(string(content), "\n")
+		if !hasDesktopMarker(lines, appID) {
+			warnings = append(warnings, fmt.Sprintf("desktop entry %s has no TarLink marker; left in place", desktopPath))
+		} else if value, ok := desktopPayloadValue(lines); !ok || !manager.desktopValueReferencesPayload(payloadRoot, value) {
+			warnings = append(warnings, fmt.Sprintf("desktop entry %s does not reference the application payload; left in place", desktopPath))
+		} else if err := rejectSymlinkParents(manager.Layout.Desktop, desktopPath); err != nil {
+			warnings = append(warnings, fmt.Sprintf("desktop entry %s parent is unsafe; left in place", desktopPath))
+		} else if err := os.Remove(desktopPath); err != nil {
+			return nil, err
+		}
+	}
+
+	// Bin link sweep: remove symlinks under Bin that resolve inside the
+	// payload. Non-symlink entries are never touched.
+	if binInfo, err := os.Lstat(manager.Layout.Bin); err == nil {
+		if binInfo.Mode()&os.ModeSymlink == 0 && binInfo.IsDir() {
+			entries, err := os.ReadDir(manager.Layout.Bin)
+			if err != nil {
+				return nil, err
+			}
+			for _, entry := range entries {
+				if entry.Type()&os.ModeSymlink == 0 {
+					continue
+				}
+				linkPath := filepath.Join(manager.Layout.Bin, entry.Name())
+				target, err := os.Readlink(linkPath)
+				if err != nil {
+					warnings = append(warnings, fmt.Sprintf("bin link %s: %v", linkPath, err))
+					continue
+				}
+				if !filepath.IsAbs(target) {
+					target = filepath.Join(manager.Layout.Bin, target)
+				}
+				if !manager.payloadContained(payloadRoot, filepath.Clean(target)) {
+					continue
+				}
+				if err := os.Remove(linkPath); err != nil {
+					return nil, err
+				}
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	// Icon leftovers are reported but never removed.
+	if iconInfo, err := os.Lstat(manager.Layout.Icons); err == nil {
+		if iconInfo.Mode()&os.ModeSymlink == 0 && iconInfo.IsDir() {
+			leftovers, err := scanIconLeftovers(manager.Layout.Icons, appID)
+			if err != nil {
+				return nil, err
+			}
+			for _, path := range leftovers {
+				warnings = append(warnings, "leftover desktop icon (not removed): "+path)
+			}
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+
+	// Payload removal is anchored to the apps root and refuses a top-level
+	// symlink. The state file is removed last so a retry stays possible.
+	if err := filesystem.SafeRemoveIfExists(manager.Layout.Apps, payloadRoot); err != nil {
+		return nil, err
+	}
+	statePath, err := manager.Layout.StatePath(appID)
+	if err != nil {
+		return nil, err
+	}
+	if err := removeStateFile(statePath); err != nil {
+		return nil, err
+	}
+	return warnings, nil
+}
+
+// payloadContained reports whether path resolves inside the payload rooted at
+// payloadRoot. Real paths are compared after resolving every symlink; a
+// dangling target falls back to textual containment against the payload root.
+func (manager *Manager) payloadContained(payloadRoot, path string) bool {
+	payloadReal, payloadErr := filepath.EvalSymlinks(payloadRoot)
+	targetReal, targetErr := filepath.EvalSymlinks(path)
+	if payloadErr == nil && targetErr == nil {
+		return containedWithin(payloadRoot, targetReal) || containedWithin(payloadReal, targetReal)
+	}
+	return containedWithin(payloadRoot, path)
+}
+
+func containedWithin(root, path string) bool {
+	if !filepath.IsAbs(root) || !filepath.IsAbs(path) {
+		return false
+	}
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) && !filepath.IsAbs(relative)
+}
+
+// hasDesktopMarker reports whether the desktop entry contains the exact
+// TarLink ownership marker line for the application.
+func hasDesktopMarker(lines []string, appID string) bool {
+	marker := "X-TarLink-AppID=" + appID
+	for _, line := range lines {
+		if line == marker {
+			return true
+		}
+	}
+	return false
+}
+
+// desktopPayloadValue returns the unescaped Exec or TryExec value of a
+// desktop entry. Exec is written by desktopExec and may be quoted with
+// backslash escapes; TryExec is written by desktopText with doubled
+// backslashes.
+func desktopPayloadValue(lines []string) (string, bool) {
+	for _, key := range []string{"Exec", "TryExec"} {
+		prefix := key + "="
+		for _, line := range lines {
+			if strings.HasPrefix(line, prefix) {
+				value := unescapeDesktopValue(line[len(prefix):])
+				if value != "" {
+					return value, true
+				}
+			}
+		}
+	}
+	return "", false
+}
+
+// unescapeDesktopValue reverses the desktopText/desktopExec encodings: a
+// quoted Exec value carries backslash escapes for \ " ` $ and doubled percent
+// signs, while a raw TryExec value doubles backslashes.
+func unescapeDesktopValue(value string) string {
+	quoted := len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"'
+	if quoted {
+		value = value[1 : len(value)-1]
+	}
+	var out strings.Builder
+	for i := 0; i < len(value); i++ {
+		switch {
+		case value[i] == '%' && i+1 < len(value) && value[i+1] == '%':
+			out.WriteByte('%')
+			i++
+		case value[i] == '\\' && i+1 < len(value):
+			out.WriteByte(value[i+1])
+			i++
+		default:
+			out.WriteByte(value[i])
+		}
+	}
+	return out.String()
+}
+
+// desktopValueReferencesPayload reports whether an unescaped desktop Exec or
+// TryExec value points at the application payload, either directly or through
+// a symlink whose target resolves into the payload.
+func (manager *Manager) desktopValueReferencesPayload(payloadRoot, value string) bool {
+	if manager.payloadContained(payloadRoot, value) {
+		return true
+	}
+	info, err := os.Lstat(value)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	target, err := os.Readlink(value)
+	if err != nil {
+		return false
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(value), target)
+	}
+	return manager.payloadContained(payloadRoot, filepath.Clean(target))
+}
+
+// rejectSymlinkParents rejects a removal path when root itself or any
+// component from root through path is a symlink.
+func rejectSymlinkParents(root, path string) error {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root || !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return filesystem.ErrOutsideRoot
+	}
+	if info, err := os.Lstat(root); err != nil {
 		return err
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return filesystem.ErrSymlink
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil || relative == "." || filepath.IsAbs(relative) || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return filesystem.ErrOutsideRoot
+	}
+	current := root
+	for _, part := range strings.Split(relative, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return filesystem.ErrSymlink
+		}
 	}
 	return nil
+}
+
+// scanIconLeftovers collects regular icon files under root whose base name
+// carries the application prefix. The walk is depth-bounded and never follows
+// symlinks; icons are reported but never removed.
+func scanIconLeftovers(root, appID string) ([]string, error) {
+	const maxDepth = 4
+	prefix := "tarlink-" + appID + "."
+	var result []string
+	var walk func(string, int) error
+	walk = func(current string, depth int) error {
+		if depth > maxDepth {
+			return nil
+		}
+		entries, err := os.ReadDir(current)
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			child := filepath.Join(current, entry.Name())
+			if entry.IsDir() {
+				if err := walk(child, depth+1); err != nil {
+					return err
+				}
+				continue
+			}
+			if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), prefix) {
+				result = append(result, child)
+			}
+		}
+		return nil
+	}
+	if err := walk(root, 0); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (manager *Manager) RemoveUninstallConflict(ctx context.Context, appID, path string) error {
@@ -342,21 +641,27 @@ func (manager *Manager) RemoveUninstallConflict(ctx context.Context, appID, path
 	})
 }
 
-func (manager *Manager) UninstallLocked(ctx context.Context, appID string, progress SubjectProgress) error {
+func (manager *Manager) UninstallLocked(ctx context.Context, appID string, progress SubjectProgress) ([]string, error) {
 	return manager.uninstallUnlocked(ctx, appID, progress)
 }
 
 // UninstallAll removes every installed application after validating the full
 // managed tree. The lifecycle lock is held across enumeration, preflight,
 // per-application removal, and root cleanup so bulk removal has the same
-// serialization and ownership policy as individual removal.
-func (manager *Manager) UninstallAll(ctx context.Context, progress func(string) Progress) error {
-	return manager.WithLifecycle(ctx, func() error {
-		states, err := manager.uninstallStates()
+// serialization and ownership policy as individual removal. Applications with
+// corrupt state files are removed through the degraded path. Integration
+// conflicts still abort all removal before any mutation.
+func (manager *Manager) UninstallAll(ctx context.Context, progress func(string) Progress) ([]string, error) {
+	var warnings []string
+	err := manager.WithLifecycle(ctx, func() error {
+		states, degraded, stateWarnings, err := manager.uninstallStates()
+		warnings = append(warnings, stateWarnings...)
 		if err != nil {
 			return err
 		}
-		if err := manager.validateUninstallRoots(states); err != nil {
+		rootWarnings, err := manager.validateUninstallRoots(states)
+		warnings = append(warnings, rootWarnings...)
+		if err != nil {
 			return err
 		}
 		var uninstallErrs []error
@@ -371,7 +676,29 @@ func (manager *Manager) UninstallAll(ctx context.Context, progress func(string) 
 			if progress != nil {
 				appProgress = progress(installed.App)
 			}
-			if err := manager.UninstallLocked(ctx, installed.App, func(stage, _ string, current, total int64) { manager.report(appProgress, stage, current, total) }); err != nil {
+			appWarnings, err := manager.UninstallLocked(ctx, installed.App, func(stage, _ string, current, total int64) { manager.report(appProgress, stage, current, total) })
+			warnings = append(warnings, appWarnings...)
+			if err != nil {
+				uninstallErrs = append(uninstallErrs, err)
+			}
+			if ctx != nil && ctx.Err() != nil {
+				break
+			}
+		}
+		for _, appID := range degraded {
+			if ctx != nil {
+				if err := ctx.Err(); err != nil {
+					uninstallErrs = append(uninstallErrs, err)
+					break
+				}
+			}
+			var appProgress Progress
+			if progress != nil {
+				appProgress = progress(appID)
+			}
+			appWarnings, err := manager.UninstallDegradedLocked(ctx, appID, func(stage, _ string, current, total int64) { manager.report(appProgress, stage, current, total) })
+			warnings = append(warnings, appWarnings...)
+			if err != nil {
 				uninstallErrs = append(uninstallErrs, err)
 			}
 			if ctx != nil && ctx.Err() != nil {
@@ -383,101 +710,121 @@ func (manager *Manager) UninstallAll(ctx context.Context, progress func(string) 
 		}
 		return manager.removeUninstallRoots()
 	})
+	return warnings, err
 }
 
-func (manager *Manager) uninstallStates() ([]state.State, error) {
+// uninstallStates enumerates the state directory. Corrupt state files and
+// entries that cannot be attributed to an installed application become degraded
+// or warning entries so bulk removal can blast through; every other unexpected
+// file system state is a hard error.
+func (manager *Manager) uninstallStates() ([]state.State, []string, []string, error) {
+	var warnings []string
 	if err := manager.checkUninstallAnchor(manager.Layout.StateHome, manager.Layout.States); err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	entries, err := os.ReadDir(manager.Layout.States)
 	if errors.Is(err, os.ErrNotExist) {
-		return []state.State{}, nil
+		return []state.State{}, nil, warnings, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	result := make([]state.State, 0, len(entries))
+	var degraded []string
 	for _, entry := range entries {
 		if entry.Type()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("%w: unexpected state symlink %q", state.ErrCorrupt, entry.Name())
+			warnings = append(warnings, fmt.Sprintf("unexpected state entry %s left for root cleanup", entry.Name()))
+			continue
 		}
 		if strings.HasPrefix(entry.Name(), ".state-") {
 			if !strings.HasSuffix(entry.Name(), ".tmp") || !entry.Type().IsRegular() {
-				return nil, fmt.Errorf("%w: unexpected state entry %q", state.ErrCorrupt, entry.Name())
+				warnings = append(warnings, fmt.Sprintf("unexpected state entry %s left for root cleanup", entry.Name()))
 			}
 			continue
 		}
 		if !entry.Type().IsRegular() || !strings.HasSuffix(entry.Name(), ".json") {
-			return nil, fmt.Errorf("%w: unexpected state entry %q", state.ErrCorrupt, entry.Name())
+			warnings = append(warnings, fmt.Sprintf("unexpected state entry %s left for root cleanup", entry.Name()))
+			continue
 		}
 		appID := strings.TrimSuffix(entry.Name(), ".json")
 		if err := filesystem.ValidateID(appID); err != nil {
-			return nil, fmt.Errorf("%w: state filename %q", state.ErrCorrupt, entry.Name())
+			warnings = append(warnings, fmt.Sprintf("unexpected state entry %s left for root cleanup", entry.Name()))
+			continue
 		}
 		installed, err := state.LoadForApp(manager.Layout, appID)
+		if os.IsNotExist(err) {
+			warnings = append(warnings, fmt.Sprintf("state entry %s disappeared; left for root cleanup", entry.Name()))
+			continue
+		}
 		if err != nil {
-			return nil, err
+			if errors.Is(err, state.ErrCorrupt) {
+				degraded = append(degraded, appID)
+				continue
+			}
+			return nil, nil, nil, err
 		}
-		if installed.App != appID {
-			return nil, fmt.Errorf("%w: state app does not match filename", state.ErrCorrupt)
-		}
-		if err := installed.ValidateForLayout(manager.Layout); err != nil {
-			return nil, err
+		if installed.App != appID || installed.ValidateForLayout(manager.Layout) != nil {
+			degraded = append(degraded, appID)
+			continue
 		}
 		result = append(result, installed)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].App < result[j].App })
-	return result, nil
+	sort.Strings(degraded)
+	return result, degraded, warnings, nil
 }
 
-func (manager *Manager) validateUninstallRoots(states []state.State) error {
+func (manager *Manager) validateUninstallRoots(states []state.State) ([]string, error) {
+	var warnings []string
 	if err := manager.checkUninstallAnchor(manager.Layout.DataHome, manager.Layout.Apps); err != nil {
-		return err
+		return nil, err
 	}
 	if err := manager.checkUninstallAnchor(manager.Layout.CacheHome, manager.Layout.Cache); err != nil {
-		return err
+		return nil, err
 	}
 	if err := manager.checkUninstallAnchor(manager.Layout.StateHome, manager.Layout.Locks); err != nil {
-		return err
+		return nil, err
 	}
 	known := make(map[string]struct{}, len(states))
 	for _, installed := range states {
 		known[installed.App] = struct{}{}
 		spec, err := manager.integrationSpec(installed, "", nil)
 		if err != nil {
-			return fmt.Errorf("%s integration: %w", installed.App, err)
+			return nil, fmt.Errorf("%s integration: %w", installed.App, err)
 		}
 		if err := integration.ValidateOwnedForRemoval(spec); err != nil {
-			return fmt.Errorf("%s integration: %w", installed.App, err)
+			return nil, fmt.Errorf("%s integration: %w", installed.App, err)
 		}
 	}
 	if _, err := os.Lstat(manager.Layout.Apps); errors.Is(err, os.ErrNotExist) {
-		return nil
+		return warnings, nil
 	} else if err != nil {
-		return err
+		return nil, err
 	}
 	entries, err := os.ReadDir(manager.Layout.Apps)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, entry := range entries {
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: unexpected application symlink %q", state.ErrCorrupt, entry.Name())
+			warnings = append(warnings, fmt.Sprintf("unexpected application symlink %q removed with the apps root", entry.Name()))
+			continue
 		}
 		if strings.HasPrefix(entry.Name(), ".staging-") {
 			if !entry.IsDir() {
-				return fmt.Errorf("%w: unexpected staging entry %q", state.ErrCorrupt, entry.Name())
+				warnings = append(warnings, fmt.Sprintf("unexpected staging entry %q removed with the apps root", entry.Name()))
 			}
 			continue
 		}
 		if !entry.IsDir() {
-			return fmt.Errorf("%w: unexpected application entry %q", state.ErrCorrupt, entry.Name())
+			warnings = append(warnings, fmt.Sprintf("unexpected application entry %q removed with the apps root", entry.Name()))
+			continue
 		}
 		if _, ok := known[entry.Name()]; !ok {
-			return fmt.Errorf("%w: untracked application directory %q", state.ErrCorrupt, entry.Name())
+			warnings = append(warnings, fmt.Sprintf("untracked application directory %q removed with the apps root", entry.Name()))
 		}
 	}
-	return nil
+	return warnings, nil
 }
 
 func (manager *Manager) checkUninstallAnchor(anchor, path string) error {

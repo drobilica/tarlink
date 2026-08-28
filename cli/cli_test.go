@@ -51,13 +51,13 @@ func (f *fakeService) Update(context.Context, string, app.ProgressSink) (app.Res
 func (f *fakeService) UpdateAll(context.Context, app.ProgressSink) (app.UpdateAllResult, error) {
 	return app.UpdateAllResult{}, errors.New("unused")
 }
-func (f *fakeService) Uninstall(_ context.Context, appID string, _ app.ProgressSink) error {
+func (f *fakeService) Uninstall(_ context.Context, appID string, _ app.ProgressSink) (app.Result, error) {
 	f.uninstalled = append(f.uninstalled, appID)
-	return nil
+	return app.Result{AppID: appID}, nil
 }
-func (f *fakeService) UninstallAll(context.Context, app.ProgressSink) error {
+func (f *fakeService) UninstallAll(context.Context, app.ProgressSink) (app.UninstallAllResult, error) {
 	f.uninstalledAll = true
-	return nil
+	return app.UninstallAllResult{}, nil
 }
 func (f *fakeService) Rollback(context.Context, string, app.ProgressSink) (app.Result, error) {
 	return app.Result{}, errors.New("unused")

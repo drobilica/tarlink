@@ -1357,7 +1357,7 @@ func (h *operationHub) next(ctx context.Context) tea.Msg {
 
 func (m model) uninstallCmd(id string) (tea.Cmd, context.CancelFunc) {
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
-		err := m.service.Uninstall(ctx, id, sink)
+		_, err := m.service.Uninstall(ctx, id, sink)
 		next := m.confirmationTarget()
 		if next == screenVersions {
 			next = screenDetails
@@ -1381,7 +1381,7 @@ func (m model) removeUninstallConflictCmd(conflict app.UninstallConflict) (tea.C
 		if err := recovery.RemoveUninstallConflict(ctx, conflict.AppID, conflict.Path); err != nil {
 			return operationMsg{}, err
 		}
-		err := m.service.Uninstall(ctx, conflict.AppID, sink)
+		_, err := m.service.Uninstall(ctx, conflict.AppID, sink)
 		next := m.confirmationTarget()
 		if next == screenVersions {
 			next = screenDetails

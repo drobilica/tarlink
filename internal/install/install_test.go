@@ -253,7 +253,7 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	if err := os.WriteFile(unrelated, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(err) {
@@ -359,7 +359,7 @@ func TestUpdateReconcilesManagedBinLinkToDesktopOnly(t *testing.T) {
 		t.Fatalf("desktop-only launch configuration = %q", content)
 	}
 
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -436,7 +436,7 @@ func TestUpdateTogglesDesktopIntegrationAndRollsBackBeforeState(t *testing.T) {
 		t.Fatalf("desktop entry after enabled update: %v", err)
 	}
 
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(desktop); !os.IsNotExist(err) {
@@ -457,7 +457,7 @@ func TestUninstallFailureBeforeCleanupPreservesInstallation(t *testing.T) {
 		}
 		return nil
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
 		t.Fatal("Uninstall() unexpectedly succeeded")
 	}
 	if _, err := state.LoadForApp(layout, "fixture"); err != nil {
@@ -494,7 +494,7 @@ func TestUninstallIntegrationConflictPreservesInstallation(t *testing.T) {
 	if err := os.WriteFile(desktop, append(content, []byte("Comment=changed\n")...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); !errors.Is(err, integration.ErrConflict) {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); !errors.Is(err, integration.ErrConflict) {
 		t.Fatalf("Uninstall() error = %v", err)
 	}
 	if _, err := state.LoadForApp(layout, "fixture"); err != nil {
@@ -519,7 +519,7 @@ func TestUninstallConflictRecoveryRemovesModifiedDesktopAndCompletes(t *testing.
 	if err := os.WriteFile(desktop, []byte("user-owned\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := manager.Uninstall(context.Background(), "fixture", nil)
+	_, err := manager.Uninstall(context.Background(), "fixture", nil)
 	var conflict *UninstallConflictError
 	if !errors.As(err, &conflict) || conflict.Path != desktop {
 		t.Fatalf("Uninstall() error = %v, conflict = %#v", err, conflict)
@@ -527,7 +527,7 @@ func TestUninstallConflictRecoveryRemovesModifiedDesktopAndCompletes(t *testing.
 	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", desktop); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
 		t.Fatalf("retry uninstall: %v", err)
 	}
 	if _, err := os.Lstat(desktop); !errors.Is(err, os.ErrNotExist) {
@@ -595,7 +595,7 @@ func TestUninstallConflictRecoveryRemovesSymlinkOnlyAndHandlesMultipleConflicts(
 	if err := os.WriteFile(bin, []byte("changed"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := manager.Uninstall(context.Background(), "fixture", nil)
+	_, err := manager.Uninstall(context.Background(), "fixture", nil)
 	var first *UninstallConflictError
 	if !errors.As(err, &first) || first.Path != bin {
 		t.Fatalf("first conflict = %v, typed = %#v", err, first)
@@ -603,7 +603,7 @@ func TestUninstallConflictRecoveryRemovesSymlinkOnlyAndHandlesMultipleConflicts(
 	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", bin); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
 		t.Fatal("uninstall unexpectedly skipped remaining conflict")
 	} else {
 		var next *UninstallConflictError
@@ -614,7 +614,7 @@ func TestUninstallConflictRecoveryRemovesSymlinkOnlyAndHandlesMultipleConflicts(
 	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", desktop); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(target); string(got) != "keep" {
@@ -633,7 +633,7 @@ func TestUninstallConflictRecoveryIsIdempotentWhenEntryDisappears(t *testing.T) 
 	if err := os.WriteFile(desktop, []byte("changed\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err == nil {
 		t.Fatal("uninstall unexpectedly succeeded")
 	}
 	if err := os.Remove(desktop); err != nil {
@@ -642,7 +642,7 @@ func TestUninstallConflictRecoveryIsIdempotentWhenEntryDisappears(t *testing.T) 
 	if err := manager.RemoveUninstallConflict(context.Background(), "fixture", desktop); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -967,7 +967,7 @@ func TestMutationsReportPerApplicationLockConflict(t *testing.T) {
 			_, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil)
 			return err
 		}},
-		{"uninstall", func() error { return manager.Uninstall(context.Background(), "fixture", nil) }},
+		{"uninstall", func() error { _, err := manager.Uninstall(context.Background(), "fixture", nil); return err }},
 		{"rollback", func() error {
 			_, err := manager.Rollback(context.Background(), "fixture", nil)
 			return err
@@ -1062,7 +1062,7 @@ func TestRemoteIconInstallRetainsBytesAndPlacesThemedIcon(t *testing.T) {
 	if installed.State.Current != "v1" {
 		t.Fatalf("current = %q", installed.State.Current)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(themed); !os.IsNotExist(err) {
@@ -1350,7 +1350,7 @@ func TestAppImageRemoteIconInstallsOpaquePayloadAndIcon(t *testing.T) {
 	if installed.State.Current != "1.0" {
 		t.Fatalf("current = %q", installed.State.Current)
 	}
-	if err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Lstat(themed); !os.IsNotExist(err) {

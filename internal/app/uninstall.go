@@ -8,19 +8,20 @@ import (
 	"github.com/drobilica/tarlink/internal/install"
 )
 
-func (core *Core) Uninstall(ctx context.Context, appID string, sink ProgressSink) error {
+func (core *Core) Uninstall(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
 	if err := filesystem.ValidateID(appID); err != nil {
-		return &Error{Code: CodeInvalidArguments, Op: "uninstall", Err: err}
+		return Result{}, &Error{Code: CodeInvalidArguments, Op: "uninstall", Err: err}
 	}
-	if err := core.installer.UninstallSubject(ctx, appID, core.progress(sink, appID)); err != nil {
+	warnings, err := core.installer.UninstallSubject(ctx, appID, core.progress(sink, appID))
+	if err != nil {
 		var conflict *install.UninstallConflictError
 		if errors.As(err, &conflict) {
-			return &Error{Code: CodeConflict, Op: "uninstall " + appID, Err: &UninstallConflictError{Conflict: UninstallConflict{AppID: appID, Path: conflict.Path}, Err: conflict}}
+			return Result{}, &Error{Code: CodeConflict, Op: "uninstall " + appID, Err: &UninstallConflictError{Conflict: UninstallConflict{AppID: appID, Path: conflict.Path}, Err: conflict}}
 		}
-		return classify("uninstall "+appID, err)
+		return Result{}, classify("uninstall "+appID, err)
 	}
 	core.emit(sink, ProgressComplete, appID, 0, 0)
-	return nil
+	return Result{AppID: appID, Warnings: warnings}, nil
 }
 
 func (core *Core) RemoveUninstallConflict(ctx context.Context, appID, path string) error {
@@ -33,14 +34,14 @@ func (core *Core) RemoveUninstallConflict(ctx context.Context, appID, path strin
 	return nil
 }
 
-func (core *Core) UninstallAll(ctx context.Context, sink ProgressSink) error {
-	err := core.installer.UninstallAll(ctx, func(appID string) install.Progress {
+func (core *Core) UninstallAll(ctx context.Context, sink ProgressSink) (UninstallAllResult, error) {
+	warnings, err := core.installer.UninstallAll(ctx, func(appID string) install.Progress {
 		return func(stage string, current, total int64) {
 			core.progress(sink, appID)(stage, "package-artifact", current, total)
 		}
 	})
 	if err != nil {
-		return classify("uninstall all", err)
+		return UninstallAllResult{}, classify("uninstall all", err)
 	}
-	return nil
+	return UninstallAllResult{Warnings: warnings}, nil
 }

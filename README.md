@@ -14,6 +14,14 @@ Install TarLink:
 curl -fsSL https://raw.githubusercontent.com/drobilica/tarlink/main/install.sh | sh
 ```
 
+Uninstall TarLink:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/drobilica/tarlink/main/uninstall.sh | sh
+```
+
+It removes every managed application and the TarLink binary, leaving files it cannot prove TarLink owns and reporting them as warnings.
+
 Install an application from the [official registry](https://github.com/drobilica/tarlink-registry):
 
 ```sh

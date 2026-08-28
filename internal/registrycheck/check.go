@@ -300,7 +300,7 @@ func MaterializeWithClient(ctx context.Context, item *manifest.Manifest, client 
 	if _, err := state.LoadForApp(layout, item.ID); err != nil {
 		return fmt.Errorf("verify materialized state for %s: %w", item.ID, err)
 	}
-	if err := manager.Uninstall(ctx, item.ID, nil); err != nil {
+	if _, err := manager.Uninstall(ctx, item.ID, nil); err != nil {
 		return fmt.Errorf("uninstall %s: %w", item.ID, err)
 	}
 	if _, err := state.LoadForApp(layout, item.ID); !os.IsNotExist(err) {

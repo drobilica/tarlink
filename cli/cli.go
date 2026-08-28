@@ -587,9 +587,17 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		}
 	case "uninstall":
 		if len(arguments) == 2 && arguments[1] == "--all" {
-			err = r.Service.UninstallAll(ctx, r.progress())
+			var result app.UninstallAllResult
+			result, err = r.Service.UninstallAll(ctx, r.progress())
 			if err == nil {
-				_, err = io.WriteString(r.Stdout, "Uninstalled all applications\n")
+				for _, warning := range result.Warnings {
+					if _, err := fmt.Fprintf(r.Stderr, "Warning: %s\n", warning); err != nil {
+						break
+					}
+				}
+				if err == nil {
+					_, err = io.WriteString(r.Stdout, "Uninstalled all applications\n")
+				}
 			}
 			break
 		}
@@ -597,9 +605,10 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		if parseErr != nil {
 			return r.invalid("usage: tarlink uninstall <app> | tarlink uninstall --all")
 		}
-		err = r.Service.Uninstall(ctx, value, r.progress())
+		var result app.Result
+		result, err = r.Service.Uninstall(ctx, value, r.progress())
 		if err == nil {
-			_, err = fmt.Fprintf(r.Stdout, "Uninstalled %s\n", value)
+			err = r.printResult("Uninstalled", result)
 		}
 	case "version":
 		if len(arguments) != 1 {
@@ -1284,11 +1293,15 @@ func (r Runner) printDoctor(report app.DoctorReport) error {
 }
 
 func (r Runner) printResult(action string, result app.Result) error {
-	preposition := " "
-	if action != "Installed" {
-		preposition = " to "
-	}
-	if _, err := fmt.Fprintf(r.Stdout, "%s %s%s%s\n", action, result.AppID, preposition, result.Version); err != nil {
+	if result.Version != "" {
+		preposition := " "
+		if action != "Installed" {
+			preposition = " to "
+		}
+		if _, err := fmt.Fprintf(r.Stdout, "%s %s%s%s\n", action, result.AppID, preposition, result.Version); err != nil {
+			return err
+		}
+	} else if _, err := fmt.Fprintf(r.Stdout, "%s %s\n", action, result.AppID); err != nil {
 		return err
 	}
 	for _, warning := range result.Warnings {

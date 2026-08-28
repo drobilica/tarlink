@@ -53,7 +53,7 @@ State is accepted for removal only when its application ID, versions, executable
 
 The shell installer records a private, atomic SHA-256 marker for the canonical TarLink binary. Replacement and bootstrap removal require a regular, non-symlink marker whose exact lowercase digest matches the binary; XDG state paths remain absolute, clean, below `HOME`, and free of symlink components. This self-upgrade marker and the official TarLink release contract remain SHA-256-only.
 
-Corrupt state, unexpected symlinks, untracked entries, integration conflicts, and partial cleanup errors stop full purge. The shell does not remove the TarLink binary after such a failure.
+Corrupt, unparseable, or layout-invalid state records, untracked application directories, and unexpected entries inside managed product roots no longer stop full purge. Removal degrades to the exact TarLink-owned product paths plus only the integrations proven by canonical path and content markers — `~/.local/bin` links whose targets resolve inside the app payload, and the canonical desktop entry carrying TarLink's `X-TarLink-AppID` marker while referencing the payload — and never removes icons or anything else it cannot prove; unprovable leftovers stay in place and are reported as warnings. Integration conflicts and partial cleanup errors still stop the final product-root cleanup, and the shell does not remove the TarLink binary after such a failure.
 
 ## TarLink self-upgrade
 
