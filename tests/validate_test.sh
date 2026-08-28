@@ -70,4 +70,91 @@ if "$repo_dir/scripts/validate.sh" --quick extra 2>"$tmp/usage"; then
 fi
 grep -F 'usage: ./scripts/validate.sh [--quick]' "$tmp/usage" >/dev/null
 
+cat >"$fake_bin/gofmt" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'cmd/tarlink/bad.go'
+EOF
+cat >"$fake_bin/podman" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+	info | machine) exit 1 ;;
+	*) exit 1 ;;
+esac
+EOF
+chmod 0755 "$fake_bin/gofmt" "$fake_bin/podman"
+
+if env -u GITHUB_ACTIONS PATH="$fake_bin:$PATH" \
+	"$repo_dir/scripts/validate.sh" --quick >"$tmp/local.out" 2>"$tmp/local.err"; then
+	printf '%s\n' 'unformatted sources unexpectedly passed validation' >&2
+	exit 1
+fi
+grep -F '==> Formatting (gofmt)' "$tmp/local.out" >/dev/null
+grep -F 'unformatted Go files:' "$tmp/local.err" >/dev/null
+grep -F 'cmd/tarlink/bad.go' "$tmp/local.err" >/dev/null
+grep -F 'validation failed in phase: Formatting (gofmt) (exit 1)' "$tmp/local.err" >/dev/null
+if grep -q '^::' "$tmp/local.out"; then
+	printf '%s\n' 'local validation must not emit GitHub Actions workflow commands' >&2
+	exit 1
+fi
+
+if GITHUB_ACTIONS=true PATH="$fake_bin:$PATH" \
+	"$repo_dir/scripts/validate.sh" --quick >"$tmp/gha.out" 2>"$tmp/gha.err"; then
+	printf '%s\n' 'unformatted sources unexpectedly passed validation' >&2
+	exit 1
+fi
+grep -F '::group::Formatting (gofmt)' "$tmp/gha.out" >/dev/null
+grep -F '::error::canonical validation failed in phase: Formatting (gofmt) (exit 1)' "$tmp/gha.out" >/dev/null
+grep -F 'validation failed in phase: Formatting (gofmt) (exit 1)' "$tmp/gha.err" >/dev/null
+
+cat >"$fake_bin/gofmt" <<'EOF'
+#!/usr/bin/env bash
+exit 2
+EOF
+chmod 0755 "$fake_bin/gofmt"
+
+status=0
+env -u GITHUB_ACTIONS PATH="$fake_bin:$PATH" \
+	"$repo_dir/scripts/validate.sh" --quick >"$tmp/crash.out" 2>"$tmp/crash.err" || status=$?
+test "$status" = 2
+grep -F 'validation failed in phase: Formatting (gofmt) (exit 2)' "$tmp/crash.err" >/dev/null
+
+cat >"$fake_bin/gofmt" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$fake_bin/go" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+	vet) exit 0 ;;
+	test) exit 3 ;;
+	*) exit 0 ;;
+esac
+EOF
+chmod 0755 "$fake_bin/gofmt" "$fake_bin/go"
+
+status=0
+env -u GITHUB_ACTIONS PATH="$fake_bin:$PATH" \
+	"$repo_dir/scripts/validate.sh" --quick >"$tmp/status.out" 2>"$tmp/status.err" || status=$?
+test "$status" = 3
+grep -F 'validation failed in phase: Tests (go test) (exit 3)' "$tmp/status.err" >/dev/null
+
+cat >"$fake_bin/podman" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+	info) exit 0 ;;
+	image) exit 0 ;;
+	run) exit 7 ;;
+	*) exit 1 ;;
+esac
+EOF
+chmod 0755 "$fake_bin/podman"
+
+status=0
+env -u GITHUB_ACTIONS PATH="$fake_bin:$PATH" TARLINK_VALIDATE_IMAGE=test/image:phases \
+	"$repo_dir/scripts/validate.sh" --quick >"$tmp/podman.out" 2>"$tmp/podman.err" || status=$?
+test "$status" = 7
+grep -F 'validation failed in phase: Linux validation via Podman (exit 7)' "$tmp/podman.err" >/dev/null
+
 printf '%s\n' 'validation script tests passed'

@@ -9,6 +9,74 @@ usage() {
 	printf '%s\n' 'usage: ./scripts/validate.sh [--quick]' >&2
 }
 
+current_phase=setup
+
+begin_phase() {
+	current_phase=$1
+	if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+		printf '::group::%s\n' "$1"
+	else
+		printf '==> %s\n' "$1"
+	fi
+}
+
+end_phase() {
+	if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+		printf '::endgroup::\n'
+	fi
+}
+
+on_error() {
+	local status=$?
+	if [[ -n ${GITHUB_ACTIONS:-} ]]; then
+		printf '::error::canonical validation failed in phase: %s (exit %d)\n' "$current_phase" "$status"
+	fi
+	printf '%s\n' "validation failed in phase: $current_phase (exit $status)" >&2
+	exit "$status"
+}
+
+phase_format_go() {
+	begin_phase 'Formatting (gofmt)'
+	local unformatted
+	unformatted=$(gofmt -l .)
+	if [[ -n $unformatted ]]; then
+		printf 'unformatted Go files:\n%s\n' "$unformatted" >&2
+		return 1
+	fi
+	end_phase
+}
+
+phase_vet() {
+	begin_phase 'Vet (go vet)'
+	go vet "$@"
+	end_phase
+}
+
+phase_go_tests() {
+	begin_phase 'Tests (go test)'
+	go test "$@"
+	end_phase
+}
+
+phase_script() {
+	begin_phase "$1"
+	shift
+	"$@"
+	end_phase
+}
+
+phase_race_tests() {
+	begin_phase 'Race tests (go test -race)'
+	go test -race ./...
+	end_phase
+}
+
+phase_build() {
+	begin_phase 'Build (go build)'
+	CGO_ENABLED=0 go build ./...
+	end_phase
+}
+
 go_version_from_mod() {
 	while read -r directive value _; do
 		if [ "$directive" = go ]; then
@@ -33,8 +101,8 @@ validation_image() {
 }
 
 run_quick() {
-	test -z "$(gofmt -l .)"
-	go test ./...
+	phase_format_go
+	phase_go_tests ./...
 }
 
 run_checks() {
@@ -43,25 +111,25 @@ run_checks() {
 	else
 		printf '%s\n' 'warning: desktop-file-validate is unavailable; integration tests may skip desktop validation' >&2
 	fi
-	test -z "$(gofmt -l .)"
-	go vet ./...
-	go test ./...
-	./tests/release_notes_test.sh
-	./tests/release_workflow_test.sh
-	./tests/validate_test.sh
-	./tests/install_test.sh
-	./tests/uninstall_test.sh
-	go test -race ./...
-	CGO_ENABLED=0 go build ./...
+	phase_format_go
+	phase_vet ./...
+	phase_go_tests ./...
+	phase_script 'Release notes contract' ./tests/release_notes_test.sh
+	phase_script 'Release workflow contract' ./tests/release_workflow_test.sh
+	phase_script 'Validation script self-tests' ./tests/validate_test.sh
+	phase_script 'Installer tests' ./tests/install_test.sh
+	phase_script 'Uninstaller tests' ./tests/uninstall_test.sh
+	phase_race_tests
+	phase_build
 }
 
 run_host_checks() {
-	test -z "$(gofmt -l .)"
-	go vet ./internal/checksum ./internal/manifest ./docs
-	go test ./internal/checksum ./internal/manifest ./docs
-	./tests/release_notes_test.sh
-	./tests/release_workflow_test.sh
-	./tests/validate_test.sh
+	phase_format_go
+	phase_vet ./internal/checksum ./internal/manifest ./docs
+	phase_go_tests ./internal/checksum ./internal/manifest ./docs
+	phase_script 'Release notes contract' ./tests/release_notes_test.sh
+	phase_script 'Release workflow contract' ./tests/release_workflow_test.sh
+	phase_script 'Validation script self-tests' ./tests/validate_test.sh
 }
 
 build_validation_image() {
@@ -121,7 +189,7 @@ main() {
 					podman machine start || printf '%s\n' 'warning: unable to start the existing Podman machine.' >&2
 				fi
 				if podman info >/dev/null 2>&1; then
-					run_podman_checks "$mode"
+					phase_script 'Linux validation via Podman' run_podman_checks "$mode"
 					return
 				fi
 			fi
@@ -137,5 +205,7 @@ main() {
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+	set -E
+	trap on_error ERR
 	main "$@"
 fi

@@ -50,6 +50,9 @@ grep -F 'EXPECTED_SHA: ${{ github.sha }}' "$release_workflow" >/dev/null
 test "$(grep -Fc 'cmp -- "release-assets/$name" "remote/$name"' "$release_workflow")" -ge 2
 test "$(grep -Fc 'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"' "$release_workflow")" -ge 2
 test "$(grep -Fc "gh api --header 'Accept: application/octet-stream' \"\$asset_url\"" "$release_workflow")" -ge 2
+test "$(grep -Fc './tests/release_artifacts_test.sh' "$release_workflow")" -ge 3
+test "$(grep -Fc 'registry validate "$PWD/registry"' "$release_workflow")" -ge 2
+test "$(grep -Fc './tests/install_test.sh' "$release_workflow")" -ge 2
 remote_verify_job=$(awk '
   /^  remote-verify:$/ { in_job=1 }
   in_job && /^  publish:$/ { exit }
