@@ -466,7 +466,7 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 		rows = append(rows, table.Row{marker, value.Name, status, emptyDash(value.InstalledVersion), emptyDash(value.RegistryVersion), emptyDash(channel)})
 	}
 	if len(rows) == 0 {
-		rows = append(rows, table.Row{"", "No applications."})
+		rows = append(rows, table.Row{"", "No applications.", "", "", "", ""})
 	}
 	columns := []table.Column{
 		{Title: "", Width: selectionWidth},
@@ -478,7 +478,13 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 	}
 	if len(values) == 0 {
 		columns[1].Width = max(1, width-2*(paddingLeft+paddingRight)-selectionWidth)
-		columns = columns[:2]
+		// Keep all six columns so SetColumns never renders the previous
+		// six-cell rows against fewer columns; headersView and renderRow skip
+		// zero-width columns, preserving the empty layout.
+		columns[2].Width = 0
+		columns[3].Width = 0
+		columns[4].Width = 0
+		columns[5].Width = 0
 	}
 	m.applicationTable.SetColumns(columns)
 	m.applicationTable.SetRows(rows)

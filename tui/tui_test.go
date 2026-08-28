@@ -149,6 +149,74 @@ func TestApplicationTableResizePreservesLayoutAndCursor(t *testing.T) {
 	}
 }
 
+func TestEmptyListTransitionDoesNotPanic(t *testing.T) {
+	values := []app.Application{{ID: "one", Name: "One"}, {ID: "two", Name: "Two"}}
+	m := model{screen: screenAvailable, available: values, installed: nil, width: 100, height: 20}
+	updated, command := m.Update(key("right"))
+	if command != nil {
+		t.Fatalf("right returned command: %v", command)
+	}
+	view := updated.(model).View().Content
+	if !strings.Contains(view, "No applications.") {
+		t.Fatalf("empty view missing placeholder: %q", view)
+	}
+	for _, header := range []string{"STATUS", "INSTALLED", "AVAILABLE", "CHANNEL"} {
+		if strings.Contains(view, header) {
+			t.Fatalf("empty view shows hidden header %q: %q", header, view)
+		}
+	}
+	if strings.Contains(view, "One") || strings.Contains(view, "Two") {
+		t.Fatalf("empty view shows populated applications: %q", view)
+	}
+}
+
+func TestEmptyListReverseTransitionRestoresTable(t *testing.T) {
+	values := []app.Application{{ID: "one", Name: "One"}, {ID: "two", Name: "Two"}}
+	m := model{screen: screenAvailable, available: values, installed: nil, width: 100, height: 20}
+	updated, _ := m.Update(key("right"))
+	if view := updated.(model).View().Content; !strings.Contains(view, "No applications.") {
+		t.Fatalf("empty view missing placeholder: %q", view)
+	}
+	updated, _ = updated.(model).Update(key("left"))
+	view := updated.(model).View().Content
+	for _, header := range []string{"APPLICATION", "STATUS", "INSTALLED", "AVAILABLE", "CHANNEL"} {
+		if !strings.Contains(view, header) {
+			t.Fatalf("repopulated view missing header %q: %q", header, view)
+		}
+	}
+	if !strings.Contains(view, "One") || !strings.Contains(view, "Two") {
+		t.Fatalf("repopulated view missing applications: %q", view)
+	}
+}
+
+func TestApplicationTableEmptyTransitionPreservesLayout(t *testing.T) {
+	values := []app.Application{
+		{ID: "one", Name: "A very long application name that must truncate", InstalledVersion: "1.5.5-appimage", RegistryVersion: "1.5.6-appimage", DefaultChannel: "stable"},
+		{ID: "two", Name: "Second application", InstalledVersion: "—", RegistryVersion: "1.0.0", DefaultChannel: "stable"},
+	}
+	m := model{screen: screenAvailable, available: values, width: 120, height: 20}
+	m.initComponents()
+	for _, width := range []int{120, 80, 160} {
+		m.width = width
+		m.configureApplicationTable(values, width-4, 12)
+		m.configureApplicationTable(nil, width-4, 12)
+		lines := strings.Split(m.applicationTable.View(), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("width %d empty table produced only %d lines", width, len(lines))
+		}
+		assertTableLineAligned(t, width, m.applicationTable.Columns(), lines[0], lines[1])
+		if !strings.Contains(m.applicationTable.View(), "No applications.") {
+			t.Fatalf("width %d empty table missing placeholder", width)
+		}
+		m.configureApplicationTable(values, width-4, 12)
+		lines = strings.Split(m.applicationTable.View(), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("width %d repopulated table produced only %d lines", width, len(lines))
+		}
+		assertTableLineAligned(t, width, m.applicationTable.Columns(), lines[0], lines[1])
+	}
+}
+
 func TestConfirmationOverlaysHaveOneResponsiveFrame(t *testing.T) {
 	longName := "A remarkably long application name with ANSI-safe geometry"
 	detail := &app.Application{ID: "godot", Name: longName}
