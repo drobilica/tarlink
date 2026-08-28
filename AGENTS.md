@@ -80,6 +80,17 @@ or release actions.
 * Never include unrelated pre-existing changes.
 * Do not bump versions, create tags, or publish releases unless explicitly requested.
 
+### Remote write verification
+
+* After any authorized remote Git/GitHub write, command success alone is not completion: the orchestrator must read back the authoritative remote state before reporting pushed, merged, tagged, published, PR created/updated, CI complete, or task complete.
+* Branch and direct `main` pushes: fetch and verify `origin/<branch>` equals the intended commit (e.g. `git rev-parse origin/<branch>` plus `git ls-remote origin refs/heads/<branch>`); for direct-to-`main` changes, `origin/main` must equal the validated commit. The push exit status is not evidence.
+* Pull requests: after creating, updating, or merging, read the PR back and verify base, head, head SHA, and the expected state (open after create/update, merged after merge). A merge counts only when GitHub reports the PR merged and a fresh `origin/main` fetch contains the intended changes; squash/rebase merges leave the branch's commits unreachable. A pushed PR branch or a zero-exit merge command is not a merged PR; report open or blocked PRs as unmerged.
+* Tags: verify fresh remote state (e.g. `git ls-remote origin refs/tags/<tag> refs/tags/<tag>^{}`) shows the tag and that it peels to the intended commit, since annotated tags point at a tag object.
+* Releases: verify the published release remotely — existence, tag, status, required assets/checksums, and tag-to-commit resolution — not a dispatched workflow, pushed tag, draft, or zero-exit command.
+* CI: identify the exact authoritative remote commit after push/merge and require its checks complete and successful; never count local HEAD, PR-head runs, earlier commits, or runs for a different SHA.
+* If authoritative remote state does not match the intended result, the remote operation is not complete: reconcile within scope or report the exact blocker, and never convert an attempted remote write into a success claim.
+* Completion reports must state the real milestone — local commit created, branch pushed, PR open, PR merged, main updated, tag published, release published, CI green — rather than a generic `done`.
+
 ## Validation
 
 Detect the host OS. Run `./scripts/validate.sh --quick` during implementation
