@@ -32,11 +32,17 @@ Icons are published before the desktop entry that references them, and an icon
 is removed only after the entry that references it has been replaced or
 removed, so a launcher never becomes visible while its themed icon is missing.
 TarLink remains pure Go and never executes external commands, so it cannot
-invoke D-Bus, cache updaters, or any desktop-specific refresh. Some desktop
-environments cache an application menu entry when it first appears even when
-its icon already exists (observed on Linux Mint Cinnamon); the icon appears
-once that environment reloads its menu — restarting the desktop session or
-relogging in — while fresh installs on a new session resolve normally.
+invoke D-Bus, cache updaters, or any desktop-specific refresh. One known
+desktop-cache limitation remains: verified on Linux Mint Cinnamon 6.6.9, an
+application installed while the session is running appears in the menu without
+its icon even though the icon was published before the entry and resolves
+correctly in newly started processes; the icon appears once the desktop
+reloads its menu (restarting Cinnamon or relogging in), while installs made on
+a fresh session resolve normally. The same limitation affects package-manager
+installs (upstream linuxmint/Cinnamon#4498), whose triggers only rebuild
+system-prefix caches, so no standards-based refresh exists for TarLink to
+perform; this is recorded as a desktop-cache limitation, not an integration
+defect.
 
 Unset XDG variables fall back to `~/.local/share`, `~/.local/state`, and `~/.cache`. Configured XDG homes must be absolute, control-character-free paths within `$HOME`; TarLink does not manage data outside the user's home tree. Application and registry `current` pointers are relative symlinks constrained below their owning roots. New versions and registry generations are completed before activation, and only the current and one previous generation are retained.
 
