@@ -18,6 +18,10 @@ var ErrConflict = errors.New("integration path is occupied by a non-TarLink file
 
 const maxDesktopBytes = 64 << 10
 
+// afterPublication is nil in production and is set only by tests to observe
+// the order in which integration artifacts become visible.
+var afterPublication func(stage string)
+
 // PathConflict describes a PATH issue that could shadow or hide a managed
 // command after TarLink installs its executable link.
 type PathConflict struct {
@@ -280,44 +284,10 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 		oldCopy := old
 		undo = append(undo, func() error { _, err := ensureSymlink(oldCopy.Link, oldCopy.Target); return err })
 	}
-	content := DesktopFile(spec, paths.Executables[0].Link)
-	if spec.DesktopEnabled {
-		if previous.DesktopEnabled {
-			old, err := os.ReadFile(previousPaths.DesktopEntry)
-			if err != nil {
-				return Paths{}, nil, err
-			}
-			if string(old) != string(content) {
-				undoFile, err := replaceOwned(previousPaths.DesktopEntry, previous.DesktopSHA256, old, content, 0o644)
-				if err != nil {
-					return Paths{}, nil, err
-				}
-				undo = append(undo, undoFile)
-			}
-		} else {
-			created, err := ensureDesktop(paths.DesktopEntry, spec.ID, content)
-			if err != nil {
-				return Paths{}, nil, err
-			}
-			if created {
-				undo = append(undo, func() error { return os.Remove(paths.DesktopEntry) })
-			}
-		}
-	} else if previous.DesktopEnabled {
-		old, err := os.ReadFile(previousPaths.DesktopEntry)
-		if err != nil {
-			return Paths{}, nil, err
-		}
-		if err := validateDesktop(previousPaths.DesktopEntry, previous.ID, previous.DesktopSHA256); err != nil {
-			return Paths{}, nil, err
-		}
-		if err := detachOwned(previousPaths.DesktopEntry, func(path string) error {
-			return validateDesktopForRemoval(path, previous.ID, previous.DesktopSHA256)
-		}); err != nil {
-			return Paths{}, nil, err
-		}
-		undo = append(undo, func() error { return atomicCreateExisting(previousPaths.DesktopEntry, old, 0o644) })
-	}
+	// Icon publication precedes the desktop entry so a launcher never becomes
+	// visible while its themed icon is missing. Icon removal happens after the
+	// desktop block because the entry must stop referencing the themed name,
+	// or disappear entirely, before the icon file does.
 	if spec.Icon != "" {
 		if err := ensureIconSource(spec); err != nil {
 			_ = rollback()
@@ -377,7 +347,52 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 				return Paths{}, nil, err
 			}
 		}
-	} else if previous.Icon != "" {
+		if afterPublication != nil {
+			afterPublication("icon")
+		}
+	}
+	content := DesktopFile(spec, paths.Executables[0].Link)
+	if spec.DesktopEnabled {
+		if previous.DesktopEnabled {
+			old, err := os.ReadFile(previousPaths.DesktopEntry)
+			if err != nil {
+				return Paths{}, nil, err
+			}
+			if string(old) != string(content) {
+				undoFile, err := replaceOwned(previousPaths.DesktopEntry, previous.DesktopSHA256, old, content, 0o644)
+				if err != nil {
+					return Paths{}, nil, err
+				}
+				undo = append(undo, undoFile)
+			}
+		} else {
+			created, err := ensureDesktop(paths.DesktopEntry, spec.ID, content)
+			if err != nil {
+				return Paths{}, nil, err
+			}
+			if created {
+				undo = append(undo, func() error { return os.Remove(paths.DesktopEntry) })
+			}
+		}
+	} else if previous.DesktopEnabled {
+		old, err := os.ReadFile(previousPaths.DesktopEntry)
+		if err != nil {
+			return Paths{}, nil, err
+		}
+		if err := validateDesktop(previousPaths.DesktopEntry, previous.ID, previous.DesktopSHA256); err != nil {
+			return Paths{}, nil, err
+		}
+		if err := detachOwned(previousPaths.DesktopEntry, func(path string) error {
+			return validateDesktopForRemoval(path, previous.ID, previous.DesktopSHA256)
+		}); err != nil {
+			return Paths{}, nil, err
+		}
+		undo = append(undo, func() error { return atomicCreateExisting(previousPaths.DesktopEntry, old, 0o644) })
+	}
+	if afterPublication != nil {
+		afterPublication("desktop-entry")
+	}
+	if spec.Icon == "" && previous.Icon != "" {
 		old, err := os.ReadFile(previousPaths.IconFile)
 		if err != nil {
 			_ = rollback()
@@ -489,12 +504,31 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 			created = append(created, executable.Link)
 		}
 	}
-	createdDesktop := false
+	// The icon is published before the desktop entry that references its
+	// themed name: desktop environments only observe the entry once its icon
+	// exists and cannot cache an incomplete launcher.
+	createdIcon := false
 	var err error
+	if spec.Icon != "" {
+		createdIcon, err = ensureIcon(spec, paths.IconFile)
+		if err != nil {
+			for _, link := range created {
+				_ = os.Remove(link)
+			}
+			return Paths{}, nil, err
+		}
+		if afterPublication != nil {
+			afterPublication("icon")
+		}
+	}
+	createdDesktop := false
 	if spec.DesktopEnabled {
 		content := DesktopFile(spec, paths.Executables[0].Link)
 		createdDesktop, err = ensureDesktop(paths.DesktopEntry, spec.ID, content)
 		if err != nil {
+			if createdIcon {
+				_ = os.Remove(paths.IconFile)
+			}
 			if createdDesktop {
 				_ = os.Remove(paths.DesktopEntry)
 			}
@@ -503,18 +537,8 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 			}
 			return Paths{}, nil, err
 		}
-	}
-	createdIcon := false
-	if spec.Icon != "" {
-		createdIcon, err = ensureIcon(spec, paths.IconFile)
-		if err != nil {
-			if createdDesktop {
-				_ = os.Remove(paths.DesktopEntry)
-			}
-			for _, link := range created {
-				_ = os.Remove(link)
-			}
-			return Paths{}, nil, err
+		if afterPublication != nil {
+			afterPublication("desktop-entry")
 		}
 	}
 	cleanup := func() error {

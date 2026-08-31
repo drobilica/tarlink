@@ -28,6 +28,16 @@ Desktop entries reference themed icon identifiers such as `tarlink-<id>` rather
 than absolute icon paths. Desktop environments resolve these identifiers using
 the standard hicolor theme hierarchy shown above.
 
+Icons are published before the desktop entry that references them, and an icon
+is removed only after the entry that references it has been replaced or
+removed, so a launcher never becomes visible while its themed icon is missing.
+TarLink remains pure Go and never executes external commands, so it cannot
+invoke D-Bus, cache updaters, or any desktop-specific refresh. Some desktop
+environments (observed on Linux Mint Cinnamon) cache an application menu entry
+when it first appears; entries published before this ordering fix may keep
+showing without an icon until that environment reloads its menu, and relogin
+restores it.
+
 Unset XDG variables fall back to `~/.local/share`, `~/.local/state`, and `~/.cache`. Configured XDG homes must be absolute, control-character-free paths within `$HOME`; TarLink does not manage data outside the user's home tree. Application and registry `current` pointers are relative symlinks constrained below their owning roots. New versions and registry generations are completed before activation, and only the current and one previous generation are retained.
 
 The installer records the exact SHA-256 of the canonical TarLink binary in `install.sha256`, using an atomic write. Reinstallation and the bootstrap uninstaller require that private, regular, non-symlink marker to match the binary. Per-application state records the exact executable link and target plus the exact desktop entry and icon paths with content digests when desktop integration is enabled. State is rejected unless those paths equal the canonical layout for the recorded application. TarLink refuses to overwrite or remove an occupied integration that it cannot prove it owns. When a state record is corrupt, uninstall falls back to removing only the TarLink-owned product paths plus the integrations proven by canonical path and content markers — `~/.local/bin` links resolving into the app payload and the canonical desktop entry carrying TarLink's `X-TarLink-AppID` marker while referencing the payload — leaving icons and any other unprovable files in place with warnings.

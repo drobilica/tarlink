@@ -602,3 +602,161 @@ func TestUpdateDesktopEnableRejectsConflict(t *testing.T) {
 		t.Fatalf("Update error = %v, want conflict", err)
 	}
 }
+
+func observePublication(t *testing.T) func() []string {
+	t.Helper()
+	original := afterPublication
+	order := []string{}
+	afterPublication = func(stage string) { order = append(order, stage) }
+	t.Cleanup(func() { afterPublication = original })
+	return func() []string { return order }
+}
+
+func iconSpec(t *testing.T, root string) Spec {
+	t.Helper()
+	spec := testSpec(root)
+	spec.IconDirectory = filepath.Join(root, "data", "icons", "hicolor")
+	spec.Icon = "share/icon.png"
+	spec.IconSourceRoot = spec.ApplicationRoot
+	if err := os.MkdirAll(filepath.Join(spec.ApplicationRoot, "share"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spec.ApplicationRoot, spec.Icon), []byte("png fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256([]byte("png fixture"))
+	spec.IconSHA256 = hex.EncodeToString(digest[:])
+	spec.DesktopSHA256 = DesktopDigest(spec, ExpectedPaths(spec).Executables[0].Link)
+	return spec
+}
+
+func TestEnsurePublishesIconBeforeDesktopEntry(t *testing.T) {
+	spec := iconSpec(t, t.TempDir())
+	order := observePublication(t)
+	paths, _, err := Ensure(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); len(got) != 2 || got[0] != "icon" || got[1] != "desktop-entry" {
+		t.Fatalf("publication order = %v, want [icon desktop-entry]", got)
+	}
+	if got, err := os.ReadFile(paths.IconFile); err != nil || string(got) != "png fixture" {
+		t.Fatalf("installed icon = %q, %v", got, err)
+	}
+	if _, err := os.Stat(paths.DesktopEntry); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEnsureDesktopConflictLeavesNoCreatedIcon(t *testing.T) {
+	spec := iconSpec(t, t.TempDir())
+	paths := ExpectedPaths(spec)
+	if err := os.MkdirAll(filepath.Dir(paths.DesktopEntry), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(paths.DesktopEntry, []byte("user owned"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Ensure(spec); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Ensure() error = %v", err)
+	}
+	if _, err := os.Lstat(paths.IconFile); !os.IsNotExist(err) {
+		t.Fatalf("created icon remains after desktop conflict: %v", err)
+	}
+	if content, err := os.ReadFile(paths.DesktopEntry); err != nil || string(content) != "user owned" {
+		t.Fatalf("unrelated desktop entry changed: %q, %v", content, err)
+	}
+}
+
+func TestUpdatePublishesIconBeforeDesktopEntryWhenAddingIcon(t *testing.T) {
+	root := t.TempDir()
+	previous := testSpec(root)
+	previous.DesktopSHA256 = DesktopDigest(previous, ExpectedPaths(previous).Executables[0].Link)
+	if _, _, err := Ensure(previous); err != nil {
+		t.Fatal(err)
+	}
+	next := iconSpec(t, root)
+	order := observePublication(t)
+	paths, _, err := Update(next, previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := order(); len(got) != 2 || got[0] != "icon" || got[1] != "desktop-entry" {
+		t.Fatalf("publication order = %v, want [icon desktop-entry]", got)
+	}
+	if got, err := os.ReadFile(paths.IconFile); err != nil || string(got) != "png fixture" {
+		t.Fatalf("installed icon = %q, %v", got, err)
+	}
+	desktop, err := os.ReadFile(paths.DesktopEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(desktop), "Icon=tarlink-"+next.ID+"\n") {
+		t.Fatalf("updated desktop entry does not reference the themed icon: %q", desktop)
+	}
+}
+
+func TestUpdateKeepsIdenticalIconAndDesktopEntry(t *testing.T) {
+	spec := iconSpec(t, t.TempDir())
+	if _, _, err := Ensure(spec); err != nil {
+		t.Fatal(err)
+	}
+	paths := ExpectedPaths(spec)
+	iconBefore, err := os.ReadFile(paths.IconFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktopBefore, err := os.ReadFile(paths.DesktopEntry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, rollback, err := Update(spec, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.IconFile != paths.IconFile || updated.DesktopEntry != paths.DesktopEntry {
+		t.Fatalf("updated paths = %#v, want unchanged", updated)
+	}
+	if got, err := os.ReadFile(updated.IconFile); err != nil || string(got) != string(iconBefore) {
+		t.Fatalf("icon changed during identical update: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(updated.DesktopEntry); err != nil || string(got) != string(desktopBefore) {
+		t.Fatalf("desktop entry changed during identical update: %q, %v", got, err)
+	}
+	if err := rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateOwned(spec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRemoveOwnedRemovesOnlyDesktopEntryAndIcon(t *testing.T) {
+	root := t.TempDir()
+	spec := iconSpec(t, root)
+	paths, _, err := Ensure(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelatedDesktop := filepath.Join(filepath.Dir(paths.DesktopEntry), "unrelated.desktop")
+	if err := os.WriteFile(unrelatedDesktop, []byte("[Desktop Entry]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedIcon := filepath.Join(filepath.Dir(paths.IconFile), "unrelated.png")
+	if err := os.WriteFile(unrelatedIcon, []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveOwned(spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{paths.Executables[0].Link, paths.DesktopEntry, paths.IconFile} {
+		if _, err := os.Lstat(path); !os.IsNotExist(err) {
+			t.Fatalf("owned integration remains at %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{unrelatedDesktop, unrelatedIcon} {
+		if _, err := os.Lstat(path); err != nil {
+			t.Fatalf("unrelated file %s was removed: %v", path, err)
+		}
+	}
+}
