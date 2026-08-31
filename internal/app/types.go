@@ -79,9 +79,25 @@ type BatchTarget struct {
 }
 
 type BatchResult struct {
-	Completed []Result          `json:"completed"`
-	Failed    map[string]string `json:"failed"`
-	Canceled  bool              `json:"canceled,omitempty"`
+	Completed []Result `json:"completed"`
+	// Skipped contains applications which already had the requested state (or
+	// were absent for uninstall). The order of all outcomes is preserved in
+	// Outcomes for presentation clients which need a single ordered stream.
+	Skipped      []string             `json:"skipped,omitempty"`
+	Failed       map[string]string    `json:"failed"`
+	FailureCodes map[string]ErrorCode `json:"failure_codes,omitempty"`
+	Outcomes     []BatchOutcome       `json:"outcomes,omitempty"`
+	Canceled     bool                 `json:"canceled,omitempty"`
+}
+
+// BatchOutcome is the ordered, per-application result of a batch operation.
+// Status is one of "completed", "skipped", or "failed".
+type BatchOutcome struct {
+	AppID  string    `json:"app_id"`
+	Status string    `json:"status"`
+	Result *Result   `json:"result,omitempty"`
+	Reason string    `json:"reason,omitempty"`
+	Code   ErrorCode `json:"code,omitempty"`
 }
 
 // BatchService is optional on the presentation service boundary so existing
@@ -90,6 +106,20 @@ type BatchService interface {
 	ResolveInstallBatch(context.Context, []string) ([]BatchTarget, error)
 	InstallBatch(context.Context, []string, ProgressSink) (BatchResult, error)
 	UninstallBatch(context.Context, []string, ProgressSink) (BatchResult, error)
+}
+
+// BatchInstallOptionsService extends BatchService implementations which can
+// apply one acknowledged PATH-conflict policy to every selected install.
+type BatchInstallOptionsService interface {
+	InstallBatchWithOptions(context.Context, []string, bool, ProgressSink) (BatchResult, error)
+}
+
+// LockService exposes the reproducible, platform-specific installed snapshot
+// workflow. It is optional so presentation clients can retain a smaller
+// service implementation.
+type LockService interface {
+	WriteLock(context.Context, string) error
+	InstallLock(context.Context, string, bool, ProgressSink) (BatchResult, error)
 }
 
 type ProgressSink func(Progress)
@@ -135,7 +165,11 @@ type UpdateAllResult struct {
 }
 
 type UninstallAllResult struct {
-	Warnings []string `json:"warnings,omitempty"`
+	Completed    []Result             `json:"completed,omitempty"`
+	Failed       map[string]string    `json:"failed,omitempty"`
+	FailureCodes map[string]ErrorCode `json:"failure_codes,omitempty"`
+	Outcomes     []BatchOutcome       `json:"outcomes,omitempty"`
+	Warnings     []string             `json:"warnings,omitempty"`
 }
 
 type Version struct {
