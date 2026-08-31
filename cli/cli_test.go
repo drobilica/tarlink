@@ -18,13 +18,26 @@ import (
 
 func TestProgressNonTTYIsBoundedAndUsesIECBytes(t *testing.T) {
 	var out bytes.Buffer
-	sink := (Runner{Stderr: &out}).progress()
+	progress := newProgressRenderer(&out, false)
 	for i := int64(0); i < 40; i++ {
-		sink(app.Progress{Stage: app.ProgressDownloading, BytesDone: (i + 1) << 20, BytesTotal: 64 << 20})
+		progress.report(app.Progress{Stage: app.ProgressDownloading, BytesDone: (i + 1) << 20, BytesTotal: 64 << 20})
 	}
 	value := out.String()
 	if strings.ContainsAny(value, "\r\x1b") || strings.Count(value, "Downloading") != 1 || !strings.Contains(value, "1.0 MiB / 64.0 MiB") {
 		t.Fatalf("unexpected non-TTY progress output: %q", value)
+	}
+}
+
+func TestProgressTTYFinishesBeforeFinalOutput(t *testing.T) {
+	var out bytes.Buffer
+	progress := newProgressRenderer(&out, true)
+	progress.report(app.Progress{Stage: app.ProgressActivating})
+	output := progressOutput{Writer: &out, finish: progress.finish}
+	if _, err := fmt.Fprintln(output, "Installed tiled 1.12.2"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "\rActivating                                                                      \nInstalled tiled 1.12.2\n"; got != want {
+		t.Fatalf("TTY output=%q want=%q", got, want)
 	}
 }
 

@@ -138,6 +138,9 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	if r.Stdin == nil {
 		r.Stdin = strings.NewReader("")
 	}
+	progress := r.progress()
+	r.Stdout = progressOutput{Writer: r.Stdout, finish: progress.finish}
+	r.Stderr = progressOutput{Writer: r.Stderr, finish: progress.finish}
 	if len(arguments) == 0 {
 		if r.LaunchTUI == nil {
 			return r.fail(errors.New("TUI is unavailable"))
@@ -427,7 +430,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			return r.invalid("usage: tarlink refresh")
 		}
 		var checkedAt time.Time
-		checkedAt, err = r.Service.SyncRegistry(ctx, r.progress())
+		checkedAt, err = r.Service.SyncRegistry(ctx, progress.report)
 		if err == nil {
 			_, err = fmt.Fprintf(r.Stdout, "Application catalog refreshed. Checked at %s.\n", checkedAt.UTC().Format(time.RFC3339))
 		}
@@ -452,7 +455,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				return r.fail(errors.New("lockfile installation is unavailable"))
 			}
 			var result app.BatchResult
-			result, err = service.InstallLock(ctx, options.file, options.forcePath, r.progress())
+			result, err = service.InstallLock(ctx, options.file, options.forcePath, progress.report)
 			if err == nil {
 				err = r.printBatch("Installed", result)
 			}
@@ -464,7 +467,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				return r.fail(errors.New("batch installation is unavailable"))
 			}
 			var result app.BatchResult
-			result, err = service.InstallBatchWithOptions(ctx, options.apps, options.forcePath, r.progress())
+			result, err = service.InstallBatchWithOptions(ctx, options.apps, options.forcePath, progress.report)
 			if err == nil {
 				err = r.printBatch("Installed", result)
 			}
@@ -490,7 +493,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			return exitConflict
 		}
 		var result app.Result
-		result, err = r.Service.Install(ctx, value, r.progress())
+		result, err = r.Service.Install(ctx, value, progress.report)
 		if err == nil {
 			err = r.printResult("Installed", result)
 		}
@@ -513,7 +516,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	case "update":
 		if len(arguments) == 2 && arguments[1] == "--all" {
 			var result app.UpdateAllResult
-			result, err = r.Service.UpdateAll(ctx, r.progress())
+			result, err = r.Service.UpdateAll(ctx, progress.report)
 			if err == nil {
 				err = r.printUpdateAll(result)
 			}
@@ -524,7 +527,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			return r.invalid("usage: tarlink update <app> | tarlink update --all")
 		}
 		var result app.Result
-		result, err = r.Service.Update(ctx, value, r.progress())
+		result, err = r.Service.Update(ctx, value, progress.report)
 		if err == nil {
 			err = r.printResult("Updated", result)
 		}
@@ -553,7 +556,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			return r.invalid("usage: tarlink self-update")
 		}
 		var value app.TarLinkVersion
-		value, err = r.Service.UpgradeTarLink(ctx, r.progress())
+		value, err = r.Service.UpgradeTarLink(ctx, progress.report)
 		if err == nil {
 			if !value.UpgradeAvailable {
 				_, err = fmt.Fprintf(r.Stdout, "TarLink %s is already up to date.\n", value.Current)
@@ -624,7 +627,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			return r.invalid("usage: tarlink rollback <app>")
 		}
 		var result app.Result
-		result, err = r.Service.Rollback(ctx, value, r.progress())
+		result, err = r.Service.Rollback(ctx, value, progress.report)
 		if err == nil {
 			err = r.printResult("Rolled back", result)
 		}
@@ -632,7 +635,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		if len(arguments) == 2 && arguments[1] == "--all" {
 			var result app.UninstallAllResult
 			var uninstallErr error
-			result, uninstallErr = r.Service.UninstallAll(ctx, r.progress())
+			result, uninstallErr = r.Service.UninstallAll(ctx, progress.report)
 			printErr := r.printUninstallAll(result)
 			if printErr != nil {
 				err = printErr
@@ -651,7 +654,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 				return r.fail(errors.New("batch uninstallation is unavailable"))
 			}
 			var result app.BatchResult
-			result, err = service.UninstallBatch(ctx, values, r.progress())
+			result, err = service.UninstallBatch(ctx, values, progress.report)
 			if err == nil {
 				err = r.printBatch("Uninstalled", result)
 			}
@@ -659,7 +662,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		}
 		value := values[0]
 		var result app.Result
-		result, err = r.Service.Uninstall(ctx, value, r.progress())
+		result, err = r.Service.Uninstall(ctx, value, progress.report)
 		if err == nil {
 			err = r.printResult("Uninstalled", result)
 		}
@@ -692,31 +695,60 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	return 0
 }
 
-func (r Runner) progress() app.ProgressSink {
-	tty := isTTY(r.Stderr)
-	last := app.ProgressStage("")
-	count := 0
-	return func(event app.Progress) {
-		if event.Stage == last || event.Stage == "" || count >= 16 {
-			return
-		}
-		last = event.Stage
-		count++
-		label := event.Description
-		if label == "" {
-			label = title(string(event.Stage))
-		}
-		if event.BytesTotal > 0 {
-			label = fmt.Sprintf("%s %s / %s", label, bytesLabel(event.BytesDone), bytesLabel(event.BytesTotal))
-		} else if event.BytesDone > 0 {
-			label = fmt.Sprintf("%s %s", label, bytesLabel(event.BytesDone))
-		}
-		if tty {
-			_, _ = fmt.Fprintf(r.Stderr, "\r%-80s", label)
-			return
-		}
-		_, _ = fmt.Fprintln(r.Stderr, label)
+func (r Runner) progress() *progressRenderer {
+	return newProgressRenderer(r.Stderr, isTTY(r.Stderr))
+}
+
+type progressRenderer struct {
+	writer io.Writer
+	tty    bool
+	last   app.ProgressStage
+	count  int
+	active bool
+}
+
+func newProgressRenderer(writer io.Writer, tty bool) *progressRenderer {
+	return &progressRenderer{writer: writer, tty: tty}
+}
+
+func (p *progressRenderer) report(event app.Progress) {
+	if event.Stage == p.last || event.Stage == "" || p.count >= 16 {
+		return
 	}
+	p.last = event.Stage
+	p.count++
+	label := event.Description
+	if label == "" {
+		label = title(string(event.Stage))
+	}
+	if event.BytesTotal > 0 {
+		label = fmt.Sprintf("%s %s / %s", label, bytesLabel(event.BytesDone), bytesLabel(event.BytesTotal))
+	} else if event.BytesDone > 0 {
+		label = fmt.Sprintf("%s %s", label, bytesLabel(event.BytesDone))
+	}
+	if p.tty {
+		_, _ = fmt.Fprintf(p.writer, "\r%-80s", label)
+		p.active = true
+		return
+	}
+	_, _ = fmt.Fprintln(p.writer, label)
+}
+
+func (p *progressRenderer) finish() {
+	if p.tty && p.active {
+		_, _ = fmt.Fprintln(p.writer)
+		p.active = false
+	}
+}
+
+type progressOutput struct {
+	io.Writer
+	finish func()
+}
+
+func (w progressOutput) Write(value []byte) (int, error) {
+	w.finish()
+	return w.Writer.Write(value)
 }
 
 func isTTY(w io.Writer) bool {
