@@ -357,6 +357,7 @@ func (m model) bodyLines() []string {
 	}
 	if m.upgradeAvailable {
 		add(m.style("TarLink update available: "+m.tarlinkVersion.Current+" → "+m.tarlinkVersion.Latest, warning))
+		add(m.style("Run: tarlink self-update", warning))
 	}
 	workspace, _ := m.workspaceLines()
 	if m.isOverlay() || m.screen == screenDetails || m.screen == screenVersions {

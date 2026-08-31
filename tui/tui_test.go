@@ -110,6 +110,25 @@ func TestTableHasStablePackageManagerColumns(t *testing.T) {
 	}
 }
 
+func TestUpdateNoticeIncludesSelfUpdateCommand(t *testing.T) {
+	m := model{
+		width:            100,
+		height:           20,
+		color:            false,
+		theme:            newTheme(false),
+		upgradeAvailable: true,
+		tarlinkVersion:   app.TarLinkVersion{Current: "0.15.3", Latest: "0.15.4"},
+	}
+
+	view := m.View().Content
+	if !strings.Contains(view, "TarLink update available: 0.15.3 → 0.15.4") {
+		t.Fatalf("update notice missing: %q", view)
+	}
+	if !strings.Contains(view, "Run: tarlink self-update") {
+		t.Fatalf("update notice missing self-update command: %q", view)
+	}
+}
+
 func TestApplicationTableColumnsStayAlignedAtTerminalWidths(t *testing.T) {
 	values := []app.Application{{
 		ID: "blender", Name: "A very long application name that must truncate", InstalledVersion: "1.5.5-appimage",
