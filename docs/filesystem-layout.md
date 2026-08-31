@@ -33,10 +33,10 @@ is removed only after the entry that references it has been replaced or
 removed, so a launcher never becomes visible while its themed icon is missing.
 TarLink remains pure Go and never executes external commands, so it cannot
 invoke D-Bus, cache updaters, or any desktop-specific refresh. Some desktop
-environments (observed on Linux Mint Cinnamon) cache an application menu entry
-when it first appears; entries published before this ordering fix may keep
-showing without an icon until that environment reloads its menu, and relogin
-restores it.
+environments cache an application menu entry when it first appears even when
+its icon already exists (observed on Linux Mint Cinnamon); the icon appears
+once that environment reloads its menu — restarting the desktop session or
+relogging in — while fresh installs on a new session resolve normally.
 
 Unset XDG variables fall back to `~/.local/share`, `~/.local/state`, and `~/.cache`. Configured XDG homes must be absolute, control-character-free paths within `$HOME`; TarLink does not manage data outside the user's home tree. Application and registry `current` pointers are relative symlinks constrained below their owning roots. New versions and registry generations are completed before activation, and only the current and one previous generation are retained.
 
