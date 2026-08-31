@@ -70,10 +70,12 @@ Known executable and optional desktop integration
 
 ```sh
 tarlink search <query>
-tarlink install <app>
+tarlink install <app>...
+tarlink lock
+tarlink install -f tarlink.lock
 tarlink update <app>
 tarlink rollback <app>
-tarlink uninstall <app>
+tarlink uninstall <app>...
 tarlink doctor
 tarlink self-update
 ```
@@ -83,6 +85,16 @@ and can be refreshed explicitly with `tarlink refresh`. Explicit refresh always
 checks the current official registry and reports the successful UTC check time.
 `tarlink list` shows the available catalog with installed state; use
 `--installed` or `--updates` to filter it.
+
+`tarlink lock` writes a deterministic `tarlink.lock` snapshot of the currently
+installed TarLink applications. It records the exact Linux architecture,
+channel, version, and resolved-package fingerprint. Replaying it with
+`tarlink install -f tarlink.lock` resolves every entry again through the
+official catalog, rejects changed resolutions, converges only the listed
+applications, and never removes extra installed applications. Use
+`--output <path>` to write a different snapshot path; `--force-path` applies
+to every selected application when installing either explicit applications or
+a lock snapshot.
 
 In the TUI, use `↑`/`↓` or `j`/`k` to navigate and `Enter` to open details or
 review the current selection. `Space` selects applications by stable ID; move

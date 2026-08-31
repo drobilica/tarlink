@@ -41,6 +41,31 @@ type fakeService struct {
 	synced         bool
 }
 
+type batchFakeService struct {
+	fakeService
+	installBatch   app.BatchResult
+	uninstallBatch app.BatchResult
+	installIDs     []string
+	uninstallIDs   []string
+	forcePath      bool
+}
+
+func (f *batchFakeService) ResolveInstallBatch(context.Context, []string) ([]app.BatchTarget, error) {
+	return nil, nil
+}
+func (f *batchFakeService) InstallBatch(context.Context, []string, app.ProgressSink) (app.BatchResult, error) {
+	return f.installBatch, nil
+}
+func (f *batchFakeService) InstallBatchWithOptions(_ context.Context, ids []string, force bool, _ app.ProgressSink) (app.BatchResult, error) {
+	f.installIDs = append([]string(nil), ids...)
+	f.forcePath = force
+	return f.installBatch, nil
+}
+func (f *batchFakeService) UninstallBatch(_ context.Context, ids []string, _ app.ProgressSink) (app.BatchResult, error) {
+	f.uninstallIDs = append([]string(nil), ids...)
+	return f.uninstallBatch, nil
+}
+
 func (f *fakeService) Install(_ context.Context, appID string, _ app.ProgressSink) (app.Result, error) {
 	f.installed = append(f.installed, appID)
 	return app.Result{AppID: "blender", Version: "5.2.0"}, nil
@@ -395,6 +420,43 @@ func TestUninstallCommands(t *testing.T) {
 	}
 	if !service.uninstalledAll || out.String() != "Uninstalled all applications\n" {
 		t.Fatalf("uninstall all called=%t output=%q", service.uninstalledAll, out.String())
+	}
+}
+
+func TestBatchInstallAndUninstallReportOrderedOutcomes(t *testing.T) {
+	service := &batchFakeService{installBatch: app.BatchResult{Outcomes: []app.BatchOutcome{
+		{AppID: "alpha", Status: "completed", Result: &app.Result{AppID: "alpha", Version: "1"}},
+		{AppID: "beta", Status: "skipped", Reason: "already installed"},
+	}}, uninstallBatch: app.BatchResult{Outcomes: []app.BatchOutcome{
+		{AppID: "beta", Status: "skipped", Reason: "not installed"},
+		{AppID: "alpha", Status: "completed", Result: &app.Result{AppID: "alpha", Version: "1"}},
+	}}}
+	var out, errOut bytes.Buffer
+	runner := Runner{Service: service, Stdout: &out, Stderr: &errOut}
+	if code := runner.Run(context.Background(), []string{"install", "alpha", "beta", "--force-path"}); code != 0 {
+		t.Fatalf("install code=%d stderr=%q", code, errOut.String())
+	}
+	if got, want := strings.Join(service.installIDs, ","), "alpha,beta"; got != want || !service.forcePath || out.String() != "Installed alpha 1\nSkipped beta (already installed)\n" {
+		t.Fatalf("install IDs=%q force=%t output=%q", got, service.forcePath, out.String())
+	}
+	out.Reset()
+	if code := runner.Run(context.Background(), []string{"uninstall", "beta", "alpha"}); code != 0 {
+		t.Fatalf("uninstall code=%d stderr=%q", code, errOut.String())
+	}
+	if got, want := strings.Join(service.uninstallIDs, ","), "beta,alpha"; got != want || out.String() != "Skipped beta (not installed)\nUninstalled alpha 1\n" {
+		t.Fatalf("uninstall IDs=%q output=%q", got, out.String())
+	}
+}
+
+func TestInstallArgumentsRejectMixedLockAndApplications(t *testing.T) {
+	for _, arguments := range [][]string{{}, {"-f", "tarlink.lock", "alpha"}, {"-f", "tarlink.lock", "-f", "other.lock"}, {"--force-path"}} {
+		if _, err := installArguments(arguments); err == nil {
+			t.Fatalf("installArguments(%v) succeeded", arguments)
+		}
+	}
+	options, err := installArguments([]string{"alpha", "beta", "--force-path"})
+	if err != nil || !options.forcePath || strings.Join(options.apps, ",") != "alpha,beta" {
+		t.Fatalf("options=%+v err=%v", options, err)
 	}
 }
 

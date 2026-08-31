@@ -10,6 +10,7 @@ import (
 	"github.com/drobilica/tarlink/internal/install"
 	"github.com/drobilica/tarlink/internal/integration"
 	"github.com/drobilica/tarlink/internal/manifest"
+	"github.com/drobilica/tarlink/internal/state"
 )
 
 func (core *Core) ResolveInstallBatch(ctx context.Context, ids []string) ([]BatchTarget, error) {
@@ -24,15 +25,16 @@ func (core *Core) resolveInstallBatch(ctx context.Context, ids []string) ([]*man
 	result := make([]BatchTarget, 0, len(ids))
 	items := make([]*manifest.Manifest, 0, len(ids))
 	seen := map[string]bool{}
-	for _, id := range ids {
-		if err := filesystem.ValidateID(id); err != nil {
+	for _, value := range ids {
+		selector, err := ParseSelector(value)
+		if err != nil {
 			return nil, nil, err
 		}
-		if seen[id] {
-			return nil, nil, fmt.Errorf("duplicate application %q", id)
+		if seen[selector.App] {
+			return nil, nil, fmt.Errorf("duplicate application %q", selector.App)
 		}
-		seen[id] = true
-		_, item, _, err := core.resolveSelector(ctx, id, nil)
+		seen[selector.App] = true
+		_, item, _, err := core.resolveSelector(ctx, value, nil)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -46,23 +48,32 @@ func (core *Core) resolveInstallBatch(ctx context.Context, ids []string) ([]*man
 }
 
 func (core *Core) InstallBatch(ctx context.Context, ids []string, sink ProgressSink) (BatchResult, error) {
+	return core.InstallBatchWithOptions(ctx, ids, false, sink)
+}
+
+// InstallBatchWithOptions installs each selected application in order. The
+// forcePath option acknowledges PATH conflicts for every selected item.
+func (core *Core) InstallBatchWithOptions(ctx context.Context, ids []string, forcePath bool, sink ProgressSink) (BatchResult, error) {
 	items, targets, err := core.resolveInstallBatch(ctx, ids)
 	if err != nil {
 		return BatchResult{}, err
 	}
-	for index, target := range targets {
-		conflicts := core.checkItemPath(items[index])
-		if len(conflicts) > 0 {
-			return BatchResult{}, fmt.Errorf("installation preflight failed for %s: %s", target.AppID, formatPathConflicts(conflicts))
-		}
-	}
-	result := BatchResult{Failed: map[string]string{}}
+	result := BatchResult{Failed: map[string]string{}, FailureCodes: map[string]ErrorCode{}}
 	for index, target := range targets {
 		if err := ctx.Err(); err != nil {
 			result.Canceled = true
 			return result, err
 		}
 		item := items[index]
+		// Path conflicts are independent per application. Record the failure and
+		// continue with the remaining selections.
+		if conflicts := core.checkItemPath(item); len(conflicts) > 0 && !forcePath {
+			err := &Error{Code: CodeConflict, Op: "install " + target.AppID, Err: fmt.Errorf("path conflict: %s", formatPathConflicts(conflicts))}
+			result.Failed[target.AppID] = err.Error()
+			result.FailureCodes[target.AppID] = err.Code
+			result.Outcomes = append(result.Outcomes, BatchOutcome{AppID: target.AppID, Status: "failed", Reason: err.Error(), Code: err.Code})
+			continue
+		}
 		progress := func(value Progress) {
 			value.Item, value.Total = index+1, len(targets)
 			if sink != nil {
@@ -75,10 +86,20 @@ func (core *Core) InstallBatch(ctx context.Context, ids []string, sink ProgressS
 				result.Canceled = true
 				return result, ctx.Err()
 			}
-			result.Failed[target.AppID] = installErr.Error()
+			classified := classify("install "+target.AppID, installErr)
+			if CodeOf(classified) == CodeAlreadyInstalled {
+				result.Skipped = append(result.Skipped, target.AppID)
+				result.Outcomes = append(result.Outcomes, BatchOutcome{AppID: target.AppID, Status: "skipped", Reason: "already installed", Code: CodeAlreadyInstalled})
+				continue
+			}
+			result.Failed[target.AppID] = classified.Error()
+			result.FailureCodes[target.AppID] = CodeOf(classified)
+			result.Outcomes = append(result.Outcomes, BatchOutcome{AppID: target.AppID, Status: "failed", Reason: classified.Error(), Code: CodeOf(classified)})
 			continue
 		}
-		result.Completed = append(result.Completed, Result{AppID: target.AppID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings})
+		completed := Result{AppID: target.AppID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}
+		result.Completed = append(result.Completed, completed)
+		result.Outcomes = append(result.Outcomes, BatchOutcome{AppID: target.AppID, Status: "completed", Result: &result.Completed[len(result.Completed)-1]})
 	}
 	return result, nil
 }
@@ -95,11 +116,18 @@ func (core *Core) UninstallBatch(ctx context.Context, ids []string, sink Progres
 	if len(ids) == 0 {
 		return BatchResult{}, fmt.Errorf("batch selection is empty")
 	}
-	result := BatchResult{Failed: map[string]string{}}
-	for index, id := range ids {
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
 		if err := filesystem.ValidateID(id); err != nil {
-			return result, err
+			return BatchResult{}, err
 		}
+		if seen[id] {
+			return BatchResult{}, fmt.Errorf("duplicate application %q", id)
+		}
+		seen[id] = true
+	}
+	result := BatchResult{Failed: map[string]string{}, FailureCodes: map[string]ErrorCode{}}
+	for index, id := range ids {
 		if err := ctx.Err(); err != nil {
 			result.Canceled = true
 			return result, err
@@ -110,16 +138,33 @@ func (core *Core) UninstallBatch(ctx context.Context, ids []string, sink Progres
 				sink(value)
 			}
 		}
+		installed, stateErr := state.LoadForApp(core.layout, id)
 		warnings, uninstallErr := core.installer.UninstallSubject(ctx, id, core.progress(progress, id))
 		if uninstallErr != nil {
 			if ctx.Err() != nil {
 				result.Canceled = true
 				return result, ctx.Err()
 			}
-			result.Failed[id] = uninstallErr.Error()
+			classified := classify("uninstall "+id, uninstallErr)
+			if CodeOf(classified) == CodeNotInstalled {
+				result.Skipped = append(result.Skipped, id)
+				result.Outcomes = append(result.Outcomes, BatchOutcome{AppID: id, Status: "skipped", Reason: "not installed", Code: CodeNotInstalled})
+				continue
+			}
+			result.Failed[id] = classified.Error()
+			result.FailureCodes[id] = CodeOf(classified)
+			result.Outcomes = append(result.Outcomes, BatchOutcome{AppID: id, Status: "failed", Reason: classified.Error(), Code: CodeOf(classified)})
 			continue
 		}
-		result.Completed = append(result.Completed, Result{AppID: id, Warnings: warnings})
+		completed := Result{AppID: id, Warnings: warnings}
+		if stateErr == nil {
+			completed.Version = installed.Current
+			completed.Fingerprint = installed.CurrentFingerprint
+			completed.Channel = installed.Channel
+			completed.Pinned = installed.Pinned
+		}
+		result.Completed = append(result.Completed, completed)
+		result.Outcomes = append(result.Outcomes, BatchOutcome{AppID: id, Status: "completed", Result: &result.Completed[len(result.Completed)-1]})
 	}
 	return result, nil
 }

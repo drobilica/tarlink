@@ -31,10 +31,11 @@ Discover applications:
   versions     Show application versions
 
 Manage applications:
-  install      Install an application
+  install      Install one or more applications
+  lock         Write an installed-state lock snapshot
   update       Update one or all installed applications
   rollback     Roll back an application
-  uninstall    Uninstall one or all applications
+  uninstall    Uninstall one or more applications
   pin          Pin an installed application
   unpin        Unpin an installed application
 
@@ -67,7 +68,8 @@ var commandHelp = map[string]string{
 	"refresh":     "usage: tarlink refresh",
 	"list":        "usage: tarlink list [--installed|--updates] [--json]",
 	"search":      "usage: tarlink search <query> [--json]",
-	"install":     "usage: tarlink install <app> [--force-path]",
+	"install":     "usage: tarlink install <app>... [--force-path] | tarlink install -f <path> [--force-path]",
+	"lock":        "usage: tarlink lock [--output <path>]",
 	"update":      "usage: tarlink update <app> | tarlink update --all",
 	"self-update": "usage: tarlink self-update",
 	"doctor":      "usage: tarlink doctor",
@@ -77,7 +79,7 @@ var commandHelp = map[string]string{
 	"info":        "usage: tarlink info <app> [--json]",
 	"versions":    "usage: tarlink versions <app> [--json]",
 	"rollback":    "usage: tarlink rollback <app>",
-	"uninstall":   "usage: tarlink uninstall <app> | tarlink uninstall --all",
+	"uninstall":   "usage: tarlink uninstall <app>... | tarlink uninstall --all",
 }
 
 var registryCommandHelp = map[string]string{
@@ -440,22 +442,47 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			err = r.printApplications(result, jsonOutput, "No applications found.")
 		}
 	case "install":
-		value, forcePath, parseErr := installArguments(arguments[1:])
+		options, parseErr := installArguments(arguments[1:])
 		if parseErr != nil {
-			return r.invalid("usage: tarlink install <app> [--force-path]")
+			return r.invalid(commandHelp["install"])
 		}
+		if options.file != "" {
+			service, ok := r.Service.(app.LockService)
+			if !ok {
+				return r.fail(errors.New("lockfile installation is unavailable"))
+			}
+			var result app.BatchResult
+			result, err = service.InstallLock(ctx, options.file, options.forcePath, r.progress())
+			if err == nil {
+				err = r.printBatch("Installed", result)
+			}
+			break
+		}
+		if len(options.apps) > 1 {
+			service, ok := r.Service.(app.BatchInstallOptionsService)
+			if !ok {
+				return r.fail(errors.New("batch installation is unavailable"))
+			}
+			var result app.BatchResult
+			result, err = service.InstallBatchWithOptions(ctx, options.apps, options.forcePath, r.progress())
+			if err == nil {
+				err = r.printBatch("Installed", result)
+			}
+			break
+		}
+		value := options.apps[0]
 		// PATH preflight concerns the application identity, not the requested
 		// release/channel. Keep the original selector for Install below.
 		selector, selectorErr := app.ParseSelector(value)
 		if selectorErr != nil {
-			return r.invalid("usage: tarlink install <app> [--force-path]")
+			return r.invalid(commandHelp["install"])
 		}
 		conflicts, checkErr := r.Service.CheckInstallPath(selector.App)
 		if checkErr != nil {
 			err = checkErr
 			break
 		}
-		if len(conflicts) != 0 && !forcePath {
+		if len(conflicts) != 0 && !options.forcePath {
 			if err := r.printPathConflicts(value, conflicts); err != nil {
 				return r.fail(err)
 			}
@@ -466,6 +493,22 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		result, err = r.Service.Install(ctx, value, r.progress())
 		if err == nil {
 			err = r.printResult("Installed", result)
+		}
+	case "lock":
+		output, parseErr := lockArguments(arguments[1:])
+		if parseErr != nil {
+			return r.invalid(commandHelp["lock"])
+		}
+		service, ok := r.Service.(app.LockService)
+		if !ok {
+			return r.fail(errors.New("lockfile snapshots are unavailable"))
+		}
+		err = service.WriteLock(ctx, output)
+		if err == nil {
+			if output == "" {
+				output = "tarlink.lock"
+			}
+			_, err = fmt.Fprintf(r.Stdout, "Wrote lock snapshot to %s\n", output)
 		}
 	case "update":
 		if len(arguments) == 2 && arguments[1] == "--all" {
@@ -588,23 +631,33 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	case "uninstall":
 		if len(arguments) == 2 && arguments[1] == "--all" {
 			var result app.UninstallAllResult
-			result, err = r.Service.UninstallAll(ctx, r.progress())
-			if err == nil {
-				for _, warning := range result.Warnings {
-					if _, err := fmt.Fprintf(r.Stderr, "Warning: %s\n", warning); err != nil {
-						break
-					}
-				}
-				if err == nil {
-					_, err = io.WriteString(r.Stdout, "Uninstalled all applications\n")
-				}
+			var uninstallErr error
+			result, uninstallErr = r.Service.UninstallAll(ctx, r.progress())
+			printErr := r.printUninstallAll(result)
+			if printErr != nil {
+				err = printErr
+			} else {
+				err = uninstallErr
 			}
 			break
 		}
-		value, parseErr := oneValue(arguments[1:])
+		values, parseErr := uninstallArguments(arguments[1:])
 		if parseErr != nil {
-			return r.invalid("usage: tarlink uninstall <app> | tarlink uninstall --all")
+			return r.invalid(commandHelp["uninstall"])
 		}
+		if len(values) > 1 {
+			service, ok := r.Service.(app.BatchService)
+			if !ok {
+				return r.fail(errors.New("batch uninstallation is unavailable"))
+			}
+			var result app.BatchResult
+			result, err = service.UninstallBatch(ctx, values, r.progress())
+			if err == nil {
+				err = r.printBatch("Uninstalled", result)
+			}
+			break
+		}
+		value := values[0]
 		var result app.Result
 		result, err = r.Service.Uninstall(ctx, value, r.progress())
 		if err == nil {
@@ -1249,6 +1302,60 @@ func (r Runner) printUpdateAll(result app.UpdateAllResult) error {
 	return nil
 }
 
+func (r Runner) printBatch(action string, result app.BatchResult) error {
+	for _, outcome := range result.Outcomes {
+		switch outcome.Status {
+		case "completed":
+			if outcome.Result != nil {
+				if action == "Uninstalled" && outcome.Result.Version != "" {
+					if _, err := fmt.Fprintf(r.Stdout, "Uninstalled %s %s\n", outcome.Result.AppID, outcome.Result.Version); err != nil {
+						return err
+					}
+					for _, warning := range outcome.Result.Warnings {
+						if _, err := fmt.Fprintf(r.Stderr, "Warning: %s\n", warning); err != nil {
+							return err
+						}
+					}
+				} else if err := r.printResult(action, *outcome.Result); err != nil {
+					return err
+				}
+			}
+		case "skipped":
+			if _, err := fmt.Fprintf(r.Stdout, "Skipped %s (%s)\n", outcome.AppID, outcome.Reason); err != nil {
+				return err
+			}
+		case "failed":
+			if _, err := fmt.Fprintf(r.Stderr, "Failed %s: %s\n", outcome.AppID, outcome.Reason); err != nil {
+				return err
+			}
+		}
+	}
+	if len(result.Failed) == 0 {
+		return nil
+	}
+	for _, outcome := range result.Outcomes {
+		if outcome.Status == "failed" {
+			return &app.Error{Code: outcome.Code, Op: "batch operation", Err: errors.New("one or more applications failed")}
+		}
+	}
+	return &app.Error{Code: app.CodeConflict, Op: "batch operation", Err: errors.New("one or more applications failed")}
+}
+
+func (r Runner) printUninstallAll(result app.UninstallAllResult) error {
+	batch := app.BatchResult{Completed: result.Completed, Failed: result.Failed, FailureCodes: result.FailureCodes, Outcomes: result.Outcomes}
+	batchErr := r.printBatch("Uninstalled", batch)
+	for _, warning := range result.Warnings {
+		if _, err := fmt.Fprintf(r.Stderr, "Warning: %s\n", warning); err != nil {
+			return err
+		}
+	}
+	if len(result.Outcomes) == 0 {
+		_, err := io.WriteString(r.Stdout, "Uninstalled all applications\n")
+		return err
+	}
+	return batchErr
+}
+
 func (r Runner) printDoctor(report app.DoctorReport) error {
 	if _, err := io.WriteString(r.Stdout, "TarLink doctor\n\nGlobal\n"); err != nil {
 		return err
@@ -1295,7 +1402,7 @@ func (r Runner) printDoctor(report app.DoctorReport) error {
 func (r Runner) printResult(action string, result app.Result) error {
 	if result.Version != "" {
 		preposition := " "
-		if action != "Installed" {
+		if action == "Updated" || action == "Rolled back" {
 			preposition = " to "
 		}
 		if _, err := fmt.Fprintf(r.Stdout, "%s %s%s%s\n", action, result.AppID, preposition, result.Version); err != nil {
@@ -1345,14 +1452,61 @@ func oneValue(arguments []string) (string, error) {
 	return arguments[0], nil
 }
 
-func installArguments(arguments []string) (string, bool, error) {
-	forcePath := false
-	if len(arguments) == 2 && arguments[1] == "--force-path" {
-		forcePath = true
-		arguments = arguments[:1]
+type installOptions struct {
+	apps      []string
+	file      string
+	forcePath bool
+}
+
+func installArguments(arguments []string) (installOptions, error) {
+	var options installOptions
+	for index := 0; index < len(arguments); index++ {
+		value := arguments[index]
+		switch value {
+		case "--force-path":
+			if options.forcePath {
+				return installOptions{}, errors.New("duplicate --force-path")
+			}
+			options.forcePath = true
+		case "-f":
+			if options.file != "" || index+1 >= len(arguments) || arguments[index+1] == "" || strings.HasPrefix(arguments[index+1], "-") {
+				return installOptions{}, errors.New("invalid lockfile path")
+			}
+			index++
+			options.file = arguments[index]
+		default:
+			if value == "" || strings.HasPrefix(value, "-") {
+				return installOptions{}, errors.New("invalid install argument")
+			}
+			options.apps = append(options.apps, value)
+		}
 	}
-	value, err := oneValue(arguments)
-	return value, forcePath, err
+	if (options.file == "") == (len(options.apps) == 0) {
+		return installOptions{}, errors.New("select applications or a lockfile")
+	}
+	return options, nil
+}
+
+func uninstallArguments(arguments []string) ([]string, error) {
+	if len(arguments) == 0 {
+		return nil, errors.New("applications required")
+	}
+	for _, value := range arguments {
+		if value == "" || strings.HasPrefix(value, "-") {
+			return nil, errors.New("invalid uninstall argument")
+		}
+	}
+	return arguments, nil
+}
+
+func lockArguments(arguments []string) (string, error) {
+	if len(arguments) == 0 {
+		return "", nil
+	}
+	if len(arguments) == 2 && arguments[0] == "--output" && arguments[1] != "" && !strings.HasPrefix(arguments[1], "-") {
+		return arguments[1], nil
+	}
+	return "", errors.New("invalid lock arguments")
 }
 
 func (r Runner) printPathConflicts(appID string, conflicts []app.PathConflict) error {
