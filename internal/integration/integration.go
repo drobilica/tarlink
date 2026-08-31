@@ -745,10 +745,10 @@ func detachOwned(path string, validate func(string) error) error {
 const maxIconBytes = 4 << 20
 
 func iconName(spec Spec) string {
-	if spec.Icon != "" {
-		return "tarlink-" + spec.ID
+	if spec.Icon == "" {
+		return "application-x-executable"
 	}
-	return "application-x-executable"
+	return "tarlink-" + spec.ID
 }
 
 func ensureIcon(spec Spec, destination string) (bool, error) {
