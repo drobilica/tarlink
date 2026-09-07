@@ -123,7 +123,6 @@ type model struct {
 	selectedIDs         map[string]bool
 	batchIDs            []string
 	batchTargets        []app.BatchTarget
-	batchUninstall      bool
 	channelSelected     int
 	channels            []string
 	detail              *app.Application
@@ -450,7 +449,7 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 		if m.selectedIDs[value.ID] {
 			marker = "✓"
 		}
-		status := applicationStatus(value)
+		var status string
 		if value.UpdateAvailable && !value.Pinned {
 			status = "UPDATE"
 		} else if value.InstalledVersion == "" {
@@ -1763,13 +1762,6 @@ func title(value string) string {
 		return value
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
-}
-
-func max64(a, b int64) int64 {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 func max(a, b int) int {

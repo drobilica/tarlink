@@ -47,14 +47,6 @@ func Select(root, appID string, allArtifacts bool, oldRoot string) (Selection, e
 	}
 }
 
-func All(root string) (Selection, error) {
-	catalog, err := registry.ValidateTree(root)
-	if err != nil {
-		return Selection{}, err
-	}
-	return allFromCatalog(catalog), nil
-}
-
 func allFromCatalog(catalog *registry.Catalog) Selection {
 	var items []*manifest.Manifest
 	for _, variants := range catalog.Variants {

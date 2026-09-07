@@ -150,8 +150,6 @@ const (
 	PlatformLinuxARM64 = "linux-arm64"
 )
 
-func PlatformKey(p Platform) string { return p.OS + "-" + p.Arch }
-
 func ParsePlatformKey(key string) (Platform, bool) {
 	switch key {
 	case PlatformLinuxAMD64:

@@ -636,7 +636,3 @@ func syncDir(path string) error {
 	defer dir.Close()
 	return dir.Sync()
 }
-func sameHost(raw string) download.URLPolicy {
-	parsed, _ := url.Parse(raw)
-	return func(value *url.URL) bool { return value.Host == parsed.Host && value.Scheme == "https" }
-}

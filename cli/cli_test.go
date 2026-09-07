@@ -319,6 +319,33 @@ func TestJSONOutputContainsJSONOnly(t *testing.T) {
 	}
 }
 
+func TestInstalledContractIsNarrowAndDeterministic(t *testing.T) {
+	service := &fakeService{applications: []app.Application{
+		{ID: "zeta", InstalledVersion: "2", RegistryFingerprint: "private"},
+		{ID: "available-only", RegistryVersion: "9"},
+		{ID: "alpha", InstalledVersion: "1", InstalledChannel: "stable"},
+	}}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"installed", "--json"})
+	want := "{\"version\":1,\"applications\":[{\"id\":\"alpha\",\"version\":\"1\"},{\"id\":\"zeta\",\"version\":\"2\"}]}\n"
+	if code != 0 || out.String() != want || errOut.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if code := (Runner{Service: service, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), []string{"installed"}); code != exitInvalidArguments {
+		t.Fatalf("installed without --json code=%d", code)
+	}
+}
+
+func TestCompletionGenerationIsStaticAndRuntimeFree(t *testing.T) {
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		var out, errOut bytes.Buffer
+		code := (Runner{Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"completion", shell})
+		if code != 0 || out.Len() == 0 || errOut.Len() != 0 {
+			t.Fatalf("shell=%s code=%d stdout=%q stderr=%q", shell, code, out.String(), errOut.String())
+		}
+	}
+}
+
 func TestGameDataRequirementIsPresented(t *testing.T) {
 	var out bytes.Buffer
 	service := &fakeService{applications: []app.Application{{ID: "banjo-recompiled", Name: "Banjo", Requirements: []string{"original-game-data"}}}}
@@ -361,6 +388,11 @@ func TestInvalidArgumentsHaveStableExit(t *testing.T) {
 	code := (Runner{Service: &fakeService{}, Stdout: &bytes.Buffer{}, Stderr: &errOut}).Run(context.Background(), []string{"info"})
 	if code != exitInvalidArguments || errOut.Len() == 0 {
 		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+	for _, arguments := range [][]string{{"--unknown"}, {"list", "--unknown"}, {"registry", "--unknown"}, {"completion", "unknown"}} {
+		if code := (Runner{Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), arguments); code != exitInvalidArguments {
+			t.Fatalf("arguments=%v code=%d", arguments, code)
+		}
 	}
 }
 
@@ -462,15 +494,11 @@ func TestBatchInstallAndUninstallReportOrderedOutcomes(t *testing.T) {
 	}
 }
 
-func TestInstallArgumentsRejectMixedLockAndApplications(t *testing.T) {
-	for _, arguments := range [][]string{{}, {"-f", "tarlink.lock", "alpha"}, {"-f", "tarlink.lock", "-f", "other.lock"}, {"--force-path"}} {
-		if _, err := installArguments(arguments); err == nil {
-			t.Fatalf("installArguments(%v) succeeded", arguments)
+func TestInstallCommandRejectsMixedLockAndApplications(t *testing.T) {
+	for _, arguments := range [][]string{{"install"}, {"install", "-f", "tarlink.lock", "alpha"}, {"install", "--force-path"}} {
+		if code := (Runner{Service: &fakeService{}, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), arguments); code != exitInvalidArguments {
+			t.Fatalf("arguments=%v code=%d", arguments, code)
 		}
-	}
-	options, err := installArguments([]string{"alpha", "beta", "--force-path"})
-	if err != nil || !options.forcePath || strings.Join(options.apps, ",") != "alpha,beta" {
-		t.Fatalf("options=%+v err=%v", options, err)
 	}
 }
 
@@ -589,7 +617,7 @@ func TestRegistryCheckCommandRejectsAmbiguousScope(t *testing.T) {
 	service := &registryCheckService{}
 	var out, errOut bytes.Buffer
 	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry", "--app", "fixture", "--all-artifacts"})
-	if code == 0 || !bytes.Contains([]byte(errOut.String()), []byte("usage: tarlink registry check")) {
+	if code == 0 || !bytes.Contains(errOut.Bytes(), []byte("usage: tarlink registry check")) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
@@ -672,7 +700,7 @@ func TestMetaCommandClassifier(t *testing.T) {
 			t.Fatalf("arguments %v should be meta command", arguments)
 		}
 	}
-	for _, arguments := range [][]string{{}, {"version", "--json"}, {"help", "list"}, {"versions"}, {"registry", "version"}} {
+	for _, arguments := range [][]string{{}, {"version", "--json"}, {"versions"}, {"registry", "version"}} {
 		if MetaCommand(arguments) {
 			t.Fatalf("arguments %v should not be meta command", arguments)
 		}

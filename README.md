@@ -70,6 +70,7 @@ Known executable and optional desktop integration
 
 ```sh
 tarlink search <query>
+tarlink installed --json
 tarlink install <app>...
 tarlink lock
 tarlink install -f tarlink.lock
@@ -85,6 +86,11 @@ and can be refreshed explicitly with `tarlink refresh`. Explicit refresh always
 checks the current official registry and reports the successful UTC check time.
 `tarlink list` shows the available catalog with installed state; use
 `--installed` or `--updates` to filter it.
+
+`tarlink installed --json` writes the stable, versioned installed-application
+machine contract used for Unix-style composition, including
+`tarlink installed --json | tarlink-data sync`. Generate local shell
+completion with `tarlink completion bash`, `zsh`, or `fish`.
 
 `tarlink lock` writes a deterministic `tarlink.lock` snapshot of the currently
 installed TarLink applications. It records the exact Linux architecture,
@@ -142,6 +148,18 @@ process.
 
 TarLink is pre-1.0. Manifest and command interfaces may make clean breaking
 changes before the project reaches 1.0.
+
+## Future direction (planned, not implemented)
+
+TarLink may consume generic SHA-256-addressed artifact caches that can be public
+or user-hosted; `tarlink-data` may consume the same kind of cache independently.
+Each consumer will remain responsible for verifying its exact expected digest.
+Shared low-level cache primitives will be considered only after real
+implementations show what should be shared, with possible reuse by other open
+source tools. No cache transport—including OCI/ORAS—is selected or promised.
+The projects will continue to favor Unix-style composition and small, stable
+machine interfaces. Minor releases receive a source dead-code audit; routine
+patch releases do not require one.
 
 ## License
 

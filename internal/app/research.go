@@ -236,14 +236,6 @@ func researchFormat(name string) archive.Format {
 	return ""
 }
 
-func containsString(values []string, needle string) bool {
-	for _, v := range values {
-		if v == needle {
-			return true
-		}
-	}
-	return false
-}
 func researchReason(err error) string {
 	if strings.Contains(err.Error(), "release not found") {
 		return "RELEASE_NOT_FOUND"

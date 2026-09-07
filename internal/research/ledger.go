@@ -69,14 +69,6 @@ var knownBlockers = map[string]bool{
 }
 var reconsiderPrefixes = []string{"new-upstream-release", "manual", "capability:"}
 
-func Capabilities() []Capability {
-	out := make([]Capability, 0, len(capabilities))
-	for _, c := range capabilities {
-		out = append(out, c)
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out
-}
 func ValidateLedger(l CandidateLedger) error {
 	ids, repos := map[string]bool{}, map[Repository]bool{}
 	for _, c := range l.Candidates {
