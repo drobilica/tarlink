@@ -9,6 +9,13 @@ GitHub tags with the conventional `v` prefix are reported using the registry's
 canonical unprefixed spelling (for example, `v2.7.519` becomes `2.7.519`);
 other version identifiers remain opaque.
 
+The reviewed app-to-repository allowlist lives in
+`internal/freshness/approved-upstreams.yaml` and is embedded in the TarLink
+binary. It is deliberately separate from registry metadata: maintainers add a
+mapping only after verifying the official registry artifact uses that GitHub
+repository's Releases, then review the mapping as TarLink trust configuration.
+Malformed or duplicate entries are rejected deterministically.
+
 Channel filtering is deliberate: `stable` considers published non-prereleases,
 while non-stable channels such as `nightly`, `beta`, and `preview` consider
 published prereleases. A release is therefore not presented as a candidate for

@@ -19,11 +19,11 @@ func main() {
 	defer stop()
 
 	runner := cli.Runner{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}
+	if cli.MetaCommand(os.Args[1:]) {
+		os.Exit(runner.Run(ctx, os.Args[1:]))
+	}
 	if err := app.CheckEnvironment(); err != nil {
 		os.Exit(runner.Fail(err))
-	}
-	if len(os.Args) == 2 && (os.Args[1] == "version" || os.Args[1] == "help" || os.Args[1] == "--help" || os.Args[1] == "-h") {
-		os.Exit(runner.Run(ctx, os.Args[1:]))
 	}
 	layout, err := filesystem.NewLayout()
 	if err != nil {

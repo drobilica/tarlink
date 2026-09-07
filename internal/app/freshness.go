@@ -18,7 +18,10 @@ func (core *Core) Freshness(ctx context.Context, appID string) (freshness.Report
 	if err := filesystem.ValidateID(appID); err != nil {
 		return freshness.Report{}, &Error{Code: CodeInvalidArguments, Op: "registry freshness", Err: err}
 	}
-	repository, ok := freshnessRepositories[appID]
+	repository, ok, metadataErr := freshness.Repository(appID)
+	if metadataErr != nil {
+		return freshness.Report{}, &Error{Code: CodeInvalidArguments, Op: "registry freshness", Err: metadataErr}
+	}
 	if !ok {
 		return freshness.Report{}, &Error{Code: CodeInvalidArguments, Op: "registry freshness", Err: fmt.Errorf("no explicitly approved GitHub repository mapping for %q", appID)}
 	}
@@ -50,16 +53,4 @@ func (core *Core) Freshness(ctx context.Context, appID string) (freshness.Report
 		report.Candidates = append(report.Candidates, candidates...)
 	}
 	return report, nil
-}
-
-// Keep this mapping deliberately explicit. It is maintainer configuration,
-// not metadata discovered from GitHub or from an untrusted registry field.
-var freshnessRepositories = map[string]string{
-	"pcsx2":             "PCSX2/pcsx2",
-	"xemu":              "xemu-project/xemu",
-	"melonds":           "melonDS-emu/melonDS",
-	"ppsspp":            "hrydgard/ppsspp",
-	"openrct2":          "OpenRCT2/OpenRCT2",
-	"openttd":           "OpenTTD/OpenTTD",
-	"steam-rom-manager": "SteamGridDB/steam-rom-manager",
 }

@@ -45,7 +45,7 @@ Catalog:
 Maintenance:
   doctor       Audit TarLink-managed state
   self-update  Update TarLink itself
-  version      Show TarLink version
+  version      Show TarLink version (-v, --version)
 
 Registry development:
   registry     Registry validation and maintainer tools
@@ -101,6 +101,19 @@ func RegistryMaintainerCommand(arguments []string) bool {
 	}
 	switch arguments[1] {
 	case "validate", "inspect", "add", "candidates", "blockers", "icons":
+		return true
+	}
+	return false
+}
+
+// MetaCommand reports whether arguments select a presentation-only command
+// that does not need the application runtime.
+func MetaCommand(arguments []string) bool {
+	if len(arguments) != 1 {
+		return false
+	}
+	switch arguments[0] {
+	case "version", "-v", "--version", "help", "--help", "-h":
 		return true
 	}
 	return false
@@ -166,7 +179,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 			return 0
 		}
 	}
-	if r.Service == nil && !RegistryMaintainerCommand(arguments) && arguments[0] != "version" && arguments[0] != "help" && arguments[0] != "--help" && arguments[0] != "-h" {
+	if r.Service == nil && !RegistryMaintainerCommand(arguments) && !MetaCommand(arguments) {
 		return r.fail(errors.New("TarLink core is unavailable"))
 	}
 	var err error
@@ -666,7 +679,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 		if err == nil {
 			err = r.printResult("Uninstalled", result)
 		}
-	case "version":
+	case "version", "-v", "--version":
 		if len(arguments) != 1 {
 			return r.invalid("usage: tarlink version")
 		}

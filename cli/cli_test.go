@@ -14,6 +14,7 @@ import (
 	"github.com/drobilica/tarlink/internal/app"
 	"github.com/drobilica/tarlink/internal/freshness"
 	"github.com/drobilica/tarlink/internal/research"
+	"github.com/drobilica/tarlink/internal/version"
 )
 
 func TestProgressNonTTYIsBoundedAndUsesIECBytes(t *testing.T) {
@@ -646,6 +647,34 @@ func TestRegistryMaintainerCommandClassifier(t *testing.T) {
 	} {
 		if RegistryMaintainerCommand(arguments) {
 			t.Fatalf("args %v must not be a maintainer command", arguments)
+		}
+	}
+}
+
+func TestMetaCommandsRunWithoutRuntime(t *testing.T) {
+	for _, argument := range []string{"version", "-v", "--version", "help", "--help", "-h"} {
+		var out, errOut bytes.Buffer
+		code := (Runner{Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{argument})
+		if code != 0 || errOut.Len() != 0 {
+			t.Fatalf("argument=%q code=%d stdout=%q stderr=%q", argument, code, out.String(), errOut.String())
+		}
+		if argument == "version" || argument == "-v" || argument == "--version" {
+			if out.String() != "tarlink "+version.Current+"\n" {
+				t.Fatalf("argument=%q output=%q", argument, out.String())
+			}
+		}
+	}
+}
+
+func TestMetaCommandClassifier(t *testing.T) {
+	for _, arguments := range [][]string{{"version"}, {"-v"}, {"--version"}, {"help"}, {"--help"}, {"-h"}} {
+		if !MetaCommand(arguments) {
+			t.Fatalf("arguments %v should be meta command", arguments)
+		}
+	}
+	for _, arguments := range [][]string{{}, {"version", "--json"}, {"help", "list"}, {"versions"}, {"registry", "version"}} {
+		if MetaCommand(arguments) {
+			t.Fatalf("arguments %v should not be meta command", arguments)
 		}
 	}
 }

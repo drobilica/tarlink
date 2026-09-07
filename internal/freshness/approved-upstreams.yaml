@@ -1,0 +1,39 @@
+# Reviewed TarLink freshness sources. These repositories are not read from
+# registry metadata because the source selection is part of TarLink's trust
+# policy.
+- app: 2ship2harkinian
+  repository: HarbourMasters/2ship2harkinian
+- app: devilutionx
+  repository: diasurgical/DevilutionX
+- app: dosbox-staging
+  repository: dosbox-staging/dosbox-staging
+- app: dusklight
+  repository: TwilitRealm/dusklight
+- app: godot
+  repository: godotengine/godot
+- app: k9s
+  repository: derailed/k9s
+- app: ludusavi
+  repository: mtkennerly/ludusavi
+- app: melonds
+  repository: melonDS-emu/melonDS
+- app: openrct2
+  repository: OpenRCT2/OpenRCT2
+- app: openttd
+  repository: OpenTTD/OpenTTD
+- app: pcsx2
+  repository: PCSX2/pcsx2
+- app: pixelorama
+  repository: Orama-Interactive/Pixelorama
+- app: prism-launcher
+  repository: PrismLauncher/PrismLauncher
+- app: ppsspp
+  repository: hrydgard/ppsspp
+- app: steam-rom-manager
+  repository: SteamGridDB/steam-rom-manager
+- app: tiled
+  repository: mapeditor/tiled
+- app: trenchbroom
+  repository: TrenchBroom/TrenchBroom
+- app: xemu
+  repository: xemu-project/xemu
