@@ -38,40 +38,6 @@ narrow architecture, trust model, and security boundaries.
 * Before `v1.0.0`, prefer clean breaking changes over compatibility code.
 * Do not add migrations, deprecated aliases, compatibility filenames, legacy schema support, or fallback behavior unless explicitly requested.
 
-## Agent workflow
-
-The primary thread is the orchestrator and owns scope, delegation, integration,
-final review, Git actions, releases, and user communication. Default routine
-implementation, exploration, testing, and debugging to workers. Use the
-specialist only for genuinely difficult architecture, security, lifecycle, or
-debugging work. Keep scopes narrow and concurrency small.
-
-Workers use the configured default subagent model and reasoning effort; do not override them for routine work.
-### Effort levels
-
-**Effort 1 — small or straightforward**
-
-`orchestrator → worker → orchestrator review`
-
-**Effort 2 — normal engineering work**
-
-`orchestrator → focused worker(s) → orchestrator integration`
-
-**Effort 3 — difficult or high-risk**
-
-`orchestrator → workers + specialist as needed → orchestrator final review`
-
-**Effort 4 — major coordinated change**
-
-`Sol xhigh orchestrator → Luna high implementation/testing workers → Sol xhigh independent reviewer → Sol xhigh orchestrator integration`
-
-Use Effort 4 only when explicitly requested or clearly warranted by broad,
-high-impact work; it is not the default. Start the primary session with
-`gpt-5.6-sol` and `xhigh`, use the configured `effort4_worker` and `reviewer`
-roles, and have the reviewer inspect the integrated diff and validation
-evidence rather than worker summaries. Workers and reviewers never perform Git
-or release actions.
-
 ## Git
 
 * Worker/subagents must not commit, push, tag, publish releases, or change repository settings.
