@@ -73,3 +73,9 @@ candidates:
     status: deferred
     reconsider_when: [manual]
     notes: Digest publication is no longer required; ordinary artifact and manifest review remains.
+  - id: skate3recomp
+    upstream: mchughalex/skate3recomp
+    last_checked: {release_tag: v2.0.2, release_id: 359552932}
+    status: deferred
+    reconsider_when: [new-upstream-release, manual]
+    notes: ZIP contains only skate3 and $ORIGIN-loaded librexruntime.so; the latter requires unbundled GTK3/Pango/Cairo/X11 libraries, and no purpose-built immutable icon asset exists.
