@@ -144,11 +144,12 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	if r.Stdin == nil {
 		r.Stdin = strings.NewReader("")
 	}
+	tuiStdout, tuiStderr := r.Stdout, r.Stderr
 	progress := r.progress()
 	r.Stdout = progressOutput{Writer: r.Stdout, finish: progress.finish}
 	r.Stderr = progressOutput{Writer: r.Stderr, finish: progress.finish}
 
-	root := r.rootCommand(progress)
+	root := r.rootCommand(progress, tuiStdout, tuiStderr)
 	root.SetArgs(append([]string{}, arguments...))
 	err := root.ExecuteContext(ctx)
 	if err == nil {
@@ -167,7 +168,7 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 	return r.fail(err)
 }
 
-func (r Runner) rootCommand(progress *progressRenderer) *cobra.Command {
+func (r Runner) rootCommand(progress *progressRenderer, tuiStdout, tuiStderr io.Writer) *cobra.Command {
 	var versionFlag bool
 	root := &cobra.Command{
 		Use:           "tarlink",
@@ -185,7 +186,7 @@ func (r Runner) rootCommand(progress *progressRenderer) *cobra.Command {
 			if r.LaunchTUI == nil {
 				return errors.New("TUI is unavailable")
 			}
-			return r.LaunchTUI(command.Context(), r.Service, r.Stdout, r.Stderr)
+			return r.LaunchTUI(command.Context(), r.Service, tuiStdout, tuiStderr)
 		},
 	}
 	root.SetOut(r.Stdout)

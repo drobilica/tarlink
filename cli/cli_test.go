@@ -285,10 +285,13 @@ func TestDoctorExitStatusDistinguishesWarningsAndErrors(t *testing.T) {
 }
 
 func TestNoArgumentsLaunchesTUI(t *testing.T) {
-	var out bytes.Buffer
+	var out, errOut bytes.Buffer
 	launched := false
-	runner := Runner{Stdout: &out, Stderr: &bytes.Buffer{}, LaunchTUI: func(context.Context, app.Service, io.Writer, io.Writer) error {
+	runner := Runner{Stdout: &out, Stderr: &errOut, LaunchTUI: func(_ context.Context, _ app.Service, stdout, stderr io.Writer) error {
 		launched = true
+		if stdout != &out || stderr != &errOut {
+			t.Fatalf("TUI writers = (%T, %T), want original writers", stdout, stderr)
+		}
 		return nil
 	}}
 	if code := runner.Run(context.Background(), nil); code != 0 || !launched {
