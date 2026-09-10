@@ -65,7 +65,11 @@ replaces the canonical owned binary.
 An application is normally self-contained. A runtime-backed application instead
 resolves one immutable closure from the same registry generation: application
 release plus exact runtime ID, version, platform, artifact and interface. The
-only current runtime kind is `steam-linux-runtime`. Runtime manifests live at
+runtime reference belongs to that exact application release because the
+application release and exact runtime together form the tested TarLink-managed
+execution closure; it is not application-global. Different retained releases
+may therefore select different runtimes or remain self-contained.
+The only current runtime kind is `steam-linux-runtime`. Runtime manifests live at
 `runtimes/<id>/manifest.yaml`; application manifests may only reference an ID
 and exact version, never a command, executor path, environment, mount, hook or
 script. Runtime metadata participates in the package fingerprint, so a

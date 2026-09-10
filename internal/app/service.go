@@ -343,8 +343,7 @@ func (core *Core) Versions(ctx context.Context, appID string) ([]Version, error)
 					continue
 				}
 				current := item.ReleaseHistory.Channels[release.Channel].Current == release.Version
-				projection := *item
-				projection.Release = release
+				projection := item.SelectRelease(release)
 				fingerprint, _ := projection.ResolvedPackageFingerprint()
 				result = append(result, Version{Version: release.Version, Fingerprint: fingerprint, Status: "approved", Channel: release.Channel, Current: current, Default: item.ReleaseHistory.DefaultChannel == release.Channel})
 				seen[release.Version] = true
@@ -526,8 +525,7 @@ func applicationFrom(item *manifest.Manifest, installed *state.State) Applicatio
 	}
 	value.ApprovedReleases = make([]Version, 0, len(item.ReleaseHistory.Releases))
 	for _, release := range item.ReleaseHistory.Releases {
-		projection := *item
-		projection.Release = release
+		projection := item.SelectRelease(release)
 		fingerprint, _ := projection.ResolvedPackageFingerprint()
 		value.ApprovedReleases = append(value.ApprovedReleases, Version{
 			Version: release.Version, Fingerprint: fingerprint, Status: "approved", Channel: release.Channel,

@@ -169,8 +169,7 @@ func releaseProjections(item *manifest.Manifest) []*manifest.Manifest {
 	}
 	result := make([]*manifest.Manifest, 0, len(item.ReleaseHistory.Releases))
 	for _, release := range item.ReleaseHistory.Releases {
-		copy := *item
-		copy.Release = release
+		copy := item.SelectRelease(release)
 		result = append(result, &copy)
 	}
 	return result
@@ -224,11 +223,9 @@ func historyChanges(before, after *manifest.Manifest) ([]*manifest.Manifest, err
 	for _, release := range after.ReleaseHistory.Releases {
 		key := release.Channel + "\x00" + release.Version
 		newReleases[key] = release
-		if old, ok := oldReleases[key]; ok && old != release {
-			oldProjection := *before
-			oldProjection.Release = old
-			newProjection := *after
-			newProjection.Release = release
+		if old, ok := oldReleases[key]; ok {
+			oldProjection := before.SelectRelease(old)
+			newProjection := after.SelectRelease(release)
 			oldFingerprint, oldErr := oldProjection.ResolvedPackageFingerprint()
 			newFingerprint, newErr := newProjection.ResolvedPackageFingerprint()
 			if oldErr != nil || newErr != nil {
@@ -246,8 +243,7 @@ func historyChanges(before, after *manifest.Manifest) ([]*manifest.Manifest, err
 	}
 	for _, release := range after.ReleaseHistory.Releases {
 		if _, ok := oldReleases[release.Channel+"\x00"+release.Version]; !ok {
-			copy := *after
-			copy.Release = release
+			copy := after.SelectRelease(release)
 			added = append(added, &copy)
 		}
 	}

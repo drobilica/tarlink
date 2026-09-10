@@ -87,7 +87,6 @@ type Document struct {
 	Release      ReleaseDocument       `yaml:"release" json:"release"`
 	Application  ApplicationDefinition `yaml:"application" json:"application"`
 	Desktop      *DesktopDefinition    `yaml:"desktop,omitempty" json:"desktop,omitempty"`
-	Runtime      *RuntimeReference     `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	// Platforms is derived from release.artifacts and is never decoded from YAML.
 	Platforms map[string]PlatformManifest `yaml:"-" json:"-"`
 }
@@ -145,6 +144,7 @@ type ReleaseVerification struct {
 type ReleaseDefinition struct {
 	Channel       string              `yaml:"channel" json:"channel"`
 	Version       string              `yaml:"version" json:"version"`
+	Runtime       *RuntimeReference   `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	Artifacts     map[string]Artifact `yaml:"artifacts" json:"artifacts"`
 	NestedArchive *NestedArchive      `yaml:"nested-archive,omitempty" json:"nested_archive,omitempty"`
 }
@@ -278,7 +278,6 @@ func (d *Document) resolvePlatform(platforms map[string]PlatformManifest, key st
 		ReleaseHistory: copyReleaseHistory(definition.ReleaseHistory),
 		Application:    copyApplication(definition.Application),
 		Desktop:        copyDesktop(definition.Desktop),
-		RuntimeRef:     copyRuntimeReference(d.Runtime),
 	}
 	for index := range result.Application.Executables {
 		if result.Application.Executables[index].Name == "" {
@@ -290,6 +289,7 @@ func (d *Document) resolvePlatform(platforms map[string]PlatformManifest, key st
 	if err != nil {
 		return Manifest{}, err
 	}
+	result.selectReleaseRuntime()
 	return result, nil
 }
 
@@ -335,7 +335,7 @@ func (d *Document) derivedPlatforms() (map[string]PlatformManifest, error) {
 			if err != nil {
 				return nil, fmt.Errorf("release %q artifact %s: %w", definition.Version, key, err)
 			}
-			release := Release{Channel: definition.Channel, Version: definition.Version, URL: artifact.URL, Verification: verification, Archive: archive}
+			release := Release{Channel: definition.Channel, Version: definition.Version, RuntimeRef: copyRuntimeReference(definition.Runtime), URL: artifact.URL, Verification: verification, Archive: archive}
 			if definition.NestedArchive != nil {
 				release.NestedArchive = *definition.NestedArchive
 			}
@@ -472,12 +472,32 @@ func copyDesktopDefinition(desktop DesktopDefinition) Desktop {
 }
 
 type Release struct {
-	Channel       string        `yaml:"channel" json:"channel"`
-	Version       string        `yaml:"version" json:"version"`
-	URL           string        `yaml:"url" json:"url"`
-	Verification  Verification  `yaml:"verification" json:"verification"`
-	Archive       string        `yaml:"archive" json:"archive"`
-	NestedArchive NestedArchive `yaml:"nested-archive,omitempty" json:"nested_archive,omitempty"`
+	Channel       string            `yaml:"channel" json:"channel"`
+	Version       string            `yaml:"version" json:"version"`
+	RuntimeRef    *RuntimeReference `yaml:"-" json:"-"`
+	Runtime       *Runtime          `yaml:"-" json:"-"`
+	URL           string            `yaml:"url" json:"url"`
+	Verification  Verification      `yaml:"verification" json:"verification"`
+	Archive       string            `yaml:"archive" json:"archive"`
+	NestedArchive NestedArchive     `yaml:"nested-archive,omitempty" json:"nested_archive,omitempty"`
+}
+
+// SelectRelease projects one normalized release into the lifecycle-facing
+// package view, including only the runtime resolved for that release.
+func (m Manifest) SelectRelease(release Release) Manifest {
+	m.Release = release
+	m.selectReleaseRuntime()
+	return m
+}
+
+func (m *Manifest) selectReleaseRuntime() {
+	m.RuntimeRef = copyRuntimeReference(m.Release.RuntimeRef)
+	if m.Release.Runtime != nil {
+		runtime := *m.Release.Runtime
+		m.Runtime = &runtime
+	} else {
+		m.Runtime = nil
+	}
 }
 
 type NestedArchive struct {
@@ -685,7 +705,7 @@ func validateManifestShape(document *yaml.Node) error {
 	}
 	root, err := requiredMapping(document.Content[0], "manifest", []string{
 		"schema", "id", "name", "summary", "homepage", "categories", "release", "application",
-	}, []string{"requirements", "desktop", "runtime"})
+	}, []string{"requirements", "desktop"})
 	if err != nil {
 		return err
 	}
@@ -718,9 +738,14 @@ func validateManifestShape(document *yaml.Node) error {
 		return errors.New("releases must be a non-empty sequence")
 	}
 	for index, value := range releases.Content {
-		entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"version", "artifacts"}, []string{"channel", "nested-archive"})
+		entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"version", "artifacts"}, []string{"channel", "runtime", "nested-archive"})
 		if err != nil {
 			return err
+		}
+		if runtime, ok := entry["runtime"]; ok {
+			if _, err := requiredMapping(runtime, "release.releases.runtime", []string{"id", "version"}, nil); err != nil {
+				return err
+			}
 		}
 		if nested, ok := entry["nested-archive"]; ok {
 			if _, err := requiredMapping(nested, "release.releases.nested-archive", []string{"archive", "path"}, nil); err != nil {
@@ -815,11 +840,6 @@ func validateManifestShape(document *yaml.Node) error {
 			if requirement.Kind != yaml.ScalarNode || requirement.Tag != "!!str" {
 				return errors.New("requirements must contain strings")
 			}
-		}
-	}
-	if runtime, ok := root["runtime"]; ok {
-		if _, err := requiredMapping(runtime, "runtime", []string{"id", "version"}, nil); err != nil {
-			return err
 		}
 	}
 	return nil
@@ -1308,6 +1328,11 @@ func (m Manifest) ValidateHistory() error {
 		versions[release.Version] = release.Channel
 		if err := validateRelease(release); err != nil {
 			return err
+		}
+		if release.RuntimeRef != nil {
+			if err := release.RuntimeRef.Validate(); err != nil {
+				return fmt.Errorf("release %q runtime reference: %w", release.Version, err)
+			}
 		}
 		if err := validateApplicationRelease(m, release); err != nil {
 			return err

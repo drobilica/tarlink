@@ -60,6 +60,157 @@ func createRegistry(t *testing.T) string {
 	return root
 }
 
+func writeTestRuntime(t *testing.T, root, id, version string) {
+	t.Helper()
+	directory := filepath.Join(root, "runtimes", id)
+	if err := os.MkdirAll(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	value := `schema: 1
+id: ` + id + `
+kind: steam-linux-runtime
+version: "` + version + `"
+platform: linux-amd64
+artifact:
+  url: https://example.com/` + id + `.tar.xz
+  archive: tar.xz
+  verification:
+    algorithm: sha256
+    digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    source: https://example.com/SHA256SUMS
+interface: valve-v2-entry-point-v1
+`
+	if err := os.WriteFile(filepath.Join(directory, "manifest.yaml"), []byte(value), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runtimeHistoryManifest() string {
+	return `schema: 5
+id: blender
+name: Blender
+summary: 3D creation suite
+homepage: https://www.blender.org/
+categories: [graphics]
+release:
+  default-channel: stable
+  channels:
+    stable:
+      current: "2.0"
+    beta:
+      current: "3.0"
+  archive: tar.xz
+  verification:
+    algorithm: sha256
+  releases:
+    - channel: stable
+      version: "2.0"
+      runtime:
+        id: steam-linux-runtime-4
+        version: "4.0"
+      artifacts:
+        linux-amd64:
+          url: https://example.com/blender-2.tar.xz
+          verification:
+            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            source: https://example.com/checksums
+    - channel: stable
+      version: "1.0"
+      artifacts:
+        linux-amd64:
+          url: https://example.com/blender-1.tar.xz
+          verification:
+            digest: 1123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            source: https://example.com/checksums
+    - channel: beta
+      version: "3.0"
+      runtime:
+        id: steam-linux-runtime-3
+        version: "3.0"
+      artifacts:
+        linux-amd64:
+          url: https://example.com/blender-3.tar.xz
+          verification:
+            digest: 2123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            source: https://example.com/checksums
+application:
+  executable:
+    name: blender
+    path: blender
+    create-bin-link: false
+`
+}
+
+func TestReleaseScopedRuntimesResolvePerSelectedRelease(t *testing.T) {
+	root := createRegistry(t)
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(runtimeHistoryManifest()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestRuntime(t, root, "steam-linux-runtime-3", "3.0")
+	writeTestRuntime(t, root, "steam-linux-runtime-4", "4.0")
+	catalog, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for selector, want := range map[string]string{"": "steam-linux-runtime-4", "stable": "steam-linux-runtime-4", "1.0": "", "beta": "steam-linux-runtime-3"} {
+		var item *manifest.Manifest
+		if selector == "" {
+			item, err = catalog.ManifestForPlatform("blender", "linux", "amd64")
+		} else {
+			item, err = catalog.ReleaseForPlatform("blender", "linux", "amd64", selector)
+		}
+		if err != nil {
+			t.Fatalf("selector %q: %v", selector, err)
+		}
+		got := ""
+		if item.RuntimeRef != nil {
+			got = item.RuntimeRef.ID
+		}
+		if got != want {
+			t.Fatalf("selector %q runtime = %q, want %q", selector, got, want)
+		}
+	}
+	first, err := catalog.ReleaseForPlatform("blender", "linux", "amd64", "2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstFingerprint, err := first.ResolvedPackageFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutated := strings.Replace(runtimeHistoryManifest(), "id: steam-linux-runtime-4\n        version: \"4.0\"", "id: steam-linux-runtime-3\n        version: \"3.0\"", 1)
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(mutated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := changed.ReleaseForPlatform("blender", "linux", "amd64", "2.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondFingerprint, err := second.ResolvedPackageFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstFingerprint == secondFingerprint {
+		t.Fatal("runtime-only release change did not change fingerprint")
+	}
+}
+
+func TestValidateTreeRejectsUnavailableReleaseRuntime(t *testing.T) {
+	root := createRegistry(t)
+	value := strings.Replace(runtimeHistoryManifest(), "steam-linux-runtime-4", "missing-runtime", 1)
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(value), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeTestRuntime(t, root, "steam-linux-runtime-3", "3.0")
+	if _, err := ValidateTree(root); err == nil {
+		t.Fatal("unavailable release runtime unexpectedly accepted")
+	}
+}
+
 func TestValidateTreeAndSearch(t *testing.T) {
 	root := createRegistry(t)
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("registry documentation\n"), 0o644); err != nil {

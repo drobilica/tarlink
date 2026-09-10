@@ -64,6 +64,39 @@ func TestParseAndResolveV5(t *testing.T) {
 	}
 }
 
+func TestRuntimeReferencesBelongToReleaseDefinitions(t *testing.T) {
+	value := strings.Replace(validManifest, "    - version: 4.2.4\n", "    - version: 4.2.4\n      runtime:\n        id: steam-linux-runtime-4\n        version: 4.0.1\n", 1)
+	document, err := ParseBytes([]byte(value))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := document.Platforms[PlatformLinuxAMD64].ReleaseHistory.Releases[0]
+	if release.RuntimeRef == nil || release.RuntimeRef.ID != "steam-linux-runtime-4" {
+		t.Fatalf("release runtime = %#v", release.RuntimeRef)
+	}
+	resolved, err := document.ResolvePlatform(PlatformLinuxAMD64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.RuntimeRef == nil || resolved.RuntimeRef.ID != "steam-linux-runtime-4" {
+		t.Fatalf("resolved runtime = %#v", resolved.RuntimeRef)
+	}
+}
+
+func TestRejectsInvalidReleaseRuntimeReference(t *testing.T) {
+	base := strings.Replace(validManifest, "    - version: 4.2.4\n", "    - version: 4.2.4\n      runtime:\n        id: steam-linux-runtime-4\n        version: 4.0.1\n", 1)
+	for name, value := range map[string]string{
+		"id":      strings.Replace(base, "id: steam-linux-runtime-4", "id: Invalid_Runtime", 1),
+		"version": strings.Replace(base, "version: 4.0.1", "version: ''", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseBytes([]byte(value)); err == nil {
+				t.Fatal("invalid release runtime reference unexpectedly accepted")
+			}
+		})
+	}
+}
+
 func TestSingleChannelIsImplicit(t *testing.T) {
 	document, err := ParseBytes([]byte(validManifest))
 	if err != nil {
@@ -111,6 +144,7 @@ func TestRejectsLegacyAndMalformedForms(t *testing.T) {
 		"invalid algorithm":     strings.Replace(validManifest, "algorithm: sha256", "algorithm: md5", 1),
 		"missing arm path":      strings.Replace(validManifest, "linux-arm64: linux-arm64/helm\n", "linux-arm64: ''\n", 1),
 		"duplicate key":         strings.Replace(validManifest, "schema: 5\n", "schema: 5\nschema: 5\n", 1),
+		"document runtime":      strings.Replace(validManifest, "release:\n", "runtime: {id: steam-linux-runtime-4, version: 4.0.1}\nrelease:\n", 1),
 	}
 	for name, value := range tests {
 		t.Run(name, func(t *testing.T) {

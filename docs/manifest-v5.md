@@ -20,6 +20,9 @@ release:
     algorithm: sha256 | sha512
   releases:
     - version: <opaque filesystem-safe version>
+      runtime:                          # optional exact execution dependency
+        id: <runtime id>
+        version: <exact runtime version>
       nested-archive:                # optional and release-specific
         path: <canonical relative path in outer output>
         archive: tar.gz | tar.xz | zip
@@ -55,6 +58,11 @@ Single-channel manifests use `release.current` and omit channel plumbing.
 Multi-channel manifests retain `default-channel`, `channels`, and a
 `channel` on every release entry. Release history remains
 `current + releases`; retained releases are never inferred or sorted.
+Runtime selection belongs to an exact application release because the
+application release and exact runtime together form the tested TarLink-managed
+execution closure. A release without `runtime` is self-contained; runtime
+references are resolved from the same immutable registry snapshot as the
+selected application release.
 
 Only `linux-amd64` and `linux-arm64` are valid artifact and executable-path
 keys. A missing key means that exact platform is unavailable. TarLink never

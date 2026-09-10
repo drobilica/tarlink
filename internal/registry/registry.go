@@ -88,15 +88,24 @@ func validateTree(root string, readMetadata bool) (*Catalog, error) {
 	}
 	for _, platformVariants := range variants {
 		for _, item := range platformVariants {
-			if item.RuntimeRef == nil {
-				continue
+			for index := range item.ReleaseHistory.Releases {
+				release := &item.ReleaseHistory.Releases[index]
+				if release.RuntimeRef == nil {
+					continue
+				}
+				runtime, ok := runtimes[release.RuntimeRef.ID]
+				if !ok || runtime.Version != release.RuntimeRef.Version || runtime.Platform != item.Platform {
+					return nil, fmt.Errorf("application %q release %q references unavailable runtime %s@%s", item.ID, release.Version, release.RuntimeRef.ID, release.RuntimeRef.Version)
+				}
+				copy := *runtime
+				release.Runtime = &copy
 			}
-			runtime, ok := runtimes[item.RuntimeRef.ID]
-			if !ok || runtime.Version != item.RuntimeRef.Version || runtime.Platform != item.Platform {
-				return nil, fmt.Errorf("application %q references unavailable runtime %s@%s", item.ID, item.RuntimeRef.ID, item.RuntimeRef.Version)
+			selected, err := item.ReleaseHistory.ResolveDefault()
+			if err != nil {
+				return nil, fmt.Errorf("application %q default release: %w", item.ID, err)
 			}
-			copy := *runtime
-			item.Runtime = &copy
+			resolved := item.SelectRelease(selected)
+			*item = resolved
 			if _, err := item.ResolvedPackageFingerprint(); err != nil {
 				return nil, fmt.Errorf("application %q runtime closure: %w", item.ID, err)
 			}
@@ -291,8 +300,8 @@ func (c *Catalog) ReleaseForPlatform(id, goos, goarch, selector string) (*manife
 	}
 	for _, release := range item.ReleaseHistory.Releases {
 		if release.Version == version && (channel == "" || release.Channel == channel) {
-			item.Release = release
-			return item, nil
+			returnItem := item.SelectRelease(release)
+			return &returnItem, nil
 		}
 	}
 	return nil, fmt.Errorf("approved release %q for %s is not available", selector, id)
