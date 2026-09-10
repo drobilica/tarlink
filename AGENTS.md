@@ -21,14 +21,15 @@ narrow architecture, trust model, and security boundaries.
 ## Repository boundaries
 
 * `tarlink` owns the application manager, official-registry consumer, and registry validator/maintainer tooling.
-* `tarlink-registry` remains declarative application metadata only.
+* `tarlink-registry` remains declarative application and runtime metadata only;
+  it must not contain runtime acquisition or execution logic.
 * `tarlink-data` remains the separate external user-selected application-data resolver. Do not move its recipes, data hashes, copyrighted-data mappings, or source configuration here.
 
 ## Security invariants
 
 * Only the compiled official registry and official TarLink GitHub releases are trusted; network sources remain HTTPS and exact downloaded bytes remain digest-verified.
 * Preserve bounded safe extraction, confined path/link behavior, atomic activation/state, locking, ownership checks, and current-plus-one-previous retention.
-* Do not add hardlinks, hooks, scripts, arbitrary commands/arguments, custom install destinations, plugins, telemetry, daemons, automatic installation, system-wide installation, package-manager integration, or system dependencies.
+* Do not add hardlinks, hooks, scripts, manifest-controlled arbitrary commands/arguments, custom install destinations, plugins, telemetry, daemons, automatic installation, system-wide installation, package-manager integration, or system dependencies.
 * Explicit self-upgrade is permitted only through the canonical TarLink-owned binary and verified official release assets.
 * Manifest-declared external desktop icons remain the only narrow verified external resource exception; this does not authorize arbitrary downloads.
 * Trust-boundary changes require explicit authorization and deliberate design. Treat `docs/architecture.md`, `docs/security-model.md`, and `docs/threat-model.md` as canonical.

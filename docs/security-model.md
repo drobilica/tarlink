@@ -8,6 +8,7 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 - Registry and release traffic uses HTTPS. Release redirects must remain valid HTTPS URLs and are capped at five; a digest authenticates the final bytes independently of redirect hosting.
 - Connect, TLS handshake, response-header, and overall timeouts bound waits.
 - Registry responses are limited to 64 MiB. Application downloads are limited to 8 GiB.
+- Valve runtime downloads and cumulative extracted bytes are limited to 2 GiB.
 - Each application release declares an exact lowercase SHA-256 or SHA-512 digest approved in the official registry. Maintainers may calculate it from the exact official upstream HTTPS artifact; verification still completes before extraction or activation. Other algorithms, missing verification, and malformed digests are rejected.
 - Version-5 manifests may retain multiple approved releases independently for each exact platform, but every historical release has the same exact URL, digest, archive, and informational origin metadata checks. Explicit channel heads and opaque exact versions are resolved only from the validated official registry; freshness candidates cannot alter trusted release metadata. A release may explicitly declare one nested archive layer, which shares cumulative extraction limits with its outer archive.
 - AppImage releases are accepted only as verified, little-endian 64-bit ELF Type 2 artifacts matching the target architecture. TarLink stores them as opaque regular files, never executes, mounts, or extracts them, and rejects Type 1 markers and malformed headers.
@@ -32,8 +33,8 @@ is outside the current authenticity guarantee.
 TarLink uses exact digest-pinned Valve Steam Linux Runtime deployments and
 deliberately treats Valve's `_v2-entry-point` as a versioned de-facto
 integration interface. Valve does not guarantee Steam-independent third-party
-invocation. TarLink bounds this risk by immutable version pinning and
-validation before admitting each runtime version.
+invocation. TarLink bounds this risk with immutable runtime pinning, a compiled
+adapter, and validation before each runtime version is admitted.
 
 Only the compiled `steam-linux-runtime` backend can invoke this interface. It
 uses the fixed `--verb=waitforexitandrun --` form; manifests cannot select
@@ -58,9 +59,9 @@ Accepted formats are exactly `tar.gz`, `tar.xz`, and ZIP, and the declared forma
 | Path depth | 64 components |
 | XZ dictionary | 1 GiB |
 
-Names must be valid UTF-8, relative, slash-separated, canonical, NUL-free, and free of empty, `.` and `..` components. Unix absolute, drive-qualified, UNC, and backslash-containing names are rejected. Duplicate names and file/directory collisions are errors.
+For application archives, names must be valid UTF-8, relative, slash-separated, canonical, NUL-free, and free of empty, `.` and `..` components. Unix absolute, drive-qualified, UNC, and backslash-containing names are rejected. Duplicate names and file/directory collisions are errors.
 
-Regular files and directories are materialized directly. Bounded POSIX PAX global metadata records create no filesystem object. A symbolic link is accepted only when its target is one canonical component in the same directory; every complete link chain must end at an extracted regular file. Links cannot be extraction parents. Absolute, traversing, cross-directory, dangling, cyclic, and directory links are rejected. Hardlinks, devices, FIFOs, sockets, special permission bits, and unknown entry types are rejected.
+For application archives, regular files and directories are materialized directly. Bounded POSIX PAX global metadata records create no filesystem object. A symbolic link is accepted only when its target is one canonical component in the same directory; every complete link chain must end at an extracted regular file. Links cannot be extraction parents. Absolute, traversing, cross-directory, dangling, cyclic, and directory links are rejected. Hardlinks, devices, FIFOs, sockets, special permission bits, and unknown entry types are rejected. Valve runtime archives use their separate dedicated allowlist described above.
 
 Files are created exclusively and every parent is checked with `lstat`. Archive directories become `0755`; files become `0644` or `0755` when the portable archive marks them executable. Ownership metadata is never preserved, and the declared primary executable is validated independently.
 
@@ -87,6 +88,6 @@ installations are refused.
 
 ## Explicit exclusions
 
-TarLink has no telemetry, plugins, arbitrary command arguments, hooks, custom destinations, automatic updater, daemon, background updater, system-wide installation, or operating-system package manager. It uses no CGO. The sole external execution interface is the compiled, locally validated Valve v2 adapter described above; it accepts only the stored application executable plus user launch arguments, with no shell. Self-upgrade is explicit only; it never executes or restarts the replacement binary.
+TarLink has no telemetry, plugins, manifest-controlled arbitrary command arguments, hooks, custom destinations, automatic updater, daemon, background updater, system-wide installation, or operating-system package manager. It uses no CGO. The sole external execution interface is the compiled, locally validated Valve v2 adapter described above; it accepts only the stored application executable plus user launch arguments, with no shell. Self-upgrade is explicit only; it never executes or restarts the replacement binary.
 
 TarLink proves that downloaded bytes match the reviewed registry digest. It does not independently prove that the registry or upstream publisher is uncompromised and does not sandbox the installed application at runtime.

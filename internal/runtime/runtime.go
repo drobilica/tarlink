@@ -4,6 +4,7 @@ package runtime
 import (
 	"archive/tar"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,12 @@ import (
 )
 
 const maxRuntimeBytes int64 = 2 << 30
+
+const (
+	maxRuntimeEntries = 100000
+	maxRuntimePath    = 4096
+	maxRuntimeDepth   = 64
+)
 
 // Ensure publishes one complete immutable deployment, or leaves no deployment
 // visible. Callers hold TarLink's lifecycle lock; that lock also makes shared
@@ -40,6 +47,9 @@ func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Clie
 		return "", "", err
 	}
 	if err := filesystem.CheckOwnedDirectoryWithin(layout.Home, layout.Runtimes); err != nil && !os.IsNotExist(err) {
+		return "", "", err
+	}
+	if err := filesystem.CheckOwnedDirectoryWithin(layout.Home, filepath.Dir(destination)); err != nil && !os.IsNotExist(err) {
 		return "", "", err
 	}
 	if info, err := os.Lstat(destination); err == nil {
@@ -103,6 +113,12 @@ func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Clie
 // application closure. Any malformed state or unexpected runtime-tree entry
 // stops collection before deletion (fail closed).
 func GC(layout filesystem.Layout) error {
+	if err := validateOwnedOrMissing(layout.Home, layout.States); err != nil {
+		return err
+	}
+	if err := validateOwnedOrMissing(layout.Home, layout.Runtimes); err != nil {
+		return err
+	}
 	states, err := os.ReadDir(layout.States)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -158,7 +174,7 @@ func GC(layout filesystem.Layout) error {
 				return err
 			}
 			for _, deployment := range deployments {
-				if !deployment.IsDir() || deployment.Type()&os.ModeSymlink != 0 || !strings.HasPrefix(deployment.Name(), ".tarlink-runtime-") {
+				if !deployment.IsDir() || deployment.Type()&os.ModeSymlink != 0 || !validDeploymentName(deployment.Name()) {
 					return errors.New("runtime version contains unexpected entry")
 				}
 				candidate := filepath.Join(layout.Runtimes, id.Name(), version.Name(), deployment.Name())
@@ -171,6 +187,27 @@ func GC(layout filesystem.Layout) error {
 		}
 	}
 	return nil
+}
+
+func validDeploymentName(name string) bool {
+	const prefix = ".tarlink-runtime-"
+	if !strings.HasPrefix(name, prefix) || len(name) != len(prefix)+64 {
+		return false
+	}
+	digest := name[len(prefix):]
+	if strings.ToLower(digest) != digest {
+		return false
+	}
+	_, err := hex.DecodeString(digest)
+	return err == nil
+}
+
+func validateOwnedOrMissing(root, path string) error {
+	err := filesystem.CheckOwnedDirectoryWithin(root, path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func extractValveDeployment(ctx context.Context, source, destination string) error {
@@ -198,7 +235,7 @@ func extractValveDeployment(ctx context.Context, source, destination string) err
 			return err
 		}
 		entries++
-		if entries > 200000 || header.Size < 0 || header.Size > maxRuntimeBytes || total > maxRuntimeBytes-header.Size {
+		if entries > maxRuntimeEntries || header.Size < 0 || header.Size > maxRuntimeBytes || total > maxRuntimeBytes-header.Size {
 			return errors.New("runtime archive exceeds extraction budget")
 		}
 		total += header.Size
@@ -252,11 +289,14 @@ func extractValveDeployment(ctx context.Context, source, destination string) err
 }
 
 func runtimePath(value string) (string, error) {
-	if value == "" || !strings.HasPrefix(value, "SteamLinuxRuntime_4/") || path.Clean(value) != strings.TrimSuffix(value, "/") || strings.Contains(value, "\\") || strings.HasPrefix(value, "/") || strings.Contains(value, "../") {
+	trimmed := strings.TrimSuffix(value, "/")
+	if value == "" || len(value) > maxRuntimePath || !strings.HasPrefix(value, "SteamLinuxRuntime_4/") || path.Clean(value) != trimmed || strings.Contains(value, "\\") || strings.HasPrefix(value, "/") || strings.Contains(value, "../") || pathDepth(trimmed) > maxRuntimeDepth {
 		return "", errors.New("unsafe runtime archive path")
 	}
-	return strings.TrimSuffix(value, "/"), nil
+	return trimmed, nil
 }
+
+func pathDepth(value string) int { return len(strings.Split(value, "/")) }
 func safeLink(name, target string) error {
 	if target == "" || path.IsAbs(target) || strings.Contains(target, "\\") {
 		return errors.New("unsafe runtime symlink")

@@ -45,6 +45,9 @@ func (core *Core) PrepareRun(appID string, arguments []string) (Launch, error) {
 		return Launch{}, errors.New("installed application has no executable")
 	}
 	executable := filepath.Join(packageRoot, filepath.FromSlash(installed.Executables[0].Path))
+	if err := filesystem.CheckOwnedDirectoryWithin(core.layout.Home, filepath.Dir(executable)); err != nil {
+		return Launch{}, errors.New("installed application executable parent is unsafe")
+	}
 	info, err := os.Lstat(executable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode()&0111 == 0 {
 		return Launch{}, errors.New("installed application executable is missing or unsafe")
@@ -64,6 +67,9 @@ func (core *Core) PrepareRun(appID string, arguments []string) (Launch, error) {
 		return Launch{}, fmt.Errorf("runtime deployment: %w", err)
 	}
 	entryPoint := filepath.Join(runtimeRoot, "_v2-entry-point")
+	if err := filesystem.CheckOwnedDirectoryWithin(core.layout.Home, filepath.Dir(entryPoint)); err != nil {
+		return Launch{}, errors.New("runtime entry point parent is unsafe")
+	}
 	entryInfo, err := os.Lstat(entryPoint)
 	if err != nil || !entryInfo.Mode().IsRegular() || entryInfo.Mode()&os.ModeSymlink != 0 || entryInfo.Mode()&0111 == 0 {
 		return Launch{}, errors.New("runtime deployment is missing the Valve v2 entry point")
