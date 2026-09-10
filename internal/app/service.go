@@ -20,6 +20,7 @@ import (
 	"github.com/drobilica/tarlink/internal/locking"
 	"github.com/drobilica/tarlink/internal/manifest"
 	"github.com/drobilica/tarlink/internal/registry"
+	taruntime "github.com/drobilica/tarlink/internal/runtime"
 	"github.com/drobilica/tarlink/internal/state"
 	"github.com/drobilica/tarlink/internal/upgrade"
 	"github.com/drobilica/tarlink/internal/version"
@@ -120,6 +121,9 @@ func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) 
 	if err != nil {
 		return Result{}, classify("install "+appID, err)
 	}
+	if gcErr := core.runtimeGC(ctx); gcErr != nil {
+		outcome.Warnings = append(outcome.Warnings, "runtime cleanup deferred: "+gcErr.Error())
+	}
 	core.emit(sink, ProgressComplete, item.ID, 0, 0)
 	return Result{AppID: item.ID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
 }
@@ -149,6 +153,9 @@ func (core *Core) Update(ctx context.Context, appID string, sink ProgressSink) (
 	outcome, err := core.installer.UpdateWithOptionsSubject(ctx, item, install.Options{Channel: item.Release.Channel, Explicit: selector.Target != ""}, core.progress(sink, item.ID))
 	if err != nil {
 		return Result{}, classify("update "+appID, err)
+	}
+	if gcErr := core.runtimeGC(ctx); gcErr != nil {
+		outcome.Warnings = append(outcome.Warnings, "runtime cleanup deferred: "+gcErr.Error())
 	}
 	core.emit(sink, ProgressComplete, item.ID, 0, 0)
 	return Result{AppID: item.ID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
@@ -209,8 +216,15 @@ func (core *Core) Rollback(ctx context.Context, appID string, sink ProgressSink)
 	if err != nil {
 		return Result{}, classify("rollback "+appID, err)
 	}
+	if gcErr := core.runtimeGC(ctx); gcErr != nil {
+		outcome.Warnings = append(outcome.Warnings, "runtime cleanup deferred: "+gcErr.Error())
+	}
 	core.emit(sink, ProgressComplete, appID, 0, 0)
 	return Result{AppID: appID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
+}
+
+func (core *Core) runtimeGC(ctx context.Context) error {
+	return core.installer.WithLifecycle(ctx, func() error { return taruntime.GC(core.layout) })
 }
 
 func (core *Core) List(ctx context.Context) ([]Application, error) {

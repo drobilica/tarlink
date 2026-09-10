@@ -19,6 +19,7 @@ import (
 	"github.com/drobilica/tarlink/internal/integration"
 	"github.com/drobilica/tarlink/internal/locking"
 	"github.com/drobilica/tarlink/internal/manifest"
+	taruntime "github.com/drobilica/tarlink/internal/runtime"
 	"github.com/drobilica/tarlink/internal/state"
 )
 
@@ -779,6 +780,9 @@ func (manager *Manager) validateUninstallRoots(states []state.State) ([]string, 
 	if err := manager.checkUninstallAnchor(manager.Layout.DataHome, manager.Layout.Apps); err != nil {
 		return nil, err
 	}
+	if err := manager.checkUninstallAnchor(manager.Layout.DataHome, manager.Layout.Runtimes); err != nil {
+		return nil, err
+	}
 	if err := manager.checkUninstallAnchor(manager.Layout.CacheHome, manager.Layout.Cache); err != nil {
 		return nil, err
 	}
@@ -844,7 +848,7 @@ func (manager *Manager) checkUninstallAnchor(anchor, path string) error {
 
 func (manager *Manager) removeUninstallRoots() error {
 	for _, root := range []struct{ anchor, path string }{
-		{manager.Layout.DataHome, manager.Layout.Apps}, {manager.Layout.StateHome, manager.Layout.States},
+		{manager.Layout.DataHome, manager.Layout.Apps}, {manager.Layout.DataHome, manager.Layout.Runtimes}, {manager.Layout.StateHome, manager.Layout.States},
 		{manager.Layout.StateHome, manager.Layout.Locks}, {manager.Layout.CacheHome, manager.Layout.Cache},
 	} {
 		if err := filesystem.SafeRemoveIfExists(root.anchor, root.path); err != nil {
@@ -949,6 +953,11 @@ func removeStateFile(path string) error {
 }
 
 func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress SubjectProgress) (outcome Outcome, returnErr error) {
+	if item.Runtime != nil {
+		if _, _, err := taruntime.Ensure(ctx, manager.Layout, manager.Client, item.Runtime, func(current, total int64) { manager.report(progress, "downloading", current, total, "runtime") }); err != nil {
+			return Outcome{}, fmt.Errorf("install runtime: %w", err)
+		}
+	}
 	materialized, err := manager.materializeArtifact(ctx, item, progress)
 	if err != nil {
 		return Outcome{}, err
@@ -1222,6 +1231,10 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		spec.Executables = append(spec.Executables, integration.ExecutableSpec{Name: executable.Name, Path: executable.Path, CreateBinLink: executable.CreateBinLink})
 	}
 	spec.DesktopExecutable = filepath.Join(manager.Layout.Apps, item.ID, "current", desktopExecutablePath(item))
+	if item.Runtime != nil {
+		spec.DesktopExecutable = filepath.Join(manager.Layout.Bin, "tarlink")
+		spec.DesktopArguments = []string{"run", item.ID}
+	}
 	if spec.DesktopEnabled {
 		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
 	}
@@ -1337,6 +1350,13 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 			return ""
 		}(), Pinned: pinned,
 		Executables: manifestExecutables(item.Application.Executables), Artifact: item.Release.Archive, DesktopEnabled: desktopEnabled,
+		Runtime: copyRuntime(item.Runtime),
+		PreviousRuntime: func() *manifest.Runtime {
+			if installed != nil {
+				return copyRuntime(installed.Runtime)
+			}
+			return nil
+		}(),
 		Integration: state.Integration{
 			DesktopEntry:      desktopPath,
 			DesktopSHA256:     spec.DesktopSHA256,
@@ -1460,6 +1480,7 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	installed.Current, installed.Previous = installed.Previous, installed.Current
 	installed.CurrentFingerprint, installed.PreviousFingerprint = installed.PreviousFingerprint, installed.CurrentFingerprint
 	installed.Artifact, installed.PreviousArtifact = installed.PreviousArtifact, installed.Artifact
+	installed.Runtime, installed.PreviousRuntime = installed.PreviousRuntime, installed.Runtime
 	installed.Channel, installed.PreviousChannel = installed.PreviousChannel, installed.Channel
 	installed.Integration.IconFile, installed.Integration.PreviousIconFile = installed.Integration.PreviousIconFile, installed.Integration.IconFile
 	installed.Integration.IconSHA256, installed.Integration.PreviousIconSHA256 = installed.Integration.PreviousIconSHA256, installed.Integration.IconSHA256
@@ -1477,6 +1498,14 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 		return Outcome{State: installed}, stateErr
 	}
 	return Outcome{State: installed}, nil
+}
+
+func copyRuntime(value *manifest.Runtime) *manifest.Runtime {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func (manager *Manager) validateManagedApp(appID string) error {
@@ -1532,7 +1561,12 @@ func (manager *Manager) integrationSpec(installed state.State, name string, cate
 	}
 	expected := integration.ExpectedPaths(spec)
 	if installed.Integration.DesktopExecutable != "" {
-		spec.DesktopExecutable = filepath.Join(appRoot, "current", executablePathState(installed.Executables, installed.Integration.DesktopExecutable))
+		if installed.Runtime != nil {
+			spec.DesktopExecutable = filepath.Join(manager.Layout.Bin, "tarlink")
+			spec.DesktopArguments = []string{"run", installed.App}
+		} else {
+			spec.DesktopExecutable = filepath.Join(appRoot, "current", executablePathState(installed.Executables, installed.Integration.DesktopExecutable))
+		}
 	} else if len(expected.Executables) > 0 {
 		// State written before direct desktop targets used the bin link. Keep
 		// that historical ownership digest valid long enough for the update

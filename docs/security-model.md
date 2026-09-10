@@ -27,6 +27,25 @@ is outside the current authenticity guarantee.
 
 ## Archive policy
 
+## Valve Steam Linux Runtime
+
+TarLink uses exact digest-pinned Valve Steam Linux Runtime deployments and
+deliberately treats Valve's `_v2-entry-point` as a versioned de-facto
+integration interface. Valve does not guarantee Steam-independent third-party
+invocation. TarLink bounds this risk by immutable version pinning and
+validation before admitting each runtime version.
+
+Only the compiled `steam-linux-runtime` backend can invoke this interface. It
+uses the fixed `--verb=waitforexitandrun --` form; manifests cannot select
+another executor, `run` verb, pressure-vessel program, command, environment,
+mount or hook. The deployment is trusted only after its registry-pinned
+SHA-256 verifies. Its extraction policy permits the regular files,
+directories, and contained relative symlinks required by the official Valve
+deployment, while rejecting hardlinks, ownership metadata, special files and
+special mode bits. This compatibility runtime is not a TarLink security
+sandbox and does not promise isolation from the user's home, network, display,
+audio, DBus or devices.
+
 Accepted formats are exactly `tar.gz`, `tar.xz`, and ZIP, and the declared format must agree with content magic.
 
 | Resource | Limit |
@@ -68,6 +87,6 @@ installations are refused.
 
 ## Explicit exclusions
 
-TarLink has no telemetry, plugins, arbitrary command arguments, hooks, custom destinations, automatic updater, daemon, background updater, system-wide installation, or external command execution. It uses no CGO or operating-system package manager. Self-upgrade is explicit only; it never executes or restarts the replacement binary.
+TarLink has no telemetry, plugins, arbitrary command arguments, hooks, custom destinations, automatic updater, daemon, background updater, system-wide installation, or operating-system package manager. It uses no CGO. The sole external execution interface is the compiled, locally validated Valve v2 adapter described above; it accepts only the stored application executable plus user launch arguments, with no shell. Self-upgrade is explicit only; it never executes or restarts the replacement binary.
 
 TarLink proves that downloaded bytes match the reviewed registry digest. It does not independently prove that the registry or upstream publisher is uncompromised and does not sandbox the installed application at runtime.

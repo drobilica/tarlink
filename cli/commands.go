@@ -34,6 +34,9 @@ Manage applications:
   update       Update one or all installed applications
   rollback     Roll back an application
   uninstall    Uninstall one or more applications
+
+Launch:
+  run          Launch an installed application offline
   pin          Pin an installed application
   unpin        Unpin an installed application
 

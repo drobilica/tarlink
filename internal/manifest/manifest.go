@@ -51,6 +51,10 @@ type Manifest struct {
 	ReleaseHistory ReleaseHistory `json:"release_history"`
 	Application    Application    `json:"application"`
 	Desktop        Desktop        `json:"desktop"`
+	// Runtime is resolved from the same immutable registry snapshot as the
+	// application. Nil preserves the self-contained application contract.
+	RuntimeRef *RuntimeReference `json:"runtime,omitempty"`
+	Runtime    *Runtime          `json:"resolved_runtime,omitempty"`
 }
 
 // ResolvedPackage is the exact single-platform package selected from a
@@ -83,8 +87,41 @@ type Document struct {
 	Release      ReleaseDocument       `yaml:"release" json:"release"`
 	Application  ApplicationDefinition `yaml:"application" json:"application"`
 	Desktop      *DesktopDefinition    `yaml:"desktop,omitempty" json:"desktop,omitempty"`
+	Runtime      *RuntimeReference     `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	// Platforms is derived from release.artifacts and is never decoded from YAML.
 	Platforms map[string]PlatformManifest `yaml:"-" json:"-"`
+}
+
+// RuntimeReference is the only runtime selection application manifests may
+// express. The kind, deployment format, URL and executor interface are never
+// application-controlled data.
+type RuntimeReference struct {
+	ID      string `yaml:"id" json:"id"`
+	Version string `yaml:"version" json:"version"`
+}
+
+const (
+	RuntimeSchemaV1              = 1
+	RuntimeKindSteamLinuxRuntime = "steam-linux-runtime"
+	RuntimeInterfaceValveV2      = "valve-v2-entry-point-v1"
+)
+
+// Runtime is the fully resolved, immutable deployment input. It is persisted
+// in local state so launch never consults the registry.
+type Runtime struct {
+	Schema    int             `yaml:"schema" json:"schema"`
+	ID        string          `yaml:"id" json:"id"`
+	Kind      string          `yaml:"kind" json:"kind"`
+	Version   string          `yaml:"version" json:"version"`
+	Platform  Platform        `yaml:"platform" json:"platform"`
+	Artifact  RuntimeArtifact `yaml:"artifact" json:"artifact"`
+	Interface string          `yaml:"interface" json:"interface"`
+}
+
+type RuntimeArtifact struct {
+	URL          string       `yaml:"url" json:"url"`
+	Archive      string       `yaml:"archive" json:"archive"`
+	Verification Verification `yaml:"verification" json:"verification"`
 }
 
 // ReleaseDocument is the v5 release history. Single-channel manifests use
@@ -200,11 +237,21 @@ func (d *Document) ResolvePackage(key string) (*ResolvedPackage, error) {
 // ResolvePlatform preserves the lifecycle-facing resolved-package API while using the
 // strict schema-v5 resolution boundary and copy semantics.
 func (d *Document) ResolvePlatform(key string) (*Manifest, error) {
-	resolved, err := d.ResolvePackage(key)
+	if d == nil {
+		return nil, errors.New("manifest document is nil")
+	}
+	if err := d.validateShared(); err != nil {
+		return nil, err
+	}
+	platforms, err := d.derivedPlatforms()
 	if err != nil {
 		return nil, err
 	}
-	return &resolved.Manifest, nil
+	resolved, err := d.resolvePlatform(platforms, key)
+	if err != nil {
+		return nil, err
+	}
+	return &resolved, nil
 }
 
 // PlatformManifest is the normalized exact-platform view used by the
@@ -231,6 +278,7 @@ func (d *Document) resolvePlatform(platforms map[string]PlatformManifest, key st
 		ReleaseHistory: copyReleaseHistory(definition.ReleaseHistory),
 		Application:    copyApplication(definition.Application),
 		Desktop:        copyDesktop(definition.Desktop),
+		RuntimeRef:     copyRuntimeReference(d.Runtime),
 	}
 	for index := range result.Application.Executables {
 		if result.Application.Executables[index].Name == "" {
@@ -243,6 +291,14 @@ func (d *Document) resolvePlatform(platforms map[string]PlatformManifest, key st
 		return Manifest{}, err
 	}
 	return result, nil
+}
+
+func copyRuntimeReference(value *RuntimeReference) *RuntimeReference {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func (d *Document) derivedPlatforms() (map[string]PlatformManifest, error) {
@@ -629,7 +685,7 @@ func validateManifestShape(document *yaml.Node) error {
 	}
 	root, err := requiredMapping(document.Content[0], "manifest", []string{
 		"schema", "id", "name", "summary", "homepage", "categories", "release", "application",
-	}, []string{"requirements", "desktop"})
+	}, []string{"requirements", "desktop", "runtime"})
 	if err != nil {
 		return err
 	}
@@ -761,6 +817,11 @@ func validateManifestShape(document *yaml.Node) error {
 			}
 		}
 	}
+	if runtime, ok := root["runtime"]; ok {
+		if _, err := requiredMapping(runtime, "runtime", []string{"id", "version"}, nil); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -836,6 +897,76 @@ func (m Manifest) Validate() error {
 			return err
 		}
 	}
+	if m.RuntimeRef != nil {
+		if err := m.RuntimeRef.Validate(); err != nil {
+			return fmt.Errorf("runtime reference: %w", err)
+		}
+		if m.Runtime != nil {
+			if err := m.Runtime.Validate(); err != nil {
+				return fmt.Errorf("runtime: %w", err)
+			}
+			if m.Runtime.ID != m.RuntimeRef.ID || m.Runtime.Version != m.RuntimeRef.Version || m.Runtime.Platform != m.Platform {
+				return errors.New("runtime does not match resolved application reference")
+			}
+			for _, executable := range m.Application.Executables {
+				if executable.WantsBinLink() {
+					return errors.New("runtime-backed applications must disable executable bin links")
+				}
+			}
+		}
+	} else if m.Runtime != nil {
+		return errors.New("resolved runtime requires a runtime reference")
+	}
+	return nil
+}
+
+func (r RuntimeReference) Validate() error {
+	if !ValidID(r.ID) {
+		return fmt.Errorf("invalid runtime ID %q", r.ID)
+	}
+	if err := constrainedText("runtime version", r.Version, 1, 128); err != nil || strings.ContainsAny(r.Version, `/\\`) || r.Version == "." || r.Version == ".." {
+		if err != nil {
+			return err
+		}
+		return errors.New("runtime version is not filesystem-safe")
+	}
+	return nil
+}
+
+func (r Runtime) Validate() error {
+	if r.Schema != RuntimeSchemaV1 {
+		return fmt.Errorf("unsupported runtime schema %d", r.Schema)
+	}
+	if !ValidID(r.ID) {
+		return fmt.Errorf("invalid runtime ID %q", r.ID)
+	}
+	if err := (RuntimeReference{ID: r.ID, Version: r.Version}).Validate(); err != nil {
+		return err
+	}
+	if r.Kind != RuntimeKindSteamLinuxRuntime {
+		return fmt.Errorf("unsupported runtime kind %q", r.Kind)
+	}
+	if r.Platform.OS != "linux" || (r.Platform.Arch != "amd64" && r.Platform.Arch != "arm64") {
+		return errors.New("unsupported runtime platform")
+	}
+	if r.Interface != RuntimeInterfaceValveV2 {
+		return fmt.Errorf("unsupported runtime interface %q", r.Interface)
+	}
+	if err := validateHTTPSURL("runtime artifact URL", r.Artifact.URL); err != nil {
+		return err
+	}
+	if r.Artifact.Archive != "tar.xz" {
+		return fmt.Errorf("unsupported runtime archive format %q", r.Artifact.Archive)
+	}
+	if err := validateHTTPSURL("runtime verification source", r.Artifact.Verification.Source); err != nil {
+		return err
+	}
+	if err := ValidateDigest("sha256", r.Artifact.Verification.Digest); err != nil {
+		return fmt.Errorf("runtime digest: %w", err)
+	}
+	if r.Artifact.Verification.Algorithm != "sha256" {
+		return errors.New("runtime verification algorithm must be sha256")
+	}
 	return nil
 }
 
@@ -859,6 +990,9 @@ func (m Manifest) ResolvedPackageFingerprint() (string, error) {
 	}
 	if err := m.ValidateHistory(); err != nil {
 		return "", err
+	}
+	if m.RuntimeRef != nil && m.Runtime == nil {
+		return "", errors.New("runtime reference was not resolved")
 	}
 
 	var encoded bytes.Buffer
@@ -885,6 +1019,19 @@ func (m Manifest) ResolvedPackageFingerprint() (string, error) {
 	writeFingerprintString(&encoded, m.Release.Archive)
 	writeFingerprintString(&encoded, m.Release.NestedArchive.Path)
 	writeFingerprintString(&encoded, m.Release.NestedArchive.Archive)
+	if m.Runtime != nil {
+		encoded.WriteByte(1)
+		writeFingerprintString(&encoded, m.Runtime.ID)
+		writeFingerprintString(&encoded, m.Runtime.Kind)
+		writeFingerprintString(&encoded, m.Runtime.Version)
+		writeFingerprintString(&encoded, m.Runtime.Platform.OS)
+		writeFingerprintString(&encoded, m.Runtime.Platform.Arch)
+		writeFingerprintString(&encoded, m.Runtime.Artifact.URL)
+		writeFingerprintString(&encoded, m.Runtime.Artifact.Archive)
+		writeFingerprintString(&encoded, m.Runtime.Artifact.Verification.Algorithm)
+		writeFingerprintString(&encoded, m.Runtime.Artifact.Verification.Digest)
+		writeFingerprintString(&encoded, m.Runtime.Interface)
+	}
 
 	encoded.WriteByte(0xA1)
 	writeFingerprintInt(&encoded, uint64(len(m.Application.Executables)))

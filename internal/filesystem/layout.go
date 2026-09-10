@@ -21,13 +21,17 @@ type Layout struct {
 	StateHome string
 	CacheHome string
 
-	Apps    string
-	States  string
-	Cache   string
-	Locks   string
-	Bin     string
-	Desktop string
-	Icons   string
+	Apps string
+	// Runtimes contains immutable dependency deployments. It is deliberately
+	// separate from application payloads: an application package only retains a
+	// reference to a runtime deployment, never a copied runtime tree.
+	Runtimes string
+	States   string
+	Cache    string
+	Locks    string
+	Bin      string
+	Desktop  string
+	Icons    string
 }
 
 // NewLayout resolves the layout for the current user.
@@ -74,6 +78,7 @@ func LayoutFor(home string, getenv func(string) string) (Layout, error) {
 
 	l := Layout{Home: home, DataHome: data, StateHome: state, CacheHome: cache}
 	l.Apps = filepath.Join(data, productDir, "apps")
+	l.Runtimes = filepath.Join(data, productDir, "runtimes")
 	l.States = filepath.Join(state, productDir, "states")
 	l.Cache = filepath.Join(cache, productDir)
 	l.Locks = filepath.Join(state, productDir, "locks")
@@ -98,7 +103,7 @@ func validLayoutPath(value string) bool {
 // Ensure creates TarLink's private directories. Integration directories are
 // also created because they are user-owned and are part of the layout.
 func (l Layout) Ensure() error {
-	for _, dir := range []string{l.Apps, l.States, l.Cache, l.Locks} {
+	for _, dir := range []string{l.Apps, l.Runtimes, l.States, l.Cache, l.Locks} {
 		if err := SecureMkdirAll(dir, 0700); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)
 		}
@@ -109,6 +114,21 @@ func (l Layout) Ensure() error {
 		}
 	}
 	return nil
+}
+
+// RuntimePath returns the immutable deployment directory for an exact runtime
+// identity. Runtime deployments never have a mutable "current" pointer.
+func (l Layout) RuntimePath(id, version, fingerprint string) (string, error) {
+	if err := ValidateID(id); err != nil {
+		return "", err
+	}
+	if err := ValidateVersion(version); err != nil {
+		return "", err
+	}
+	if _, err := l.PackagePath(id, version, fingerprint); err != nil {
+		return "", err
+	}
+	return filepath.Join(l.Runtimes, id, version, ".tarlink-runtime-"+fingerprint[len("sha256:"):]), nil
 }
 
 // StatePath returns the state file for an application ID.

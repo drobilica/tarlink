@@ -121,6 +121,16 @@ func (s *Syncer) SyncWithCheckedAt(ctx context.Context) (time.Time, error) {
 	if err := normalizeTree(filepath.Join(generation, "apps")); err != nil {
 		return time.Time{}, fmt.Errorf("normalize registry permissions: %w", err)
 	}
+	if _, err := os.Lstat(filepath.Join(sourceRoot, "runtimes")); err == nil {
+		if err := os.Rename(filepath.Join(sourceRoot, "runtimes"), filepath.Join(generation, "runtimes")); err != nil {
+			return time.Time{}, fmt.Errorf("stage validated registry runtimes: %w", err)
+		}
+		if err := normalizeTree(filepath.Join(generation, "runtimes")); err != nil {
+			return time.Time{}, fmt.Errorf("normalize runtime registry permissions: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return time.Time{}, err
+	}
 	checkedAt := s.clock().UTC().Truncate(time.Second)
 	if err := writeGenerationMetadata(generation, checkedAt); err != nil {
 		return time.Time{}, fmt.Errorf("write registry generation metadata: %w", err)

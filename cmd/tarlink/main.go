@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -30,6 +31,33 @@ func main() {
 		os.Exit(runner.Fail(err))
 	}
 	client := download.NewClient()
+	// `run` is intentionally handled before the Cobra lifecycle: it resolves
+	// only local state and replaces this process with the compiled closure.
+	// It cannot refresh the registry, download, or select another runtime.
+	if len(os.Args) >= 2 && os.Args[1] == "run" {
+		if len(os.Args) < 3 || os.Args[2] == "" {
+			os.Exit(runner.Fail(fmt.Errorf("usage: tarlink run <app-id> [-- <arguments...>]")))
+		}
+		core, err := app.NewCore(layout, client)
+		if err != nil {
+			os.Exit(runner.Fail(err))
+		}
+		arguments := append([]string(nil), os.Args[3:]...)
+		if len(arguments) > 0 && arguments[0] == "--" {
+			arguments = arguments[1:]
+		}
+		launch, err := core.PrepareRun(os.Args[2], arguments)
+		if err != nil {
+			os.Exit(runner.Fail(err))
+		}
+		if err := os.Chdir(launch.Dir); err != nil {
+			os.Exit(runner.Fail(err))
+		}
+		if err := syscall.Exec(launch.Program, launch.Args, launch.Env); err != nil {
+			os.Exit(runner.Fail(err))
+		}
+		return
+	}
 	if cli.RegistryMaintainerCommand(os.Args[1:]) {
 		maintainer := app.NewMaintainer(layout, client)
 		runner.Registry = cli.RegistryTools{

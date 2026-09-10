@@ -55,13 +55,18 @@ type State struct {
 	// Channel is the channel used to resolve the current installation. It is
 	// deliberately persisted as an opaque registry identifier; channels are
 	// not a global enum and must not be inferred from version syntax.
-	Channel         string       `json:"channel,omitempty"`
-	PreviousChannel string       `json:"previous_channel,omitempty"`
-	Pinned          bool         `json:"pinned"`
-	Artifact        string       `json:"artifact"`
-	Executables     []Executable `json:"executables"`
-	DesktopEnabled  bool         `json:"desktop_enabled"`
-	Integration     Integration  `json:"integration"`
+	Channel         string `json:"channel,omitempty"`
+	PreviousChannel string `json:"previous_channel,omitempty"`
+	Pinned          bool   `json:"pinned"`
+	Artifact        string `json:"artifact"`
+	// Runtime is the exact resolved execution dependency for Current. It is
+	// intentionally full metadata, rather than a mutable registry lookup, so
+	// offline launch has a complete deterministic closure.
+	Runtime         *manifest.Runtime `json:"runtime,omitempty"`
+	PreviousRuntime *manifest.Runtime `json:"previous_runtime,omitempty"`
+	Executables     []Executable      `json:"executables"`
+	DesktopEnabled  bool              `json:"desktop_enabled"`
+	Integration     Integration       `json:"integration"`
 }
 
 type Executable struct {
@@ -116,6 +121,19 @@ func (s State) Validate() error {
 	}
 	if s.Previous == "" && s.PreviousArtifact != "" {
 		return fmt.Errorf("%w: previous artifact requires previous version", ErrCorrupt)
+	}
+	if s.Runtime != nil {
+		if err := s.Runtime.Validate(); err != nil {
+			return fmt.Errorf("%w: runtime: %v", ErrCorrupt, err)
+		}
+	}
+	if s.Previous == "" && s.PreviousRuntime != nil {
+		return fmt.Errorf("%w: previous runtime requires previous version", ErrCorrupt)
+	}
+	if s.PreviousRuntime != nil {
+		if err := s.PreviousRuntime.Validate(); err != nil {
+			return fmt.Errorf("%w: previous runtime: %v", ErrCorrupt, err)
+		}
 	}
 	if s.Previous != "" && !validArtifact(s.PreviousArtifact) {
 		return fmt.Errorf("%w: previous artifact is invalid", ErrCorrupt)

@@ -60,6 +60,29 @@ Explicit self-upgrade selects the latest strict stable release, the exact
 Linux architecture asset, and `checksums.txt`, then verifies and atomically
 replaces the canonical owned binary.
 
+## Runtime-backed execution closures
+
+An application is normally self-contained. A runtime-backed application instead
+resolves one immutable closure from the same registry generation: application
+release plus exact runtime ID, version, platform, artifact and interface. The
+only current runtime kind is `steam-linux-runtime`. Runtime manifests live at
+`runtimes/<id>/manifest.yaml`; application manifests may only reference an ID
+and exact version, never a command, executor path, environment, mount, hook or
+script. Runtime metadata participates in the package fingerprint, so a
+runtime-only change is an update and rollback retains its earlier closure.
+
+Deployments are stored separately below `~/.local/share/tarlink/runtimes/` and
+never have a mutable `current` link. Their outer artifact is SHA-256 verified,
+then extracted using the dedicated Valve deployment allowlist and atomically
+published before application activation. GC derives liveness from every current
+and previous state closure and fails closed when retained state is uncertain.
+
+`tarlink run <id> [-- args...]` uses local state only: it does not refresh the
+registry or perform TarLink networking. Self-contained applications run
+directly. The compiled Valve adapter invokes `_v2-entry-point
+--verb=waitforexitandrun -- PROGRAM [ARGS...]`; its writable variable directory
+is outside the immutable deployment. Steam is not required and UMU is not used.
+
 ## Installation flow
 
 1. Load or refresh the validated official registry and resolve the application manifest.

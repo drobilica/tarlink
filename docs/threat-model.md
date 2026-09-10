@@ -4,6 +4,8 @@
 
 - TarLink code and release workflow.
 - The reviewed official TarLink registry.
+- Exact digest-pinned official Valve Steam Linux Runtime deployments admitted
+  by the reviewed registry and the compiled Valve v2 adapter.
 - The local user account running TarLink.
 
 ## Potentially hostile
@@ -44,6 +46,8 @@
 | Symlink or hardlink escape | Hardlinks rejected; symlinks confined to same-directory regular-file chains; parent `lstat`; exclusive creation |
 | Device or special-file abuse | Devices, FIFOs, sockets, special bits, and unknown types rejected |
 | Decompression bomb | Entry, byte, file, archive-input, depth, and XZ dictionary bounds |
+| Runtime substitution or mutable runtime selection | Exact runtime artifact SHA-256, immutable deployment path, runtime-inclusive package fingerprint, and current-plus-previous closure retention |
+| Unsupported Valve launcher behavior | One compiled `_v2-entry-point --verb=waitforexitandrun --` interface per admitted runtime version; no manifest-controlled executor or fallback |
 | AppImage installation code execution | AppImages are only checksum-verified and structurally checked as opaque Type 2 ELF files; TarLink never executes, mounts, or extracts them |
 | Partial activation | Staging, same-filesystem rename, atomic relative link, atomic state |
 | Concurrent mutation | Shared lifecycle `flock`, narrower registry/per-application locks, and non-overwriting integration creation |

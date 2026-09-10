@@ -43,6 +43,7 @@ func (e *PlatformError) Unwrap() error { return ErrUnavailableForPlatform }
 type Catalog struct {
 	FetchedAt time.Time
 	Variants  map[string]map[manifest.Platform]*manifest.Manifest
+	Runtimes  map[string]*manifest.Runtime
 }
 
 func ValidateTree(root string) (*Catalog, error) {
@@ -81,7 +82,27 @@ func validateTree(root string, readMetadata bool) (*Catalog, error) {
 	if len(variants) == 0 {
 		return nil, errors.New("registry contains no application manifests")
 	}
-	return &Catalog{FetchedAt: fetchedAt, Variants: variants}, nil
+	runtimes, err := loadRuntimes(filepath.Join(root, "runtimes"))
+	if err != nil {
+		return nil, err
+	}
+	for _, platformVariants := range variants {
+		for _, item := range platformVariants {
+			if item.RuntimeRef == nil {
+				continue
+			}
+			runtime, ok := runtimes[item.RuntimeRef.ID]
+			if !ok || runtime.Version != item.RuntimeRef.Version || runtime.Platform != item.Platform {
+				return nil, fmt.Errorf("application %q references unavailable runtime %s@%s", item.ID, item.RuntimeRef.ID, item.RuntimeRef.Version)
+			}
+			copy := *runtime
+			item.Runtime = &copy
+			if _, err := item.ResolvedPackageFingerprint(); err != nil {
+				return nil, fmt.Errorf("application %q runtime closure: %w", item.ID, err)
+			}
+		}
+	}
+	return &Catalog{FetchedAt: fetchedAt, Variants: variants, Runtimes: runtimes}, nil
 }
 
 type generationMetadata struct {
@@ -188,7 +209,69 @@ func (c *Catalog) ManifestForPlatform(id, goos, goarch string) (*manifest.Manife
 	for channel, head := range item.ReleaseHistory.Channels {
 		copy.ReleaseHistory.Channels[channel] = head
 	}
+	if item.RuntimeRef != nil {
+		reference := *item.RuntimeRef
+		copy.RuntimeRef = &reference
+	}
+	if item.Runtime != nil {
+		runtime := *item.Runtime
+		copy.Runtime = &runtime
+	}
 	return &copy, nil
+}
+
+func loadRuntimes(root string) (map[string]*manifest.Runtime, error) {
+	info, err := os.Lstat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]*manifest.Runtime{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("registry runtimes directory must be a real directory")
+	}
+	if err := rejectSymlinks(root); err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]*manifest.Runtime, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 || !manifest.ValidID(entry.Name()) {
+			return nil, fmt.Errorf("invalid runtime directory %q", entry.Name())
+		}
+		directory := filepath.Join(root, entry.Name())
+		children, err := os.ReadDir(directory)
+		if err != nil {
+			return nil, err
+		}
+		if len(children) != 1 || children[0].Name() != "manifest.yaml" || children[0].Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("runtime directory %q must contain exactly manifest.yaml", entry.Name())
+		}
+		file, err := os.Open(filepath.Join(directory, "manifest.yaml"))
+		if err != nil {
+			return nil, err
+		}
+		runtime, parseErr := manifest.ParseRuntime(file)
+		closeErr := file.Close()
+		if parseErr != nil {
+			return nil, fmt.Errorf("runtime %q: %w", entry.Name(), parseErr)
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		if runtime.ID != entry.Name() {
+			return nil, fmt.Errorf("runtime directory %q does not match manifest ID %q", entry.Name(), runtime.ID)
+		}
+		if _, exists := result[runtime.ID]; exists {
+			return nil, fmt.Errorf("duplicate runtime %q", runtime.ID)
+		}
+		result[runtime.ID] = runtime
+	}
+	return result, nil
 }
 
 // ReleaseForPlatform resolves an explicitly requested approved channel head

@@ -193,9 +193,12 @@ type Spec struct {
 	DesktopEnabled    bool
 	DesktopCategories []string
 	DesktopExecutable string
-	WorkingDirectory  bool
-	DesktopSHA256     string
-	IconSHA256        string
+	// DesktopArguments are compiled TarLink-owned arguments. Manifest data has
+	// no way to populate them.
+	DesktopArguments []string
+	WorkingDirectory bool
+	DesktopSHA256    string
+	IconSHA256       string
 }
 
 func ExpectedPaths(spec Spec) Paths {
@@ -565,11 +568,15 @@ func DesktopFile(spec Spec, executablePath string) []byte {
 	if spec.DesktopExecutable != "" {
 		executablePath = spec.DesktopExecutable
 	}
+	execLine := desktopExec(executablePath)
+	for _, argument := range spec.DesktopArguments {
+		execLine += " " + desktopExec(argument)
+	}
 	lines := []string{
 		"[Desktop Entry]",
 		"Type=Application",
 		"Name=" + desktopText(spec.Name),
-		"Exec=" + desktopExec(executablePath),
+		"Exec=" + execLine,
 		"TryExec=" + desktopText(executablePath),
 	}
 	if spec.WorkingDirectory {

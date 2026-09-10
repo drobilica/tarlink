@@ -25,6 +25,9 @@ func (core *Core) Uninstall(ctx context.Context, appID string, sink ProgressSink
 		}
 		return Result{}, classify("uninstall "+appID, err)
 	}
+	if gcErr := core.runtimeGC(ctx); gcErr != nil {
+		warnings = append(warnings, "runtime cleanup deferred: "+gcErr.Error())
+	}
 	core.emit(sink, ProgressComplete, appID, 0, 0)
 	result := Result{AppID: appID, Warnings: warnings}
 	if stateErr == nil {
