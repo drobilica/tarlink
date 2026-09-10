@@ -101,6 +101,12 @@ manifest. Use them when maintaining the existing candidate backlog or
 evaluating a proposed TarLink capability; do not create replacement provenance
 ceremony.
 
+The YAML ledger is authoritative. Generate local, grouped Markdown context with
+`tarlink registry candidates --markdown`; it performs no network access and does
+not update research state. Use `tarlink registry candidates --changed` as the
+freshness gate, and reuse recorded evidence when an immutable release is
+unchanged.
+
 `registry icons` remains the separate bounded desktop-icon workflow:
 
 ```text

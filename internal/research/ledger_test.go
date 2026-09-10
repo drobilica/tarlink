@@ -2,6 +2,7 @@ package research
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -32,7 +33,95 @@ func TestValidateLedger(t *testing.T) {
 	if err := ValidateLedger(l); err == nil {
 		t.Fatal("expected unknown capability")
 	}
+	l = validLedger()
+	l.Candidates[0].Status = "ready"
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("expected ready blocker rejection")
+	}
+	l = validLedger()
+	l.Candidates[0].Blockers = nil
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("expected blocked-without-blocker rejection")
+	}
 }
+
+func TestValidateLedgerEvidenceLinks(t *testing.T) {
+	l := validLedger()
+	l.Candidates[0].EvidenceLinks = []EvidenceLink{{Label: "issue", URL: "https://example.com/issue/1"}}
+	if err := ValidateLedger(l); err != nil {
+		t.Fatal(err)
+	}
+	l.Candidates[0].EvidenceLinks = []EvidenceLink{{Label: "issue", URL: "http://example.com/issue/1"}}
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("expected non-https evidence link rejection")
+	}
+	l.Candidates[0].EvidenceLinks = []EvidenceLink{{Label: "issue", URL: "https://example.com/a\\b"}}
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("expected malformed evidence link rejection")
+	}
+	l.Candidates[0].EvidenceLinks = []EvidenceLink{{Label: " ", URL: "https://example.com"}}
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("expected blank evidence link label rejection")
+	}
+	l.Candidates[0].EvidenceLinks = []EvidenceLink{
+		{Label: "issue", URL: "https://example.com/1"},
+		{Label: "issue", URL: "https://example.com/2"},
+	}
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("expected duplicate evidence link label rejection")
+	}
+	l.Candidates[0].EvidenceLinks = []EvidenceLink{
+		{Label: "issue", URL: "https://example.com/1"},
+		{Label: "issue-2", URL: "https://example.com/1"},
+	}
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("expected duplicate evidence link url rejection")
+	}
+	links := make([]EvidenceLink, 9)
+	for i := range links {
+		links[i] = EvidenceLink{Label: fmt.Sprintf("link-%d", i), URL: fmt.Sprintf("https://example.com/%d", i)}
+	}
+	l.Candidates[0].EvidenceLinks = links
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("expected evidence link bound rejection")
+	}
+	links = links[:8]
+	l.Candidates[0].EvidenceLinks = links
+	if err := ValidateLedger(l); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadLedgerEvidenceLinks(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "candidates.yaml")
+	if err := os.WriteFile(p, []byte("candidates:\n  - id: demo\n    upstream: Owner/Repo\n    status: blocked\n    blockers: [MISSING_RUNTIME_LIBS]\n    last_checked:\n      release_tag: v1\n      release_id: 1\n    evidence_links:\n      - label: issue\n        url: https://example.com/1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	l, e := LoadLedger(p)
+	if e != nil || len(l.Candidates) != 1 || len(l.Candidates[0].EvidenceLinks) != 1 {
+		t.Fatalf("ledger=%+v err=%v", l, e)
+	}
+	if err := os.WriteFile(p, []byte("candidates:\n  - id: demo\n    upstream: Owner/Repo\n    status: blocked\n    last_checked:\n      release_tag: v1\n      release_id: 1\n    bogus: x\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, e = LoadLedger(p); e == nil {
+		t.Fatal("expected unknown-field rejection")
+	}
+}
+
+func TestLoadLedgerRejectsMultipleDocuments(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "candidates.yaml")
+	content := "candidates:\n  - id: demo\n    upstream: Owner/Repo\n    status: deferred\n    last_checked: {release_tag: v1, release_id: 1}\n---\ncandidates: []\n"
+	if err := os.WriteFile(p, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadLedger(p); err == nil {
+		t.Fatal("expected multiple-document rejection")
+	}
+}
+
 func TestLoadLedger(t *testing.T) {
 	d := t.TempDir()
 	p := filepath.Join(d, "candidates.yaml")

@@ -629,6 +629,38 @@ type blockerService struct {
 	results []research.BlockerSummary
 }
 
+type candidateService struct {
+	ledger research.CandidateLedger
+	called bool
+}
+
+func (f *candidateService) CandidateLedger() (research.CandidateLedger, error) { return f.ledger, nil }
+func (f *candidateService) CandidateChanges(context.Context) (research.CandidateChanges, error) {
+	f.called = true
+	return research.CandidateChanges{}, nil
+}
+
+func TestRegistryCandidatesMarkdownIsLocalAndExclusive(t *testing.T) {
+	service := &candidateService{ledger: research.CandidateLedger{Candidates: []research.Candidate{{
+		ID: "demo", Upstream: "Owner/Repo", Status: "ready", LastChecked: research.ReleaseIdentity{ReleaseTag: "v1", ReleaseID: 1},
+	}}}}
+	var out, errOut bytes.Buffer
+	runner := Runner{Registry: RegistryTools{Candidates: service}, Stdout: &out, Stderr: &errOut}
+	if code := runner.Run(context.Background(), []string{"registry", "candidates", "--markdown"}); code != 0 {
+		t.Fatalf("markdown code=%d stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "# TarLink Registry Candidates") || service.called {
+		t.Fatalf("output=%q changes-called=%v", out.String(), service.called)
+	}
+	for _, args := range [][]string{{"--markdown", "--json"}, {"--markdown", "--changed"}} {
+		out.Reset()
+		errOut.Reset()
+		if code := runner.Run(context.Background(), append([]string{"registry", "candidates"}, args...)); code == 0 || !strings.Contains(errOut.String(), "mutually exclusive") {
+			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", args, code, out.String(), errOut.String())
+		}
+	}
+}
+
 func (f *blockerService) Blockers(string) ([]research.BlockerSummary, error) {
 	return f.results, nil
 }

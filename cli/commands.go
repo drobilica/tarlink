@@ -61,7 +61,7 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry freshness <app> [--json]
   tarlink registry inspect <owner/repo | release-asset-url | manifest.yaml | directory> [--json] [--refresh]
   tarlink registry add <release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]
-  tarlink registry candidates [--changed] [--json]
+  tarlink registry candidates [--changed] [--json] [--markdown]
   tarlink registry blockers [--capability <capability>] [--json]
   tarlink registry icons <path> [--app <id>] [--fix] [--json]
 `
@@ -942,11 +942,17 @@ func (r Runner) registryAddCommand() *cobra.Command {
 }
 
 func (r Runner) registryCandidatesCommand() *cobra.Command {
-	usage := "usage: tarlink registry candidates [--changed] [--json]"
-	var changed, jsonOutput bool
+	usage := "usage: tarlink registry candidates [--changed] [--json] [--markdown]"
+	var changed, jsonOutput, markdown bool
 	command := &cobra.Command{Use: "candidates", Args: noArgs(usage), RunE: func(command *cobra.Command, _ []string) error {
 		if r.Registry.Candidates == nil {
 			return errors.New("candidate ledger is unavailable")
+		}
+		if jsonOutput && markdown {
+			return invalidCommand(usage + ": --json and --markdown are mutually exclusive")
+		}
+		if changed && markdown {
+			return invalidCommand(usage + ": --changed and --markdown are mutually exclusive")
 		}
 		if changed {
 			value, err := r.Registry.Candidates.CandidateChanges(command.Context())
@@ -965,6 +971,10 @@ func (r Runner) registryCandidatesCommand() *cobra.Command {
 		if jsonOutput {
 			return writeJSON(r.Stdout, value)
 		}
+		if markdown {
+			_, err := io.WriteString(r.Stdout, research.RenderCandidateReport(value))
+			return err
+		}
 		for _, candidate := range value.Candidates {
 			if _, err := fmt.Fprintf(r.Stdout, "%-24s %-10s %s\n", candidate.ID, candidate.Status, candidate.Upstream); err != nil {
 				return err
@@ -974,6 +984,7 @@ func (r Runner) registryCandidatesCommand() *cobra.Command {
 	}}
 	command.Flags().BoolVar(&changed, "changed", false, "show changed candidates")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "write JSON")
+	command.Flags().BoolVar(&markdown, "markdown", false, "write Markdown research report")
 	configureCommand(command, usage)
 	return command
 }
