@@ -246,9 +246,21 @@ func TestFingerprintUsesEffectiveDesktopInputs(t *testing.T) {
 	}
 }
 
-func TestDesktopIntegrationRequiresIcon(t *testing.T) {
-	value := validManifest + "desktop:\n  enabled: true\n  categories: [Utility]\n"
-	if _, err := ParseBytes([]byte(value)); err == nil {
-		t.Fatal("desktop manifest without icon was accepted")
+func TestDesktopIntegrationAllowsMissingIcon(t *testing.T) {
+	value := validManifest + "desktop:\n  categories: [Utility]\n"
+	if _, err := ParseBytes([]byte(value)); err != nil {
+		t.Fatalf("desktop manifest without icon rejected: %v", err)
+	}
+
+	withIcon := value + ""
+	withIcon = strings.Replace(withIcon, "categories: [Utility]\n", "categories: [Utility]\n  icon:\n    path: icon.png\n", 1)
+	if _, err := ParseBytes([]byte(withIcon)); err != nil {
+		t.Fatalf("desktop manifest with icon rejected: %v", err)
+	}
+
+	base := parsePackage(t, validManifest, PlatformLinuxAMD64).Manifest
+	base.Desktop = Desktop{Icon: DesktopIcon{Path: "icon.png"}}
+	if err := validateApplicationRelease(base, base.Release); err == nil {
+		t.Fatal("icon without desktop integration accepted")
 	}
 }

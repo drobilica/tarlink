@@ -1201,9 +1201,6 @@ func validateApplicationRelease(m Manifest, release Release) error {
 	if m.Desktop.Enabled && len(m.Desktop.Categories) == 0 {
 		return errors.New("desktop categories are required when desktop integration is enabled")
 	}
-	if m.Desktop.Enabled && m.Desktop.Icon.IsZero() {
-		return errors.New("desktop icon is required when desktop integration is enabled")
-	}
 	if !m.Desktop.Icon.IsZero() {
 		if !m.Desktop.Enabled {
 			return errors.New("desktop icon requires desktop integration")

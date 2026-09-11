@@ -88,6 +88,27 @@ func TestCheckPathDetectsShadowingAndMissingBinDir(t *testing.T) {
 	}
 }
 
+func TestDesktopFileWithoutIconPreservesLauncherBehavior(t *testing.T) {
+	spec := testSpec(t.TempDir())
+	spec.Icon = ""
+	spec.DesktopExecutable = "Apotris"
+	spec.WorkingDirectory = true
+	spec.DesktopCategories = []string{"Game"}
+	content := string(DesktopFile(spec, "/home/test/bin/apotris"))
+	for _, want := range []string{
+		"Exec=Apotris\n",
+		"Path=" + filepath.Join(spec.ApplicationRoot, "current") + "\n",
+		"Categories=Game;\n",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("desktop file missing %q: %q", want, content)
+		}
+	}
+	if strings.Contains(content, "Icon=") {
+		t.Fatalf("iconless desktop file contains Icon entry: %q", content)
+	}
+}
+
 func TestEnsureAndRemoveOwned(t *testing.T) {
 	spec := testSpec(t.TempDir())
 	paths, _, err := Ensure(spec)
@@ -424,11 +445,11 @@ func TestDesktopFileUsesTheCorrectEncodingForExecAndTryExec(t *testing.T) {
 	}
 }
 
-func TestDesktopFileUsesDeclaredOrExplicitFallbackIcon(t *testing.T) {
+func TestDesktopFileOmitsMissingIconAndUsesDeclaredIcon(t *testing.T) {
 	spec := testSpec(t.TempDir())
 	declared := string(DesktopFile(spec, ExpectedPaths(spec).Executables[0].Link))
-	if !strings.Contains(declared, "Icon=application-x-executable\n") {
-		t.Fatalf("missing-icon desktop entry has unexpected icon: %q", declared)
+	if strings.Contains(declared, "Icon=") {
+		t.Fatalf("missing-icon desktop entry has Icon entry: %q", declared)
 	}
 	spec.Icon = "share/icon.svg"
 	withIcon := string(DesktopFile(spec, ExpectedPaths(spec).Executables[0].Link))

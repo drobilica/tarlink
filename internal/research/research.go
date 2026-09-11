@@ -674,6 +674,9 @@ func desktopIconReferences(data string) []string {
 }
 
 func matchingDesktopIconReference(candidate string, references []string) string {
+	if !likelyApplicationIconPath(candidate) {
+		return ""
+	}
 	base := strings.TrimSuffix(path.Base(candidate), path.Ext(candidate))
 	for _, reference := range references {
 		if ext := path.Ext(reference); ext != "" && !strings.EqualFold(ext, ".png") {
@@ -685,6 +688,26 @@ func matchingDesktopIconReference(candidate string, references []string) string 
 		}
 	}
 	return ""
+}
+
+func likelyApplicationIconPath(value string) bool {
+	parts := strings.Split(value, "/")
+	for _, part := range parts[:len(parts)-1] {
+		switch strings.ToLower(part) {
+		case "docs", "doc", "documentation", "screenshots", "screenshot", "banner", "badges":
+			return false
+		}
+	}
+	base := strings.ToLower(parts[len(parts)-1])
+	if base == "icon.png" || base == "logo.png" {
+		return true
+	}
+	for _, part := range parts[:len(parts)-1] {
+		if strings.ToLower(part) == "icon" || strings.ToLower(part) == "icons" || strings.ToLower(part) == "iconset" {
+			return true
+		}
+	}
+	return len(parts) <= 2
 }
 
 func looksLikeIconPath(value string) bool {

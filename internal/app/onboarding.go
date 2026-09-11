@@ -293,7 +293,7 @@ func (m *Maintainer) deriveRegistryCandidate(ctx context.Context, target researc
 				if sizeErr != nil {
 					continue
 				}
-				valid = append(valid, iconCandidate{file: file, size: size, data: data, score: repositoryIconPathScore(file)*10 + iconDimensionScore(size)})
+				valid = append(valid, iconCandidate{file: file, size: size, data: data, score: repositoryIconPathScore(file)})
 			}
 			sort.Slice(valid, func(i, j int) bool {
 				if valid[i].score != valid[j].score {
@@ -324,7 +324,9 @@ func (m *Maintainer) deriveRegistryCandidate(ctx context.Context, target researc
 func repositoryIconPathScore(file research.RepositoryFile) int {
 	score := fallbackTreeScore(file.Path)
 	if file.IconReference != "" {
-		score += 100
+		// Desktop metadata is direct upstream evidence. Keep it in a separate
+		// tier so a conventional filename cannot narrowly outrank it.
+		return 1000
 	}
 	return score
 }

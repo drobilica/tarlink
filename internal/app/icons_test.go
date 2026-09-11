@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -29,10 +30,12 @@ release:
             source: https://example.com/demo.sha256
 application:
   executable:
-    name: demo
-    path: demo
+    name: Apotris
+    path: Apotris
 desktop:
-  categories: [Graphics]
+  executable: Apotris
+  working-directory: application-root
+  categories: [Game]
 `
 
 func TestAddRemoteIconIsMinimalAndValid(t *testing.T) {
@@ -41,7 +44,7 @@ func TestAddRemoteIconIsMinimalAndValid(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(updated, []byte("  categories: [Graphics]\n  icon:\n")) {
+	if !bytes.Contains(updated, []byte("  categories: [Game]\n  icon:\n")) {
 		t.Fatalf("icon was not inserted into desktop block:\n%s", updated)
 	}
 	if !bytes.Contains(updated, []byte("homepage: https://example.com/\n")) {
@@ -63,6 +66,27 @@ func TestAddRemoteIconUpdatesSharedDesktopDefinition(t *testing.T) {
 	}
 	if parsed, err := manifest.ParseBytes(updated); err != nil || parsed.Desktop == nil || parsed.Desktop.Icon == nil {
 		t.Fatalf("updated dual-platform manifest is invalid: %v", err)
+	}
+}
+
+func TestAddRemoteIconPreservesDesktopBehavior(t *testing.T) {
+	icon := fixedRegistryIcon{URL: "https://raw.githubusercontent.com/example/demo/0123456789abcdef0123456789abcdef01234567/icon.png", SHA256: strings.Repeat("a", 64)}
+	before, err := manifest.ParseBytes([]byte(iconTestManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := addRemoteIcon([]byte(iconTestManifest), icon)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := manifest.ParseBytes(updated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.Desktop.Icon = nil
+	after.Desktop.Icon = nil
+	if !reflect.DeepEqual(before.Desktop, after.Desktop) || !reflect.DeepEqual(before.Application, after.Application) {
+		t.Fatalf("icon repair changed desktop/application behavior: before=%#v after=%#v", before, after)
 	}
 }
 

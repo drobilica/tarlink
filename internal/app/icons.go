@@ -89,11 +89,11 @@ func (m *Maintainer) RegistryIcons(ctx context.Context, options RegistryIconOpti
 		}
 		item.Manifests = []string{filepath.ToSlash(filepath.Join("apps", id, "manifest.yaml"))}
 		if !missing {
-			item.Status = "present"
+			item.Status = "resolved"
 			report.Results = append(report.Results, item)
 			continue
 		}
-		item.Status = "missing"
+		item.Status = "system-default"
 		report.Missing++
 		if options.Fix {
 			if declared {
@@ -104,6 +104,11 @@ func (m *Maintainer) RegistryIcons(ctx context.Context, options RegistryIconOpti
 			icon, fixErr := m.fixRegistryIcon(ctx, root, variants, item.Manifests)
 			if fixErr != nil {
 				item.Error = fixErr.Error()
+				if strings.Contains(fixErr.Error(), "ambiguous icon candidates") {
+					item.Status = "ambiguous"
+				} else {
+					item.Status = "research-incomplete"
+				}
 			} else {
 				item.Status, item.URL, item.SHA256 = "fixed", icon.URL, icon.SHA256
 				report.Fixed++
@@ -161,11 +166,12 @@ func (m *Maintainer) fixRegistryIcon(ctx context.Context, root string, variants 
 			break
 		}
 	}
-	if len(valid) == 0 {
-		files, discoverErr := client.DiscoverRepositoryIconCandidates(ctx, repository, tag)
-		if discoverErr != nil {
+	files, discoverErr := client.DiscoverRepositoryIconCandidates(ctx, repository, tag)
+	if discoverErr != nil {
+		if len(valid) == 0 {
 			return fixedRegistryIcon{}, discoverErr
 		}
+	} else {
 		sort.Slice(files, func(i, j int) bool {
 			si, sj := repositoryIconPathScore(files[i]), repositoryIconPathScore(files[j])
 			if si != sj {
@@ -186,11 +192,11 @@ func (m *Maintainer) fixRegistryIcon(ctx context.Context, root string, variants 
 			if fetchErr != nil {
 				continue
 			}
-			size, sizeErr := manifest.IconSizeFromPNG(data)
+			_, sizeErr := manifest.IconSizeFromPNG(data)
 			if sizeErr != nil {
 				continue
 			}
-			valid = append(valid, candidate{file: file, data: data, score: repositoryIconPathScore(file)*10 + iconDimensionScore(size)})
+			valid = append(valid, candidate{file: file, data: data, score: repositoryIconPathScore(file)})
 		}
 	}
 	if len(valid) == 0 {

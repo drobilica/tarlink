@@ -582,8 +582,10 @@ func DesktopFile(spec Spec, executablePath string) []byte {
 	if spec.WorkingDirectory {
 		lines = append(lines, "Path="+desktopText(spec.ApplicationRoot+string(filepath.Separator)+"current"))
 	}
+	if spec.Icon != "" {
+		lines = append(lines, "Icon="+desktopText(iconName(spec)))
+	}
 	lines = append(lines, []string{
-		"Icon=" + desktopText(iconName(spec)),
 		"Terminal=false",
 		"Categories=" + categories,
 		"X-TarLink-AppID=" + spec.ID,

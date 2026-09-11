@@ -251,6 +251,9 @@ Icon[fr]=${app_id}
 	if got := matchingDesktopIconReference("icons/foo.png", []string{"foo.svg"}); got != "" {
 		t.Fatalf("extension mismatch matched %q", got)
 	}
+	if got := matchingDesktopIconReference("screenshots/icon.png", []string{"icon"}); got != "" {
+		t.Fatalf("documentation artwork matched %q", got)
+	}
 }
 
 func TestProvenanceRejectsIncompleteAssetState(t *testing.T) {
