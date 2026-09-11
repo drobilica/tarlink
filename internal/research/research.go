@@ -1088,6 +1088,7 @@ type Inspection struct {
 	Icons           []string          `json:"icons,omitempty"`
 	Nested          []string          `json:"nested,omitempty"`
 	Blockers        []string          `json:"blockers,omitempty"`
+	Dependencies    *ELFDependencies  `json:"dependencies,omitempty"`
 }
 
 type InspectError struct {
@@ -1352,6 +1353,21 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 	}
 	if len(result.Executables) == 0 {
 		result.Blockers = append(result.Blockers, "NO_EXECUTABLE")
+	}
+	deps, depsErr := inspectELFDependencies(root, expectedArch)
+	if depsErr != nil {
+		return Inspection{}, depsErr
+	}
+	result.Dependencies = deps
+	if expectedArch != "" {
+		for _, executable := range result.Executables {
+			for _, file := range deps.Files {
+				if file.Path == executable && file.ArchitectureStatus == "mismatch" {
+					result.Blockers = append(result.Blockers, "UNSUPPORTED_ARCH")
+					break
+				}
+			}
+		}
 	}
 	return result, nil
 }

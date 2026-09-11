@@ -62,7 +62,12 @@ deterministically as `UNSUPPORTED_ARCH` evidence.
 
 For archives, inspection detects content type from the bytes, safely extracts
 once within the existing bounds, and ranks static executable and icon
-candidates. It never executes application files. A local `manifest.yaml` is
+candidates. ELF files are parsed with Go's static ELF reader to report
+architecture, SONAME, `DT_NEEDED`, RPATH/RUNPATH, bundled transitive
+dependencies, and unresolved SONAMEs in stable sorted JSON and human output.
+The exact extracted artifact contents, rather than host libraries or package
+databases, are the only source for bundled-library evidence. It never executes
+application files. A local `manifest.yaml` is
 parsed through the schema-v5 implementation and explained as a concise
 checklist. A directory scan is local-only, lexical, does not follow symlinked
 directories, and searches at most two levels for `manifest.yaml`; it does not

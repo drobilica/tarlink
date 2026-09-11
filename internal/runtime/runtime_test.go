@@ -76,6 +76,69 @@ func TestRuntimePathBounds(t *testing.T) {
 	}
 }
 
+func TestExtractValveDeploymentAllowsSniperRoot(t *testing.T) {
+	archive := runtimeArchive(t, []tar.Header{
+		{Name: "SteamLinuxRuntime_sniper/", Typeflag: tar.TypeDir, Mode: 0755},
+		{Name: "SteamLinuxRuntime_sniper/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
+	})
+	destination := t.TempDir()
+	if err := extractValveDeployment(context.Background(), archive, destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDeployment(filepath.Join(destination, "SteamLinuxRuntime_sniper")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExtractValveDeploymentRejectsUnknownRoot(t *testing.T) {
+	archive := runtimeArchive(t, []tar.Header{
+		{Name: "SteamLinuxRuntime_5/", Typeflag: tar.TypeDir, Mode: 0755},
+		{Name: "SteamLinuxRuntime_5/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
+	})
+	if err := extractValveDeployment(context.Background(), archive, t.TempDir()); err == nil {
+		t.Fatal("unknown runtime root was accepted")
+	}
+}
+
+func TestExtractValveDeploymentSniperLinkStaysWithinRoot(t *testing.T) {
+	archive := runtimeArchive(t, []tar.Header{
+		{Name: "SteamLinuxRuntime_sniper/", Typeflag: tar.TypeDir, Mode: 0755},
+		{Name: "SteamLinuxRuntime_sniper/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
+		{Name: "SteamLinuxRuntime_sniper/link", Typeflag: tar.TypeSymlink, Linkname: "_v2-entry-point"},
+	})
+	destination := t.TempDir()
+	if err := extractValveDeployment(context.Background(), archive, destination); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateDeployment(filepath.Join(destination, "SteamLinuxRuntime_sniper")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExtractValveDeploymentSniperLinkEscapingRejected(t *testing.T) {
+	archive := runtimeArchive(t, []tar.Header{
+		{Name: "SteamLinuxRuntime_sniper/", Typeflag: tar.TypeDir, Mode: 0755},
+		{Name: "SteamLinuxRuntime_sniper/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
+		{Name: "SteamLinuxRuntime_sniper/link", Typeflag: tar.TypeSymlink, Linkname: "../../outside"},
+	})
+	if err := extractValveDeployment(context.Background(), archive, t.TempDir()); err == nil {
+		t.Fatal("escaping sniper symlink was accepted")
+	}
+}
+
+func TestRuntimePathAdmittedRoots(t *testing.T) {
+	for _, root := range []string{"SteamLinuxRuntime_4", "SteamLinuxRuntime_sniper"} {
+		if _, err := runtimePath(root + "/_v2-entry-point"); err != nil {
+			t.Fatalf("admitted root %q rejected: %v", root, err)
+		}
+	}
+	for _, root := range []string{"SteamLinuxRuntime_3", "SteamLinuxRuntime_5", "runtime"} {
+		if _, err := runtimePath(root + "/_v2-entry-point"); err == nil {
+			t.Fatalf("non-admitted root %q accepted", root)
+		}
+	}
+}
+
 func TestGCRejectsNonCanonicalDeploymentName(t *testing.T) {
 	if goruntime.GOOS != "linux" {
 		t.Skip("runtime ownership tests require Linux path semantics")

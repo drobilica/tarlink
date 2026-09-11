@@ -2,33 +2,31 @@ candidates:
   - id: f1-race
     upstream: EXL/F1-Race
     last_checked: {release_tag: v1.0.1, release_id: 77539514}
-    status: blocked
-    blockers: [MISSING_RUNTIME_LIBS]
+    status: ready
     reconsider_when: [new-upstream-release]
     evidence_links:
       - {label: release, url: https://github.com/EXL/F1-Race/releases/tag/v1.0.1}
       - {label: linux-artifact, url: https://github.com/EXL/F1-Race/releases/download/v1.0.1/F1-Race-LIN_v1.0.1_19-Sep-2022.zip}
-    notes: Linux amd64 artifact requires SDL2 and SDL2_mixer; the approved SteamRT4 closure lacks SDL2_mixer and the artifact does not bundle it.
+    notes: Linux amd64 ELF requires SDL2 and SDL2_mixer; both SONAMEs are present in the exact admitted sniper runtime closure.
   - id: magic-sushi
     upstream: EXL/Magic-Sushi
     last_checked: {release_tag: v1.0.0, release_id: 77539644}
-    status: blocked
-    blockers: [MISSING_RUNTIME_LIBS]
+    status: ready
     reconsider_when: [new-upstream-release]
     evidence_links:
       - {label: release, url: https://github.com/EXL/Magic-Sushi/releases/tag/v1.0.0}
       - {label: linux-artifact, url: https://github.com/EXL/Magic-Sushi/releases/download/v1.0.0/Magic-Sushi-240x320-LIN_v1.0.0_19-Sep-2022.zip}
-    notes: Linux amd64 SDL2 artifact requires SDL2, SDL2_image, and SDL2_mixer; approved SteamRT4 lacks SDL2_image and SDL2_mixer.
+    notes: Linux amd64 SDL2 artifact requires SDL2, SDL2_image, and SDL2_mixer; all SONAMEs are present in the exact admitted sniper runtime closure.
   - id: kens-labyrinth
     upstream: sacredbanana/lab3d-sdl
     last_checked: {release_tag: 4.2.1, release_id: 248820664}
     status: blocked
-    blockers: [MISSING_RUNTIME_LIBS]
-    reconsider_when: [new-upstream-release]
+    blockers: [UNSUPPORTED_ARTIFACT]
+    reconsider_when: [new-upstream-release, manual]
     evidence_links:
       - {label: release, url: https://github.com/sacredbanana/lab3d-sdl/releases/tag/4.2.1}
       - {label: linux-artifact, url: https://github.com/sacredbanana/lab3d-sdl/releases/download/4.2.1/kens-labyrinth-linux-amd64.tar.gz}
-    notes: Linux amd64 artifact requires SDL2, SDL2_image, GL, and GLU; the current SteamRT4 closure lacks the required compatibility.
+    notes: The exact amd64 ELF requires SDL2, SDL2_image, GL, and GLU and the sniper closure contains those SONAMEs, but the official tar.gz uses unsafe ./ archive entry paths rejected by TarLink's confined extraction policy. The upstream arm64 artifact is also omitted because no admitted arm64 Valve runtime artifact exists.
   - id: quest64-recomp
     upstream: Rainchus/Quest64-Recomp
     last_checked: {release_tag: v0.1, release_id: 275862525}
@@ -103,3 +101,34 @@ candidates:
     status: deferred
     reconsider_when: [new-upstream-release, manual]
     notes: ZIP contains only skate3 and $ORIGIN-loaded librexruntime.so; the latter requires unbundled GTK3/Pango/Cairo/X11 libraries, and no purpose-built immutable icon asset exists.
+  - id: ruffle
+    upstream: ruffle-rs/ruffle
+    last_checked: {release_tag: v0.6.0, release_id: 383694685}
+    status: ready
+    reconsider_when: [new-upstream-release]
+    evidence_links:
+      - {label: release, url: https://github.com/ruffle-rs/ruffle/releases/tag/v0.6.0}
+      - {label: linux-amd64, url: https://github.com/ruffle-rs/ruffle/releases/download/v0.6.0/ruffle-0.6.0-linux-x86_64.tar.gz}
+      - {label: linux-arm64, url: https://github.com/ruffle-rs/ruffle/releases/download/v0.6.0/ruffle-0.6.0-linux-aarch64.tar.gz}
+    notes: Official portable Linux amd64 and arm64 archives passed static inspection and exact digest verification.
+  - id: furnace
+    upstream: tildearrow/furnace
+    last_checked: {release_tag: v0.6.8.3, release_id: 224754755}
+    status: ready
+    reconsider_when: [new-upstream-release]
+    evidence_links:
+      - {label: release, url: https://github.com/tildearrow/furnace/releases/tag/v0.6.8.3}
+      - {label: linux-amd64, url: https://github.com/tildearrow/furnace/releases/download/v0.6.8.3/furnace-0.6.8.3-linux-x86_64.tar.gz}
+      - {label: linux-arm64, url: https://github.com/tildearrow/furnace/releases/download/v0.6.8.3/furnace-0.6.8.3-linux-aarch64.tar.gz}
+    notes: Official portable Linux amd64 and arm64 archives passed static inspection and exact digest verification.
+  - id: openra
+    upstream: OpenRA/OpenRA
+    last_checked: {release_tag: release-20250330, release_id: 209218224}
+    status: ready
+    reconsider_when: [new-upstream-release]
+    evidence_links:
+      - {label: release, url: https://github.com/OpenRA/OpenRA/releases/tag/release-20250330}
+      - {label: tiberian-dawn, url: https://github.com/OpenRA/OpenRA/releases/download/release-20250330/OpenRA-Tiberian-Dawn-x86_64.AppImage}
+      - {label: red-alert, url: https://github.com/OpenRA/OpenRA/releases/download/release-20250330/OpenRA-Red-Alert-x86_64.AppImage}
+      - {label: dune-2000, url: https://github.com/OpenRA/OpenRA/releases/download/release-20250330/OpenRA-Dune-2000-x86_64.AppImage}
+    notes: The stable release provides official x86_64 AppImages for the three separately admitted mod targets; no arm64 AppImage is published.

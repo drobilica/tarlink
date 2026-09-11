@@ -430,6 +430,11 @@ func (r Runner) printResearch(value app.ResearchResult, jsonOutput bool) error {
 	if _, err = fmt.Fprintf(r.Stdout, "Status: %s\nArtifact type: %s\nExecutables: %s\nNested archives: %s\nBlockers: %s\n", value.Status, value.Inspection.ArtifactType, strings.Join(value.Inspection.Executables, ", "), strings.Join(value.Inspection.Nested, ", "), strings.Join(value.Inspection.Blockers, ", ")); err != nil {
 		return err
 	}
+	if value.Inspection.Dependencies != nil && len(value.Inspection.Dependencies.Files) > 0 {
+		if _, err = fmt.Fprintln(r.Stdout, value.Inspection.Dependencies.String()); err != nil {
+			return err
+		}
+	}
 	return err
 }
 

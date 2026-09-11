@@ -28,6 +28,14 @@ const (
 	maxRuntimeDepth   = 64
 )
 
+// admittedRuntimeRoots is the exact set of top-level directory names accepted
+// inside a Valve Steam Linux Runtime deployment archive. The manifest cannot
+// extend this set; it is hard-coded to the two supported runtime generations.
+var admittedRuntimeRoots = map[string]bool{
+	"SteamLinuxRuntime_4":      true,
+	"SteamLinuxRuntime_sniper": true,
+}
+
 // Ensure publishes one complete immutable deployment, or leaves no deployment
 // visible. Callers hold TarLink's lifecycle lock; that lock also makes shared
 // runtime acquisition converge across applications.
@@ -290,7 +298,11 @@ func extractValveDeployment(ctx context.Context, source, destination string) err
 
 func runtimePath(value string) (string, error) {
 	trimmed := strings.TrimSuffix(value, "/")
-	if value == "" || len(value) > maxRuntimePath || !strings.HasPrefix(value, "SteamLinuxRuntime_4/") || path.Clean(value) != trimmed || strings.Contains(value, "\\") || strings.HasPrefix(value, "/") || strings.Contains(value, "../") || pathDepth(trimmed) > maxRuntimeDepth {
+	if value == "" || len(value) > maxRuntimePath || path.Clean(value) != trimmed || strings.Contains(value, "\\") || strings.HasPrefix(value, "/") || strings.Contains(value, "../") || pathDepth(trimmed) > maxRuntimeDepth {
+		return "", errors.New("unsafe runtime archive path")
+	}
+	root := strings.SplitN(trimmed, "/", 2)[0]
+	if !admittedRuntimeRoots[root] {
 		return "", errors.New("unsafe runtime archive path")
 	}
 	return trimmed, nil
@@ -301,8 +313,10 @@ func safeLink(name, target string) error {
 	if target == "" || path.IsAbs(target) || strings.Contains(target, "\\") {
 		return errors.New("unsafe runtime symlink")
 	}
+	nameRoot := strings.SplitN(name, "/", 2)[0]
 	resolved := path.Clean(path.Join(path.Dir(name), target))
-	if !strings.HasPrefix(resolved, "SteamLinuxRuntime_4/") {
+	resolvedRoot := strings.SplitN(resolved, "/", 2)[0]
+	if resolvedRoot != nameRoot {
 		return errors.New("runtime symlink escapes deployment")
 	}
 	return nil
@@ -335,8 +349,8 @@ func singleRoot(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if len(entries) != 1 || !entries[0].IsDir() || entries[0].Type()&os.ModeSymlink != 0 || entries[0].Name() != "SteamLinuxRuntime_4" {
-		return "", errors.New("runtime archive must contain SteamLinuxRuntime_4 deployment")
+	if len(entries) != 1 || !entries[0].IsDir() || entries[0].Type()&os.ModeSymlink != 0 || !admittedRuntimeRoots[entries[0].Name()] {
+		return "", errors.New("runtime archive must contain a single admitted deployment root")
 	}
 	return filepath.Join(root, entries[0].Name()), nil
 }
@@ -349,6 +363,7 @@ func validateDeployment(root string) error {
 	if !info.Mode().IsRegular() || info.Mode()&0111 == 0 {
 		return errors.New("runtime entry point is not executable")
 	}
+	rootName := filepath.Base(root)
 	return filepath.WalkDir(root, func(p string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -358,7 +373,7 @@ func validateDeployment(root string) error {
 			if err != nil {
 				return err
 			}
-			return safeLink("SteamLinuxRuntime_4/"+filepath.ToSlash(strings.TrimPrefix(p, root+string(filepath.Separator))), target)
+			return safeLink(rootName+"/"+filepath.ToSlash(strings.TrimPrefix(p, root+string(filepath.Separator))), target)
 		}
 		if !entry.Type().IsRegular() && !entry.IsDir() {
 			return errors.New("runtime deployment contains special file")

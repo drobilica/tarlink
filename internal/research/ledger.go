@@ -66,7 +66,8 @@ type Capability struct {
 }
 
 var capabilities = map[string]Capability{
-	"appimage-metadata": {ID: "appimage-metadata", Blockers: map[string]bool{"APPIMAGE_METADATA_UNSUPPORTED": true}},
+	"appimage-metadata":     {ID: "appimage-metadata", Blockers: map[string]bool{"APPIMAGE_METADATA_UNSUPPORTED": true}},
+	"steam-linux-runtime-3": {ID: "steam-linux-runtime-3", Blockers: map[string]bool{"MISSING_RUNTIME_LIBS": true}},
 }
 var knownBlockers = map[string]bool{
 	"UNSUPPORTED_ARTIFACT": true, "UNSUPPORTED_ARCH": true,
