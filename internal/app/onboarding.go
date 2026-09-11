@@ -263,11 +263,50 @@ func (m *Maintainer) deriveRegistryCandidate(ctx context.Context, target researc
 		required = append(required, RegistryRequiredInput{Field: "icon", Reason: "ambiguous_icons"})
 	}
 	if candidate.Icon == "" && len(candidate.Icons) == 0 {
-		if files, iconErr := client.DiscoverRepositoryIconCandidates(ctx, string(target.Repository), release.Tag); iconErr == nil && len(files) == 1 {
-			if data, fetchErr := client.FetchRepositoryFile(ctx, files[0]); fetchErr == nil {
-				digest := sha256.Sum256(data)
-				candidate.RemoteIconURL = files[0].URL
+		if files, iconErr := client.DiscoverRepositoryIconCandidates(ctx, string(target.Repository), release.Tag); iconErr == nil {
+			type iconCandidate struct {
+				file  research.RepositoryFile
+				size  int
+				score int
+				data  []byte
+			}
+			valid := make([]iconCandidate, 0, 8)
+			sort.Slice(files, func(i, j int) bool {
+				si, sj := repositoryIconPathScore(files[i]), repositoryIconPathScore(files[j])
+				if si != sj {
+					return si > sj
+				}
+				return files[i].Path < files[j].Path
+			})
+			for _, file := range files {
+				if len(valid) >= maxIconCandidates {
+					break
+				}
+				if repositoryIconPathScore(file) == 0 {
+					continue
+				}
+				data, fetchErr := client.FetchRepositoryFile(ctx, file)
+				if fetchErr != nil {
+					continue
+				}
+				size, sizeErr := manifest.IconSizeFromPNG(data)
+				if sizeErr != nil {
+					continue
+				}
+				valid = append(valid, iconCandidate{file: file, size: size, data: data, score: repositoryIconPathScore(file)*10 + iconDimensionScore(size)})
+			}
+			sort.Slice(valid, func(i, j int) bool {
+				if valid[i].score != valid[j].score {
+					return valid[i].score > valid[j].score
+				}
+				return valid[i].file.Path < valid[j].file.Path
+			})
+			if len(valid) > 0 && (len(valid) == 1 || valid[0].score > valid[1].score) {
+				digest := sha256.Sum256(valid[0].data)
+				candidate.RemoteIconURL = valid[0].file.URL
 				candidate.RemoteIconSHA256 = hex.EncodeToString(digest[:])
+			} else if len(valid) > 1 {
+				required = append(required, RegistryRequiredInput{Field: "icon", Reason: "ambiguous_icons"})
 			}
 		}
 	}
@@ -280,6 +319,14 @@ func (m *Maintainer) deriveRegistryCandidate(ctx context.Context, target researc
 		}
 	}
 	return candidate, uniqueRequired(required), nil
+}
+
+func repositoryIconPathScore(file research.RepositoryFile) int {
+	score := fallbackTreeScore(file.Path)
+	if file.IconReference != "" {
+		score += 100
+	}
+	return score
 }
 
 func inspectManifest(path, display string) RegistryManifestInspection {

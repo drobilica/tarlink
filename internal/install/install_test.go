@@ -37,12 +37,18 @@ func fixtureArchive(t *testing.T, version string) []byte {
 		{Name: prefix, Typeflag: tar.TypeDir, Mode: 0o755},
 		{Name: prefix + "bin/", Typeflag: tar.TypeDir, Mode: 0o755},
 		{Name: prefix + "bin/run", Typeflag: tar.TypeReg, Mode: 0o755, Size: int64(len(version))},
+		{Name: prefix + "icon.png", Typeflag: tar.TypeReg, Mode: 0o644, Size: 24},
 	} {
 		if err := tarWriter.WriteHeader(&header); err != nil {
 			t.Fatal(err)
 		}
 		if strings.HasSuffix(header.Name, "run") {
 			if _, err := tarWriter.Write([]byte(version)); err != nil {
+				t.Fatal(err)
+			}
+		} else if strings.HasSuffix(header.Name, "icon.png") {
+			data := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 16, 0, 0, 0, 16}
+			if _, err := tarWriter.Write(data); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -164,7 +170,7 @@ func (server artifactServer) manifestChannel(version, channel string) *manifest.
 		Release:        release,
 		ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: channel, Channels: map[string]manifest.ChannelHead{channel: {Current: version}}, Releases: []manifest.Release{release}},
 		Application:    manifest.Application{Executables: []manifest.Executable{{Name: "run", Path: "bin/run"}}},
-		Desktop:        manifest.Desktop{Enabled: true, Categories: []string{"Utility"}},
+		Desktop:        manifest.Desktop{Enabled: true, Categories: []string{"Utility"}, Icon: manifest.DesktopIcon{Path: "icon.png"}},
 	}
 }
 
@@ -380,6 +386,7 @@ func TestUpdateTogglesDesktopIntegrationAndRollsBackBeforeState(t *testing.T) {
 	v2 := v2Server.manifest("v2")
 	v2.Desktop.Enabled = false
 	v2.Desktop.Categories = nil
+	v2.Desktop.Icon = manifest.DesktopIcon{}
 	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
 	manager.fail = func(stage string) error {
 		if stage == "before_state" {
@@ -651,6 +658,9 @@ func TestNestedReleaseInstallAndFailedUpdatePreserveCurrent(t *testing.T) {
 	layout := testLayout(t)
 	server := newArtifactServer(t, nestedFixtureArchive(t, "nested-v1"))
 	item := server.manifest("nested-v1")
+	item.Desktop.Enabled = false
+	item.Desktop.Categories = nil
+	item.Desktop.Icon = manifest.DesktopIcon{}
 	item.Release.NestedArchive = manifest.NestedArchive{Path: "payload.zip", Archive: "zip"}
 	item.ReleaseHistory.Releases[0].NestedArchive = item.Release.NestedArchive
 	manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
@@ -664,6 +674,9 @@ func TestNestedReleaseInstallAndFailedUpdatePreserveCurrent(t *testing.T) {
 
 	bad := newArtifactServer(t, corruptNestedFixtureArchive(t))
 	update := bad.manifest("nested-v2")
+	update.Desktop.Enabled = false
+	update.Desktop.Categories = nil
+	update.Desktop.Icon = manifest.DesktopIcon{}
 	update.Release.NestedArchive = manifest.NestedArchive{Path: "payload.zip", Archive: "zip"}
 	update.ReleaseHistory.Releases[0].NestedArchive = update.Release.NestedArchive
 	manager = New(layout, &download.Client{HTTP: bad.server.Client(), RedirectLimit: 2})

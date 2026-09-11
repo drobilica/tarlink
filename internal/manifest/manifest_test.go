@@ -204,6 +204,7 @@ func TestFingerprintUsesEffectiveDesktopInputs(t *testing.T) {
 	withDesktop := base
 	withDesktop.Desktop.Enabled = true
 	withDesktop.Desktop.Categories = []string{"Utility"}
+	withDesktop.Desktop.Icon = DesktopIcon{Path: "icon.png"}
 	withDesktopFingerprint, err := withDesktop.ResolvedPackageFingerprint()
 	if err != nil {
 		t.Fatal(err)
@@ -242,5 +243,12 @@ func TestFingerprintUsesEffectiveDesktopInputs(t *testing.T) {
 	}
 	if firstSelectionFingerprint == secondSelectionFingerprint {
 		t.Fatal("changing multi-executable desktop selection did not change fingerprint")
+	}
+}
+
+func TestDesktopIntegrationRequiresIcon(t *testing.T) {
+	value := validManifest + "desktop:\n  enabled: true\n  categories: [Utility]\n"
+	if _, err := ParseBytes([]byte(value)); err == nil {
+		t.Fatal("desktop manifest without icon was accepted")
 	}
 }

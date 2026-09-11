@@ -167,7 +167,7 @@ func (m *Maintainer) fixRegistryIcon(ctx context.Context, root string, variants 
 			return fixedRegistryIcon{}, discoverErr
 		}
 		sort.Slice(files, func(i, j int) bool {
-			si, sj := fallbackTreeScore(files[i].Path), fallbackTreeScore(files[j].Path)
+			si, sj := repositoryIconPathScore(files[i]), repositoryIconPathScore(files[j])
 			if si != sj {
 				return si > sj
 			}
@@ -179,6 +179,9 @@ func (m *Maintainer) fixRegistryIcon(ctx context.Context, root string, variants 
 			if len(valid) >= maxIconCandidates {
 				break
 			}
+			if repositoryIconPathScore(file) == 0 {
+				continue
+			}
 			data, fetchErr := client.FetchRepositoryFile(ctx, file)
 			if fetchErr != nil {
 				continue
@@ -187,7 +190,7 @@ func (m *Maintainer) fixRegistryIcon(ctx context.Context, root string, variants 
 			if sizeErr != nil {
 				continue
 			}
-			valid = append(valid, candidate{file: file, data: data, score: fallbackIconScore(file.Path, size)})
+			valid = append(valid, candidate{file: file, data: data, score: repositoryIconPathScore(file)*10 + iconDimensionScore(size)})
 		}
 	}
 	if len(valid) == 0 {
@@ -331,13 +334,10 @@ func iconDimensionScore(size int) int {
 
 func addRemoteIcon(data []byte, icon fixedRegistryIcon) ([]byte, error) {
 	parsed, err := manifest.ParseBytes(data)
-	if err != nil {
-		return nil, err
-	}
-	if parsed.Desktop == nil {
+	if err == nil && parsed.Desktop == nil {
 		return nil, errors.New("manifest desktop mapping is missing")
 	}
-	if parsed.Desktop.Icon != nil {
+	if err == nil && parsed.Desktop.Icon != nil && !parsed.Desktop.Icon.IsZero() {
 		return nil, errors.New("manifest icon is no longer missing")
 	}
 	lines := strings.SplitAfter(string(data), "\n")

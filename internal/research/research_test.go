@@ -183,6 +183,38 @@ func TestDiscoverRepositoryIconCandidatesUsesCompleteRecursiveTree(t *testing.T)
 	}
 }
 
+func TestDiscoverRepositoryIconCandidatesUsesDesktopMetadata(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	tree := strings.Repeat("b", 40)
+	blob := strings.Repeat("c", 40)
+	desktop := []byte("[Desktop Entry]\nIcon=furnace\n")
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 0, 0, 0, 13, 'I', 'H', 'D', 'R', 0, 0, 0, 16, 0, 0, 0, 16}
+	c := &Client{APIBase: "https://api.example", HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Path {
+		case "/repos/o/r/git/ref/tags/v1":
+			return response(200, `{"ref":"refs/tags/v1","object":{"sha":"`+commit+`","type":"commit"}}`), nil
+		case "/repos/o/r/git/commits/" + commit:
+			return response(200, `{"sha":"`+commit+`","tree":{"sha":"`+tree+`"}}`), nil
+		case "/repos/o/r/git/trees/" + tree:
+			body := fmt.Sprintf(`{"sha":"%s","truncated":false,"tree":[{"path":"res/furnace.desktop","type":"blob","sha":"%s","size":%d},{"path":"res/furnace.png","type":"blob","sha":"%s","size":%d},{"path":"screenshots/16.png","type":"blob","sha":"%s","size":%d}]}`, tree, blob, len(desktop), blob, len(png), blob, len(png))
+			return response(200, body), nil
+		default:
+			if strings.HasSuffix(r.URL.Path, "/res/furnace.desktop") {
+				return response(200, string(desktop)), nil
+			}
+			if strings.HasSuffix(r.URL.Path, "/res/furnace.png") || strings.HasSuffix(r.URL.Path, "/screenshots/16.png") {
+				return response(200, string(png)), nil
+			}
+			t.Fatalf("unexpected request %s", r.URL)
+			return nil, nil
+		}
+	})}}
+	files, err := c.DiscoverRepositoryIconCandidates(context.Background(), "o/r", "v1")
+	if err != nil || len(files) != 2 || files[0].IconReference != "furnace" || files[1].IconReference != "" {
+		t.Fatalf("files=%#v err=%v", files, err)
+	}
+}
+
 func TestDiscoverRepositoryIconCandidatesRejectsTruncatedTree(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	tree := strings.Repeat("b", 40)
@@ -203,6 +235,21 @@ func TestDiscoverRepositoryIconCandidatesRejectsTruncatedTree(t *testing.T) {
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Kind != APIErrorMalformed {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestDesktopIconReferencesRejectTemplatesAndHostilePaths(t *testing.T) {
+	data := `[Desktop Entry]
+Icon=furnace
+Icon[en]=../../outside
+Icon[fr]=${app_id}
+`
+	refs := desktopIconReferences(data)
+	if !reflect.DeepEqual(refs, []string{"furnace"}) {
+		t.Fatalf("references=%#v", refs)
+	}
+	if got := matchingDesktopIconReference("icons/foo.png", []string{"foo.svg"}); got != "" {
+		t.Fatalf("extension mismatch matched %q", got)
 	}
 }
 

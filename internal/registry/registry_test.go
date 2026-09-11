@@ -36,6 +36,8 @@ application:
     path: blender
 desktop:
   categories: [Graphics]
+  icon:
+    path: icon.png
 `
 
 func withArm64(base string) string {

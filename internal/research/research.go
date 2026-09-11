@@ -35,6 +35,9 @@ const maxResponseBytes int64 = 4 << 20
 const maxArtifactBytes int64 = 8 << 30
 const MaxIconBytes int64 = 4 << 20
 const maxArchiveIconBytes int64 = 1 << 20
+const maxDesktopMetadataBytes int64 = 64 << 10
+const maxDesktopMetadataTotalBytes int64 = 256 << 10
+const maxDesktopMetadataFiles = 8
 
 var repoPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 var gitObjectPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -531,13 +534,14 @@ func (c *Client) ResolveReleaseAsset(ctx context.Context, target ReleaseAssetTar
 // repository. Commit is the exact commit selected by a release tag; URL is
 // therefore immutable even if the tag is later moved.
 type RepositoryFile struct {
-	Repository Repository `json:"repository"`
-	Tag        string     `json:"tag"`
-	Commit     string     `json:"commit"`
-	Path       string     `json:"path"`
-	Blob       string     `json:"blob"`
-	Size       int64      `json:"size"`
-	URL        string     `json:"url"`
+	Repository    Repository `json:"repository"`
+	Tag           string     `json:"tag"`
+	Commit        string     `json:"commit"`
+	Path          string     `json:"path"`
+	Blob          string     `json:"blob"`
+	Size          int64      `json:"size"`
+	URL           string     `json:"url"`
+	IconReference string     `json:"icon_reference,omitempty"`
 }
 
 type apiGitObject struct {
@@ -589,11 +593,12 @@ func (c *Client) DiscoverRepositoryIconCandidates(ctx context.Context, raw, tag 
 		return nil, &APIError{Kind: APIErrorMalformed, Message: "GitHub tree response is truncated or inconsistent"}
 	}
 	candidates := make([]RepositoryFile, 0)
+	metadata := make([]RepositoryFile, 0)
 	for _, entry := range tree.Tree {
-		if entry.Type != "blob" || !gitObjectPattern.MatchString(entry.SHA) || entry.Size == nil || *entry.Size < 0 || !looksLikeIconPath(entry.Path) {
+		if entry.Type != "blob" || !gitObjectPattern.MatchString(entry.SHA) || entry.Size == nil || *entry.Size < 0 {
 			continue
 		}
-		parts, pathErr := repositoryPathParts(entry.Path)
+		parts, pathErr := safeRepositoryPathParts(entry.Path)
 		if pathErr != nil {
 			continue
 		}
@@ -601,13 +606,85 @@ func (c *Client) DiscoverRepositoryIconCandidates(ctx context.Context, raw, tag 
 		for i, part := range parts {
 			escaped[i] = url.PathEscape(part)
 		}
-		candidates = append(candidates, RepositoryFile{
+		file := RepositoryFile{
 			Repository: repo, Tag: tag, Commit: commitSHA, Path: strings.Join(parts, "/"), Blob: entry.SHA, Size: *entry.Size,
 			URL: "https://raw.githubusercontent.com/" + string(repo) + "/" + commitSHA + "/" + strings.Join(escaped, "/"),
-		})
+		}
+		if strings.EqualFold(path.Ext(entry.Path), ".png") {
+			candidates = append(candidates, file)
+		} else if isDesktopMetadataPath(entry.Path) && *entry.Size <= maxDesktopMetadataBytes {
+			metadata = append(metadata, file)
+		}
+	}
+	sort.Slice(metadata, func(i, j int) bool { return metadata[i].Path < metadata[j].Path })
+	if len(metadata) > maxDesktopMetadataFiles {
+		metadata = metadata[:maxDesktopMetadataFiles]
+	}
+	var metadataBytes int64
+	for _, desktop := range metadata {
+		if metadataBytes+desktop.Size > maxDesktopMetadataTotalBytes {
+			continue
+		}
+		data, fetchErr := c.FetchRepositoryFile(ctx, desktop)
+		if fetchErr != nil {
+			continue
+		}
+		metadataBytes += desktop.Size
+		refs := desktopIconReferences(string(data))
+		for i := range candidates {
+			if reference := matchingDesktopIconReference(candidates[i].Path, refs); reference != "" {
+				candidates[i].IconReference = reference
+			}
+		}
 	}
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Path < candidates[j].Path })
 	return candidates, nil
+}
+
+func isDesktopMetadataPath(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.HasSuffix(lower, ".desktop") || strings.HasSuffix(lower, ".desktop.in")
+}
+
+func desktopIconReferences(data string) []string {
+	var references []string
+	section := ""
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(strings.TrimSuffix(line, "\r"))
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = line
+			continue
+		}
+		if section != "[Desktop Entry]" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(key) != "Icon" {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if value == "" || strings.ContainsAny(value, "$%\\\x00\r\n") || strings.HasPrefix(value, "/") {
+			continue
+		}
+		if parts, err := safeRepositoryPathParts(value); err == nil {
+			references = append(references, strings.Join(parts, "/"))
+		}
+	}
+	return references
+}
+
+func matchingDesktopIconReference(candidate string, references []string) string {
+	base := strings.TrimSuffix(path.Base(candidate), path.Ext(candidate))
+	for _, reference := range references {
+		if ext := path.Ext(reference); ext != "" && !strings.EqualFold(ext, ".png") {
+			continue
+		}
+		refBase := strings.TrimSuffix(path.Base(reference), path.Ext(reference))
+		if reference == candidate || reference == base || refBase == base && (path.Ext(reference) == "" || strings.EqualFold(path.Ext(candidate), path.Ext(reference))) || path.Base(reference) == path.Base(candidate) && strings.EqualFold(path.Ext(candidate), path.Ext(reference)) {
+			return reference
+		}
+	}
+	return ""
 }
 
 func looksLikeIconPath(value string) bool {
@@ -774,13 +851,21 @@ func (c *Client) DiscoverRepositoryFile(ctx context.Context, raw, tag, filePath 
 }
 
 func repositoryPathParts(value string) ([]string, error) {
-	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, "\\") || strings.ContainsAny(value, "\x00\r\n") || !strings.EqualFold(path.Ext(value), ".png") {
+	parts, err := safeRepositoryPathParts(value)
+	if err != nil || !strings.EqualFold(path.Ext(value), ".png") {
 		return nil, fmt.Errorf("invalid repository PNG path %q", value)
+	}
+	return parts, nil
+}
+
+func safeRepositoryPathParts(value string) ([]string, error) {
+	if value == "" || strings.HasPrefix(value, "/") || strings.Contains(value, "\\") || strings.ContainsAny(value, "\x00\r\n") {
+		return nil, fmt.Errorf("invalid repository path %q", value)
 	}
 	parts := strings.Split(value, "/")
 	for _, part := range parts {
 		if part == "" || part == "." || part == ".." {
-			return nil, fmt.Errorf("invalid repository PNG path %q", value)
+			return nil, fmt.Errorf("invalid repository path %q", value)
 		}
 	}
 	return parts, nil
@@ -821,7 +906,7 @@ func (c *Client) getAPIJSON(ctx context.Context, endpoint string, destination an
 // blob through TarLink's bounded download client. The returned bytes are still
 // untrusted; callers must validate the expected format before recording them.
 func (c *Client) FetchRepositoryFile(ctx context.Context, file RepositoryFile) ([]byte, error) {
-	parts, err := repositoryPathParts(file.Path)
+	parts, err := safeRepositoryPathParts(file.Path)
 	if err != nil {
 		return nil, err
 	}
