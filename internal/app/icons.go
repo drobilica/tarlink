@@ -110,7 +110,7 @@ func (m *Maintainer) RegistryIcons(ctx context.Context, options RegistryIconOpti
 					item.Status = "research-incomplete"
 				}
 			} else {
-				item.Status, item.URL, item.SHA256 = "fixed", icon.URL, icon.SHA256
+				item.Status, item.URL, item.SHA256 = "resolved", icon.URL, icon.SHA256
 				report.Fixed++
 				report.Missing--
 			}
