@@ -45,6 +45,7 @@ type CandidateDecision struct {
 	Current  *ReleaseIdentity `json:"current_release,omitempty"`
 	Reason   string           `json:"reason,omitempty"`
 	Error    string           `json:"error,omitempty"`
+	Analysis *ReleaseAnalysis `json:"analysis,omitempty"`
 }
 type CandidateChanges struct {
 	Summary map[string]int      `json:"summary"`
@@ -279,6 +280,14 @@ func DetectChanges(ctx context.Context, client *Client, l CandidateLedger) Candi
 					d.Reason = "NEW_RELEASE"
 				}
 				out.Summary["RECHECK"]++
+				analysis, analysisErr := client.AnalyzeRelease(ctx, r)
+				if analysisErr != nil {
+					d.Decision, d.Reason, d.Error = "ERROR", "ANALYSIS_ERROR", analysisErr.Error()
+					out.Summary["RECHECK"]--
+					out.Summary["ERROR"]++
+				} else {
+					d.Analysis = &analysis
+				}
 			} else {
 				out.Summary["UNCHANGED"]++
 			}

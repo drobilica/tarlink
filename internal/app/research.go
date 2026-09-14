@@ -96,16 +96,29 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 	}
 	var asset research.Asset
 	var analysis *research.ReleaseAnalysis
+	var selectedInspection *research.Inspection
 	if options.Asset == "" && options.Inspect {
-		value := research.AnalyzeRelease(release, nil)
+		value, analysisErr := client.AnalyzeRelease(ctx, release)
+		if analysisErr != nil {
+			return ResearchResult{}, classify("registry inspect", analysisErr)
+		}
 		analysis = &value
 		if value.Assessment == research.AssessmentBlocked {
 			return ResearchResult{Repository: repo, Release: release, Analysis: analysis, Status: "BLOCKED"}, nil
 		}
-		if len(value.Artifacts) != 1 {
+		if value.Assessment != research.AssessmentReady {
 			return ResearchResult{Repository: repo, Release: release, Analysis: analysis, Status: "NEEDS_INPUT"}, nil
 		}
-		asset = value.Artifacts[0].Asset
+		for _, candidate := range value.Artifacts {
+			if len(candidate.Blockers) == 0 {
+				asset = candidate.Asset
+				if candidate.Inspection != nil {
+					copy := *candidate.Inspection
+					selectedInspection = &copy
+				}
+				break
+			}
+		}
 	} else {
 		asset, err = selectResearchAsset(release, options.Asset)
 		if err != nil {
@@ -122,20 +135,13 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 	if !options.Inspect && result.Provenance.Verdict != research.Acceptable {
 		result.Status = "BLOCKED"
 	}
-	verification := result.Provenance
 	if options.Inspect {
-		var inspection research.Inspection
+		inspection := research.Inspection{}
 		var inspectErr error
-		if verification.Verdict == research.Acceptable {
-			inspection, inspectErr = client.InspectAsset(ctx, asset, verification, researchFormat(asset.Name), research.TargetArchitecture(asset.Name))
+		if selectedInspection != nil {
+			inspection = *selectedInspection
 		} else {
-			artifact, fetchErr := client.FetchUnverified(ctx, asset)
-			if fetchErr == nil {
-				defer func() { _ = artifact.Cleanup() }()
-				inspection, inspectErr = research.Inspect(ctx, artifact, researchFormat(asset.Name), research.TargetArchitecture(asset.Name))
-			} else {
-				inspectErr = fetchErr
-			}
+			inspection, inspectErr = inspectResearchAsset(ctx, client, repo, release, asset)
 		}
 		if inspectErr != nil {
 			classified := classify("registry inspect", inspectErr)
@@ -144,19 +150,34 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 			return result, classified
 		}
 		result.Inspection = &inspection
-		value := research.AnalyzeRelease(release, map[int64]research.Inspection{asset.ID: inspection})
-		result.Analysis = &value
-		if value.Assessment == research.AssessmentNeedsInput {
+		if result.Analysis == nil {
+			value := research.AnalyzeRelease(release, map[int64]research.Inspection{asset.ID: inspection})
+			result.Analysis = &value
+		}
+		if result.Analysis.Assessment == research.AssessmentNeedsInput {
 			result.Status = "NEEDS_INPUT"
 			return result, nil
 		}
 		if len(inspection.Blockers) != 0 {
 			result.Status = "BLOCKED"
-		} else if value.Assessment == research.AssessmentBlocked {
+		} else if result.Analysis.Assessment == research.AssessmentBlocked {
 			result.Status = "BLOCKED"
 		}
 	}
 	return result, nil
+}
+
+func inspectResearchAsset(ctx context.Context, client *research.Client, repo research.Repository, release research.Release, asset research.Asset) (research.Inspection, error) {
+	verification := research.EvaluateProvenance(repo, release, asset)
+	if verification.Verdict == research.Acceptable {
+		return client.InspectAsset(ctx, asset, verification, researchFormat(asset.Name), research.TargetArchitecture(asset.Name))
+	}
+	artifact, err := client.FetchUnverified(ctx, asset)
+	if err != nil {
+		return research.Inspection{}, err
+	}
+	defer artifact.Cleanup()
+	return research.Inspect(ctx, artifact, researchFormat(asset.Name), research.TargetArchitecture(asset.Name))
 }
 
 func researchFailure(err error) *ResearchFailure {

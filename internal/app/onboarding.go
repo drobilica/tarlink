@@ -162,7 +162,11 @@ func (m *Maintainer) AddRegistry(ctx context.Context, options RegistryAddOptions
 			required := []RegistryRequiredInput{{Field: "artifact", Reason: "repository_discovery_" + strings.ToLower(result.Status)}}
 			return RegistryAddResult{Status: "needs-input", Required: required}, nil
 		}
-		target = research.ReleaseAssetTarget{Repository: repo, Tag: result.Release.Tag, Asset: result.Asset.Name, URL: canonicalReleaseAssetURL(repo, result.Release.Tag, result.Asset.Name)}
+		candidate, required := candidateFromResearch(result, canonicalReleaseAssetURL(repo, result.Release.Tag, result.Asset.Name))
+		if len(required) != 0 {
+			return RegistryAddResult{Status: "needs-input", Candidate: candidate, Required: uniqueRequired(required)}, nil
+		}
+		return CompleteRegistryCandidate(candidate, options)
 	}
 	candidate, required, err := m.deriveRegistryCandidate(ctx, target, options.Refresh)
 	if err != nil {
@@ -175,6 +179,47 @@ func (m *Maintainer) AddRegistry(ctx context.Context, options RegistryAddOptions
 		return RegistryAddResult{Status: "needs-input", Candidate: candidate, Required: uniqueRequired(required)}, nil
 	}
 	return CompleteRegistryCandidate(candidate, options)
+}
+
+// candidateFromResearch projects the already inspected canonical result. It
+// deliberately does not fetch or parse the release again.
+func candidateFromResearch(result ResearchResult, assetURL string) (RegistryCandidate, []RegistryRequiredInput) {
+	inspection := result.Inspection
+	if inspection == nil {
+		return RegistryCandidate{}, []RegistryRequiredInput{{Field: "artifact", Reason: "missing_analysis"}}
+	}
+	candidate := RegistryCandidate{Repository: string(result.Repository), Release: result.Release.Tag, Asset: result.Asset.Name, URL: assetURL, Archive: inspection.ArtifactType, SHA256: inspection.ComputedDigests["sha256"], Executables: append([]string(nil), inspection.Executables...), Icons: append([]string(nil), inspection.Icons...), Nested: append([]string(nil), inspection.Nested...)}
+	if result.Analysis != nil {
+		for _, a := range result.Analysis.Artifacts {
+			if a.Asset.ID == result.Asset.ID {
+				candidate.Platform = a.Platform
+				break
+			}
+		}
+	}
+	var required []RegistryRequiredInput
+	if candidate.Platform == "" {
+		required = append(required, RegistryRequiredInput{Field: "platform", Reason: "ambiguous_platform"})
+	}
+	if candidate.Archive == "appimage" {
+		candidate.Executable, candidate.Executables = "appimage", []string{"appimage"}
+	} else if len(candidate.Executables) == 1 {
+		candidate.Executable = candidate.Executables[0]
+	} else if len(candidate.Executables) == 0 {
+		required = append(required, RegistryRequiredInput{Field: "executable", Reason: "no_executable_candidate"})
+	} else {
+		required = append(required, RegistryRequiredInput{Field: "executable", Reason: "ambiguous_executables"})
+	}
+	if candidate.SHA256 == "" {
+		required = append(required, RegistryRequiredInput{Field: "digest", Reason: "missing_sha256"})
+	}
+	for _, blocker := range inspection.Blockers {
+		required = append(required, RegistryRequiredInput{Field: "artifact", Reason: strings.ToLower(blocker)})
+	}
+	if len(candidate.Nested) != 0 {
+		required = append(required, RegistryRequiredInput{Field: "nested-archive", Reason: "nested_archive_requires_review"})
+	}
+	return candidate, required
 }
 
 func canonicalReleaseAssetURL(repo research.Repository, tag, asset string) string {

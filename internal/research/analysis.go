@@ -20,24 +20,30 @@ const (
 // Inspection is retained verbatim so callers do not re-parse archives or ELF
 // data in separate lifecycle-specific paths.
 type ArtifactAnalysis struct {
-	Asset       Asset       `json:"asset"`
-	Platform    string      `json:"platform,omitempty"`
-	Format      string      `json:"format,omitempty"`
-	Inspection  *Inspection `json:"inspection,omitempty"`
-	Blockers    []string    `json:"blockers,omitempty"`
-	Ambiguities []string    `json:"ambiguities,omitempty"`
+	Asset            Asset                `json:"asset"`
+	Platform         string               `json:"platform,omitempty"`
+	Format           string               `json:"format,omitempty"`
+	Inspection       *Inspection          `json:"inspection,omitempty"`
+	Blockers         []string             `json:"blockers,omitempty"`
+	Ambiguities      []string             `json:"ambiguities,omitempty"`
+	Runtime          RuntimeCompatibility `json:"runtime,omitempty"`
+	RuntimeID        string               `json:"runtime_id,omitempty"`
+	MissingLibraries []string             `json:"missing_libraries,omitempty"`
 }
 
 // ReleaseAnalysis is the canonical release/artifact evidence representation.
 // It is intentionally mechanical: semantic metadata and registry policy stay
 // outside this package.
 type ReleaseAnalysis struct {
-	Repository  Repository         `json:"repository"`
-	Release     Release            `json:"release"`
-	Artifacts   []ArtifactAnalysis `json:"artifacts"`
-	Assessment  Assessment         `json:"assessment"`
-	Blockers    []string           `json:"blockers,omitempty"`
-	Ambiguities []string           `json:"ambiguities,omitempty"`
+	Repository       Repository           `json:"repository"`
+	Release          Release              `json:"release"`
+	Artifacts        []ArtifactAnalysis   `json:"artifacts"`
+	Assessment       Assessment           `json:"assessment"`
+	Blockers         []string             `json:"blockers,omitempty"`
+	Ambiguities      []string             `json:"ambiguities,omitempty"`
+	Runtime          RuntimeCompatibility `json:"runtime,omitempty"`
+	RuntimeID        string               `json:"runtime_id,omitempty"`
+	MissingLibraries []string             `json:"missing_libraries,omitempty"`
 }
 
 type RuntimeCompatibility string
@@ -64,6 +70,9 @@ func ClassifyRuntimeCompatibility(deps *ELFDependencies, admitted map[string][]s
 	}
 	if len(deps.ExternalSONAMEs) == 0 {
 		return RuntimeSelfContained, "", nil
+	}
+	if len(admitted) == 0 {
+		return RuntimeIndeterminate, "", nil
 	}
 	ids := make([]string, 0, len(admitted))
 	for id := range admitted {
@@ -165,32 +174,38 @@ func AnalyzeRelease(release Release, inspections map[int64]Inspection) ReleaseAn
 	r := ReleaseAnalysis{Repository: release.Repository, Release: release, Assessment: AssessmentBlocked}
 	assets := append([]Asset(nil), release.Assets...)
 	sort.Slice(assets, func(i, j int) bool { return assets[i].Name < assets[j].Name })
-	linuxNamed, windowsNamed, supported := 0, 0, 0
+	portable, windowsNamed, supported := 0, 0, 0
 	for _, asset := range assets {
 		name := strings.ToLower(asset.Name)
 		platform := InferPlatform(asset.Name)
-		looksLinux := platform != "" || strings.Contains(name, "linux") || strings.HasSuffix(name, ".appimage")
 		if strings.Contains(name, "windows") || strings.HasSuffix(name, ".exe") || strings.HasSuffix(name, ".msi") {
 			windowsNamed++
 		}
-		if !looksLinux {
+		// A portable archive is eligible for bounded static inspection even when
+		// its name is generic. Filename evidence may prioritize it, but can
+		// never overrule the archive/ELF evidence collected below.
+		format := artifactFormat(asset.Name)
+		if format == "" {
 			continue
 		}
-		linuxNamed++
-		a := ArtifactAnalysis{Asset: asset, Platform: platform, Format: artifactFormat(asset.Name)}
-		if a.Format == "" {
-			a.Blockers = append(a.Blockers, "UNSUPPORTED_ARTIFACT")
-		} else {
-			supported++
-		}
-		if platform == "" {
-			a.Ambiguities = append(a.Ambiguities, "PLATFORM")
-		}
+		portable++
+		a := ArtifactAnalysis{Asset: asset, Platform: platform, Format: format}
+		supported++
 		if in, ok := inspections[asset.ID]; ok {
 			copy := in
 			a.Inspection = &copy
 			a.Format = in.ArtifactType
 			a.Blockers = append(a.Blockers, in.Blockers...)
+			if derived := platformFromInspection(in); derived != "" {
+				if platform != "" && platform != derived {
+					a.Blockers = append(a.Blockers, "UNSUPPORTED_ARCH")
+				}
+				platform = derived
+				a.Platform = derived
+			}
+			if a.Platform == "" {
+				a.Ambiguities = append(a.Ambiguities, "PLATFORM")
+			}
 			if len(in.Executables) > 1 {
 				a.Ambiguities = append(a.Ambiguities, "EXECUTABLE")
 			}
@@ -202,7 +217,7 @@ func AnalyzeRelease(release Release, inspections map[int64]Inspection) ReleaseAn
 		}
 		r.Artifacts = append(r.Artifacts, a)
 	}
-	if linuxNamed == 0 {
+	if portable == 0 {
 		if windowsNamed > 0 {
 			r.Blockers = []string{"WINDOWS_ONLY"}
 		} else {
@@ -214,21 +229,60 @@ func AnalyzeRelease(release Release, inspections map[int64]Inspection) ReleaseAn
 		r.Blockers = []string{"UNSUPPORTED_ARTIFACT"}
 		return r
 	}
+	// An unrelated source archive must not block a valid portable artifact.
+	// Only candidates with no mechanical blocker participate in selection.
+	viable := 0
 	for _, a := range r.Artifacts {
-		r.Blockers = append(r.Blockers, a.Blockers...)
-		r.Ambiguities = append(r.Ambiguities, a.Ambiguities...)
+		if len(a.Blockers) == 0 {
+			viable++
+			r.Ambiguities = append(r.Ambiguities, a.Ambiguities...)
+		}
+	}
+	if viable == 0 {
+		for _, a := range r.Artifacts {
+			r.Blockers = append(r.Blockers, a.Blockers...)
+		}
 	}
 	r.Blockers = uniqueAnalysisStrings(r.Blockers)
 	r.Ambiguities = uniqueAnalysisStrings(r.Ambiguities)
 	if len(r.Blockers) != 0 {
 		return r
 	}
-	if len(r.Artifacts) != 1 || len(r.Ambiguities) != 0 {
+	if viable != 1 || len(r.Ambiguities) != 0 {
 		r.Assessment = AssessmentNeedsInput
 		return r
 	}
 	r.Assessment = AssessmentReady
 	return r
+}
+
+func platformFromInspection(in Inspection) string {
+	if in.Dependencies == nil {
+		return ""
+	}
+	platform := ""
+	for _, executable := range in.Executables {
+		for _, file := range in.Dependencies.Files {
+			if file.Path != executable {
+				continue
+			}
+			candidate := ""
+			if file.Architecture == "amd64" {
+				candidate = "linux-amd64"
+			}
+			if file.Architecture == "arm64" {
+				candidate = "linux-arm64"
+			}
+			if candidate == "" {
+				continue
+			}
+			if platform != "" && platform != candidate {
+				return ""
+			}
+			platform = candidate
+		}
+	}
+	return platform
 }
 
 func artifactFormat(name string) string {

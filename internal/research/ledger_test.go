@@ -161,7 +161,7 @@ func TestDetectChangesUsesReleaseID(t *testing.T) {
 	})
 	c := &Client{HTTP: &http.Client{Transport: transport}, APIBase: "https://api.test", Refresh: true}
 	v := DetectChanges(context.Background(), c, validLedger())
-	if v.Summary["RECHECK"] != 1 || v.Results[0].Reason != "RECREATED_RELEASE" {
+	if v.Summary["RECHECK"] != 1 || v.Results[0].Reason != "RECREATED_RELEASE" || v.Results[0].Analysis == nil || v.Results[0].Analysis.Assessment != AssessmentBlocked {
 		t.Fatalf("%+v", v)
 	}
 }

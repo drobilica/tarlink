@@ -1,9 +1,27 @@
 package research
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestSetupScriptIsNeverAnExecutableCandidate(t *testing.T) {
+	d := t.TempDir()
+	p := filepath.Join(d, "install.sh")
+	if err := os.WriteFile(p, []byte("#!/bin/sh\necho unsafe\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := executableCandidateScore("install.sh", info, bytes.TrimSpace([]byte("#!/bin/sh\necho unsafe"))); got != 0 {
+		t.Fatalf("script score=%d", got)
+	}
+}
 
 func TestClassifyRuntimeCompatibilityFailsClosed(t *testing.T) {
 	deps := &ELFDependencies{Files: []ELFDependencyFile{{Path: "app"}}, ExternalSONAMEs: []string{"libSDL2.so.0"}}
@@ -42,7 +60,7 @@ func TestAnalyzeReleaseFailsClosedForAmbiguityAndNegativeAssets(t *testing.T) {
 		{"one", []Asset{{ID: 1, Name: "app-linux-amd64.tar.gz"}}, AssessmentNeedsInput, ""},
 		{"multi", []Asset{{ID: 1, Name: "a-linux-amd64.tar.gz"}, {ID: 2, Name: "b-linux-amd64.tar.gz"}}, AssessmentNeedsInput, ""},
 		{"windows", []Asset{{ID: 1, Name: "a-windows.exe"}}, AssessmentBlocked, "WINDOWS_ONLY"},
-		{"none", []Asset{{ID: 1, Name: "source.zip"}}, AssessmentBlocked, "NO_LINUX_ARTIFACT"},
+		{"none", []Asset{{ID: 1, Name: "source.zip"}}, AssessmentNeedsInput, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := base
@@ -70,5 +88,33 @@ func TestBlockersFromAnalysisUsesNarrowLedgerTerms(t *testing.T) {
 	got := BlockersFromAnalysis(ReleaseAnalysis{Blockers: []string{"NO_LINUX_ARTIFACT"}, Ambiguities: []string{"EXECUTABLE", "PLATFORM"}})
 	if strings.Join(got, ",") != "AMBIGUOUS_ARTIFACT,AMBIGUOUS_EXECUTABLE,NO_LINUX_ARTIFACT" {
 		t.Fatal(got)
+	}
+}
+
+// This blind fixture corpus uses release/inspection evidence only; expected
+// scores are supplied after analysis, mirroring registry/candidate comparison.
+func TestGoldenDiscoverySafetyCorpus(t *testing.T) {
+	cases := []struct {
+		name        string
+		release     Release
+		inspections map[int64]Inspection
+		expected    Assessment
+	}{
+		{"ordinary-archive", Release{Repository: "o/r", Assets: []Asset{{ID: 1, Name: "game.zip"}}}, map[int64]Inspection{1: {ArtifactType: "zip", Executables: []string{"game"}, Dependencies: &ELFDependencies{Files: []ELFDependencyFile{{Path: "game", Architecture: "amd64"}}}}}, AssessmentReady},
+		{"multi-architecture", Release{Repository: "o/r", Assets: []Asset{{ID: 1, Name: "one.zip"}, {ID: 2, Name: "two.zip"}}}, map[int64]Inspection{1: {ArtifactType: "zip", Executables: []string{"one"}, Dependencies: &ELFDependencies{Files: []ELFDependencyFile{{Path: "one", Architecture: "amd64"}}}}, 2: {ArtifactType: "zip", Executables: []string{"two"}, Dependencies: &ELFDependencies{Files: []ELFDependencyFile{{Path: "two", Architecture: "arm64"}}}}}, AssessmentNeedsInput},
+		{"openra-style", Release{Repository: "o/r", Assets: []Asset{{ID: 1, Name: "one.AppImage"}, {ID: 2, Name: "two.AppImage"}}}, map[int64]Inspection{1: {ArtifactType: "appimage"}, 2: {ArtifactType: "appimage"}}, AssessmentNeedsInput},
+		{"unsafe", Release{Repository: "o/r", Assets: []Asset{{ID: 1, Name: "game.tar.gz"}}}, map[int64]Inspection{1: {ArtifactType: "tar.gz", Blockers: []string{"UNSUPPORTED_ARTIFACT"}}}, AssessmentBlocked},
+		{"setup-script", Release{Repository: "o/r", Assets: []Asset{{ID: 1, Name: "game.zip"}}}, map[int64]Inspection{1: {ArtifactType: "zip", Blockers: []string{"NO_EXECUTABLE"}}}, AssessmentBlocked},
+	}
+	wrong := 0
+	for _, tc := range cases {
+		got := AnalyzeRelease(tc.release, tc.inspections)
+		if got.Assessment != tc.expected {
+			wrong++
+			t.Errorf("%s: got %s want %s", tc.name, got.Assessment, tc.expected)
+		}
+	}
+	if wrong != 0 {
+		t.Fatalf("golden corpus WRONG=%d", wrong)
 	}
 }

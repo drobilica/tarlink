@@ -1199,6 +1199,46 @@ type Inspection struct {
 	Dependencies    *ELFDependencies  `json:"dependencies,omitempty"`
 }
 
+// AnalyzeRelease performs the one bounded, static artifact pass used by
+// discovery and candidate reconsideration. It never executes an artifact.
+func (c *Client) AnalyzeRelease(ctx context.Context, release Release) (ReleaseAnalysis, error) {
+	preliminary := AnalyzeRelease(release, nil)
+	inspections := make(map[int64]Inspection, len(preliminary.Artifacts))
+	for _, candidate := range preliminary.Artifacts {
+		provenance := EvaluateProvenance(release.Repository, release, candidate.Asset)
+		var inspection Inspection
+		var err error
+		if provenance.Verdict == Acceptable {
+			inspection, err = c.InspectAsset(ctx, candidate.Asset, provenance, archive.Format(candidate.Format), TargetArchitecture(candidate.Asset.Name))
+		} else {
+			artifact, fetchErr := c.FetchUnverified(ctx, candidate.Asset)
+			if fetchErr != nil {
+				return ReleaseAnalysis{}, fetchErr
+			}
+			inspection, err = Inspect(ctx, artifact, archive.Format(candidate.Format), TargetArchitecture(candidate.Asset.Name))
+			_ = artifact.Cleanup()
+		}
+		if err != nil {
+			return ReleaseAnalysis{}, err
+		}
+		inspections[candidate.Asset.ID] = inspection
+	}
+	analysis := AnalyzeRelease(release, inspections)
+	for i := range analysis.Artifacts {
+		var deps *ELFDependencies
+		if analysis.Artifacts[i].Inspection != nil {
+			deps = analysis.Artifacts[i].Inspection.Dependencies
+		}
+		compatibility, runtimeID, missing := ClassifyRuntimeCompatibility(deps, nil)
+		analysis.Artifacts[i].Runtime, analysis.Artifacts[i].RuntimeID, analysis.Artifacts[i].MissingLibraries = compatibility, runtimeID, missing
+		if compatibility == RuntimeIndeterminate && analysis.Artifacts[i].Inspection != nil && len(analysis.Artifacts[i].Inspection.Dependencies.ExternalSONAMEs) != 0 {
+			analysis.Ambiguities = uniqueAnalysisStrings(append(analysis.Ambiguities, "RUNTIME"))
+			analysis.Assessment = AssessmentNeedsInput
+		}
+	}
+	return analysis, nil
+}
+
 type InspectError struct {
 	Kind  string
 	Cause error
@@ -1485,20 +1525,18 @@ func executableCandidateScore(rel string, info os.FileInfo, evidence []byte) int
 		return 0
 	}
 	elf := len(evidence) >= 4 && bytes.Equal(evidence[:4], []byte{0x7f, 'E', 'L', 'F'})
-	shebang := bytes.HasPrefix(evidence, []byte("#!"))
 	executableMode := info.Mode()&0o111 != 0
-	if !elf && !shebang && !executableMode {
+	// Archive scripts are never launch candidates. TarLink does not support
+	// application-controlled script execution, and an installer must not turn
+	// into a trusted launcher merely because it has an executable bit.
+	if !elf {
 		return 0
 	}
 	score := 40
 	if executableMode {
 		score += 30
 	}
-	if elf {
-		score += 30
-	} else if shebang {
-		score += 20
-	}
+	score += 30
 	parts := strings.Split(filepath.ToSlash(rel), "/")
 	if len(parts) == 1 {
 		score += 30
