@@ -2,6 +2,32 @@ package research
 
 import "testing"
 
+func TestClassifyRuntimeCompatibilityFailsClosed(t *testing.T) {
+	deps := &ELFDependencies{Files: []ELFDependencyFile{{Path: "app"}}, ExternalSONAMEs: []string{"libSDL2.so.0"}}
+	if got, id, missing := ClassifyRuntimeCompatibility(deps, map[string][]string{"steamrt": {"libSDL2.so.0"}}); got != RuntimeCompatible || id != "steamrt" || len(missing) != 0 {
+		t.Fatalf("%s %s %v", got, id, missing)
+	}
+	if got, _, missing := ClassifyRuntimeCompatibility(deps, map[string][]string{"steamrt": {"libSDL2_image.so.0"}}); got != RuntimeMissing || len(missing) != 1 {
+		t.Fatalf("%s %v", got, missing)
+	}
+	if got, _, _ := ClassifyRuntimeCompatibility(deps, map[string][]string{"a": {"libSDL2.so.0"}, "b": {"libSDL2.so.0"}}); got != RuntimeIndeterminate {
+		t.Fatal(got)
+	}
+}
+
+func TestCompareReleaseAnalysisIgnoresReleaseIdentityButDetectsDrift(t *testing.T) {
+	a := ReleaseAnalysis{Artifacts: []ArtifactAnalysis{{Format: "tar.gz", Platform: "linux-amd64", Inspection: &Inspection{Executables: []string{"app"}}}}}
+	b := ReleaseAnalysis{Release: a.Release, Artifacts: append([]ArtifactAnalysis(nil), a.Artifacts...)}
+	b.Release.Tag = "v2"
+	if got := CompareReleaseAnalysis(a, b); len(got) != 1 || got[0] != DeltaSameShape {
+		t.Fatal(got)
+	}
+	b.Artifacts[0].Inspection = &Inspection{Executables: []string{"new-app"}}
+	if got := CompareReleaseAnalysis(a, b); len(got) != 1 || got[0] != DeltaExecutableChanged {
+		t.Fatal(got)
+	}
+}
+
 func TestAnalyzeReleaseFailsClosedForAmbiguityAndNegativeAssets(t *testing.T) {
 	base := Release{ID: 1, Repository: "o/r"}
 	for _, tc := range []struct {

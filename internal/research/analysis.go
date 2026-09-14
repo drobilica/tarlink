@@ -40,6 +40,124 @@ type ReleaseAnalysis struct {
 	Ambiguities []string           `json:"ambiguities,omitempty"`
 }
 
+type RuntimeCompatibility string
+
+const (
+	RuntimeSelfContained RuntimeCompatibility = "self-contained"
+	RuntimeNative        RuntimeCompatibility = "native"
+	RuntimeCompatible    RuntimeCompatibility = "compatible"
+	RuntimeMissing       RuntimeCompatibility = "missing-runtime-libraries"
+	RuntimeUnsupported   RuntimeCompatibility = "unsupported"
+	RuntimeIndeterminate RuntimeCompatibility = "indeterminate"
+)
+
+// ClassifyRuntimeCompatibility compares only statically observed external
+// SONAMEs to exact admitted immutable runtime closures supplied by the
+// registry consumer. It never probes the host, executes a binary, or solves
+// distribution packages.
+func ClassifyRuntimeCompatibility(deps *ELFDependencies, admitted map[string][]string) (RuntimeCompatibility, string, []string) {
+	if deps == nil {
+		return RuntimeIndeterminate, "", nil
+	}
+	if len(deps.Files) == 0 {
+		return RuntimeIndeterminate, "", nil
+	}
+	if len(deps.ExternalSONAMEs) == 0 {
+		return RuntimeSelfContained, "", nil
+	}
+	ids := make([]string, 0, len(admitted))
+	for id := range admitted {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	var compatible []string
+	for _, id := range ids {
+		closure := map[string]bool{}
+		for _, soname := range admitted[id] {
+			closure[soname] = true
+		}
+		missing := []string{}
+		for _, soname := range deps.ExternalSONAMEs {
+			if !closure[soname] {
+				missing = append(missing, soname)
+			}
+		}
+		if len(missing) == 0 {
+			compatible = append(compatible, id)
+		}
+	}
+	if len(compatible) == 1 {
+		return RuntimeCompatible, compatible[0], nil
+	}
+	if len(compatible) > 1 {
+		return RuntimeIndeterminate, "", nil
+	}
+	return RuntimeMissing, "", append([]string(nil), deps.ExternalSONAMEs...)
+}
+
+type ReleaseDelta string
+
+const (
+	DeltaSameShape         ReleaseDelta = "SAME_SHAPE"
+	DeltaArtifactChanged   ReleaseDelta = "ARTIFACT_CHANGED"
+	DeltaPackagingChanged  ReleaseDelta = "PACKAGING_CHANGED"
+	DeltaExecutableChanged ReleaseDelta = "EXECUTABLE_CHANGED"
+	DeltaPlatformChanged   ReleaseDelta = "PLATFORM_CHANGED"
+	DeltaNewBlocker        ReleaseDelta = "NEW_BLOCKER"
+	DeltaAmbiguous         ReleaseDelta = "AMBIGUOUS"
+)
+
+// CompareReleaseAnalysis intentionally ignores release identifiers, URLs, and
+// digests. It compares only material static shape so routine upstream rebuilds
+// do not masquerade as packaging drift.
+func CompareReleaseAnalysis(previous, current ReleaseAnalysis) []ReleaseDelta {
+	if previous.Assessment == AssessmentNeedsInput || current.Assessment == AssessmentNeedsInput {
+		return []ReleaseDelta{DeltaAmbiguous}
+	}
+	if len(current.Blockers) > len(previous.Blockers) {
+		return []ReleaseDelta{DeltaNewBlocker}
+	}
+	if len(previous.Artifacts) != len(current.Artifacts) {
+		return []ReleaseDelta{DeltaArtifactChanged}
+	}
+	var changes []ReleaseDelta
+	for i := range previous.Artifacts {
+		a, b := previous.Artifacts[i], current.Artifacts[i]
+		if a.Format != b.Format {
+			changes = append(changes, DeltaPackagingChanged)
+		}
+		if a.Platform != b.Platform {
+			changes = append(changes, DeltaPlatformChanged)
+		}
+		if executableShape(a.Inspection) != executableShape(b.Inspection) {
+			changes = append(changes, DeltaExecutableChanged)
+		}
+	}
+	changes = uniqueDeltas(changes)
+	if len(changes) == 0 {
+		return []ReleaseDelta{DeltaSameShape}
+	}
+	return changes
+}
+func executableShape(i *Inspection) string {
+	if i == nil {
+		return ""
+	}
+	return strings.Join(i.Executables, "\x00")
+}
+func uniqueDeltas(in []ReleaseDelta) []ReleaseDelta {
+	seen := map[ReleaseDelta]bool{}
+	for _, v := range in {
+		seen[v] = true
+	}
+	out := make([]ReleaseDelta, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
 // AnalyzeRelease builds deterministic release evidence from independently
 // collected artifact inspections. An absent inspection is evidence that still
 // needs investigation, not a reason to infer safety from an asset filename.
