@@ -60,7 +60,7 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]
   tarlink registry freshness <app> [--json]
   tarlink registry inspect <owner/repo | release-asset-url | manifest.yaml | directory> [--json] [--refresh]
-  tarlink registry add <release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]
+  tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]
   tarlink registry candidates [--changed] [--json] [--markdown]
   tarlink registry blockers [--capability <capability>] [--json]
   tarlink registry icons <path> [--app <id>] [--fix] [--json]
@@ -861,11 +861,11 @@ func (r Runner) registryInspectCommand() *cobra.Command {
 }
 
 func (r Runner) registryAddCommand() *cobra.Command {
-	usage := "usage: tarlink registry add <release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]"
+	usage := "usage: tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]"
 	var options app.RegistryAddOptions
 	var jsonOutput, dryRun, createBinLink, noCreateBinLink bool
 	var output, categories string
-	command := &cobra.Command{Use: "add <release-asset-url>", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
+	command := &cobra.Command{Use: "add <owner/repo | release-asset-url>", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
 		if jsonOutput && !options.NonInteractive || dryRun && output != "" || createBinLink && noCreateBinLink {
 			return invalidCommand(usage)
 		}

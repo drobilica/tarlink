@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -149,7 +150,19 @@ func (m *Maintainer) InspectRegistry(ctx context.Context, options RegistryInspec
 func (m *Maintainer) AddRegistry(ctx context.Context, options RegistryAddOptions) (RegistryAddResult, error) {
 	target, err := research.ParseReleaseAssetURL(options.Target)
 	if err != nil {
-		return RegistryAddResult{}, errors.New("registry add requires an exact GitHub release asset URL")
+		repo, repoErr := research.ParseRepository(options.Target)
+		if repoErr != nil {
+			return RegistryAddResult{}, errors.New("registry add requires a GitHub repository or exact GitHub release asset URL")
+		}
+		result, discoverErr := m.Research(ctx, ResearchOptions{Repository: string(repo), Refresh: options.Refresh, Inspect: true})
+		if discoverErr != nil {
+			return RegistryAddResult{}, discoverErr
+		}
+		if result.Status != "READY_FOR_REVIEW" || result.Asset.Name == "" {
+			required := []RegistryRequiredInput{{Field: "artifact", Reason: "repository_discovery_" + strings.ToLower(result.Status)}}
+			return RegistryAddResult{Status: "needs-input", Required: required}, nil
+		}
+		target = research.ReleaseAssetTarget{Repository: repo, Tag: result.Release.Tag, Asset: result.Asset.Name, URL: canonicalReleaseAssetURL(repo, result.Release.Tag, result.Asset.Name)}
 	}
 	candidate, required, err := m.deriveRegistryCandidate(ctx, target, options.Refresh)
 	if err != nil {
@@ -162,6 +175,14 @@ func (m *Maintainer) AddRegistry(ctx context.Context, options RegistryAddOptions
 		return RegistryAddResult{Status: "needs-input", Candidate: candidate, Required: uniqueRequired(required)}, nil
 	}
 	return CompleteRegistryCandidate(candidate, options)
+}
+
+func canonicalReleaseAssetURL(repo research.Repository, tag, asset string) string {
+	parts := strings.Split(tag, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return "https://github.com/" + string(repo) + "/releases/download/" + strings.Join(parts, "/") + "/" + url.PathEscape(asset)
 }
 
 // CompleteRegistryCandidate applies reviewed maintainer decisions to a
