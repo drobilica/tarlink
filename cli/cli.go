@@ -446,15 +446,26 @@ func (r Runner) printResearch(value app.ResearchResult, jsonOutput bool) error {
 		return writeJSON(r.Stdout, value)
 	}
 	_, err := fmt.Fprintf(r.Stdout, "Repository: %s\nRelease tag: %s\nRelease ID: %d\nAsset: %s\nAsset ID: %d\nAsset size: %d\nGitHub digest: %s\nAlgorithm: %s\nVerdict: %s\nReason: %s\n", value.Repository, value.Release.Tag, value.Release.ID, value.Asset.Name, value.Asset.ID, value.Asset.Size, value.Asset.Digest, value.Provenance.Algorithm, value.Provenance.Verdict, value.Provenance.Message)
-	if err != nil || value.Inspection == nil {
+	if err != nil {
 		return err
+	}
+	if _, err = fmt.Fprintf(r.Stdout, "Status: %s\n", value.Status); err != nil {
+		return err
+	}
+	if value.Analysis != nil {
+		if _, err = fmt.Fprintf(r.Stdout, "Assessment: %s\n", value.Analysis.Assessment); err != nil {
+			return err
+		}
+	}
+	if value.Inspection == nil {
+		return nil
 	}
 	if len(value.Inspection.ComputedDigests) != 0 {
 		if _, err = fmt.Fprintf(r.Stdout, "Computed digests: sha256=%s sha512=%s\n", value.Inspection.ComputedDigests["sha256"], value.Inspection.ComputedDigests["sha512"]); err != nil {
 			return err
 		}
 	}
-	if _, err = fmt.Fprintf(r.Stdout, "Status: %s\nArtifact type: %s\nExecutables: %s\nNested archives: %s\nBlockers: %s\n", value.Status, value.Inspection.ArtifactType, strings.Join(value.Inspection.Executables, ", "), strings.Join(value.Inspection.Nested, ", "), strings.Join(value.Inspection.Blockers, ", ")); err != nil {
+	if _, err = fmt.Fprintf(r.Stdout, "Artifact type: %s\nExecutables: %s\nNested archives: %s\nBlockers: %s\n", value.Inspection.ArtifactType, strings.Join(value.Inspection.Executables, ", "), strings.Join(value.Inspection.Nested, ", "), strings.Join(value.Inspection.Blockers, ", ")); err != nil {
 		return err
 	}
 	if value.Inspection.Dependencies != nil && len(value.Inspection.Dependencies.Files) > 0 {

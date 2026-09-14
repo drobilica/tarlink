@@ -103,11 +103,8 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 			return ResearchResult{}, classify("registry inspect", analysisErr)
 		}
 		analysis = &value
-		if value.Assessment == research.AssessmentBlocked {
-			return ResearchResult{Repository: repo, Release: release, Analysis: analysis, Status: "BLOCKED"}, nil
-		}
 		if value.Assessment != research.AssessmentReady {
-			return ResearchResult{Repository: repo, Release: release, Analysis: analysis, Status: "NEEDS_INPUT"}, nil
+			return ResearchResult{Repository: repo, Release: release, Analysis: analysis, Status: researchStatus(value.Assessment)}, nil
 		}
 		for _, candidate := range value.Artifacts {
 			if len(candidate.Blockers) == 0 {
@@ -154,8 +151,8 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 			value := research.AnalyzeRelease(release, map[int64]research.Inspection{asset.ID: inspection})
 			result.Analysis = &value
 		}
-		if result.Analysis.Assessment == research.AssessmentNeedsInput {
-			result.Status = "NEEDS_INPUT"
+		if result.Analysis.Assessment != research.AssessmentReady {
+			result.Status = researchStatus(result.Analysis.Assessment)
 			return result, nil
 		}
 		if len(inspection.Blockers) != 0 {
@@ -165,6 +162,24 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 		}
 	}
 	return result, nil
+}
+
+// researchStatus maps the canonical analysis assessment onto the established
+// inspect status vocabulary. READY_FOR_REVIEW intentionally covers both a
+// mechanically ready result and one that requires maintainer review; callers
+// that need the distinction consume analysis.assessment. NEEDS_INPUT remains
+// reserved for a genuine ambiguity requiring user selection.
+func researchStatus(assessment research.Assessment) string {
+	switch assessment {
+	case research.AssessmentBlocked:
+		return "BLOCKED"
+	case research.AssessmentNeedsInput:
+		return "NEEDS_INPUT"
+	case research.AssessmentNeedsReview, research.AssessmentReady:
+		return "READY_FOR_REVIEW"
+	default:
+		return "NEEDS_INPUT"
+	}
 }
 
 func inspectResearchAsset(ctx context.Context, client *research.Client, repo research.Repository, release research.Release, asset research.Asset) (research.Inspection, error) {
