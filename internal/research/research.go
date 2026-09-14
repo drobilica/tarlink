@@ -1231,7 +1231,7 @@ func (c *Client) AnalyzeRelease(ctx context.Context, release Release) (ReleaseAn
 		}
 		compatibility, runtimeID, missing := ClassifyRuntimeCompatibility(deps, nil)
 		analysis.Artifacts[i].Runtime, analysis.Artifacts[i].RuntimeID, analysis.Artifacts[i].MissingLibraries = compatibility, runtimeID, missing
-		if compatibility == RuntimeIndeterminate && analysis.Assessment != AssessmentBlocked && deps != nil && len(deps.ExternalSONAMEs) != 0 {
+		if compatibility == RuntimeIndeterminate && analysis.Assessment == AssessmentReady && deps != nil && len(deps.ExternalSONAMEs) != 0 {
 			analysis.Ambiguities = uniqueAnalysisStrings(append(analysis.Ambiguities, "RUNTIME"))
 			analysis.Assessment = AssessmentNeedsReview
 			analysis.MissingLibraries = uniqueAnalysisStrings(append(analysis.MissingLibraries, deps.ExternalSONAMEs...))
@@ -1425,13 +1425,17 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 	}
 	inspection.ArtifactType = string(format)
 	result := inspection
+	payloadRoot, err := normalizedInspectionRoot(root)
+	if err != nil {
+		return Inspection{}, err
+	}
 	type candidate struct {
 		path  string
 		score int
 	}
 	var executableCandidates []candidate
 	var iconCandidates []candidate
-	walkErr := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
+	walkErr := filepath.Walk(payloadRoot, func(path string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -1439,7 +1443,10 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 			return nil
 		}
 		if info.Mode().IsRegular() {
-			rel := strings.TrimPrefix(path, root+string(os.PathSeparator))
+			rel, relErr := filepath.Rel(payloadRoot, path)
+			if relErr != nil {
+				return relErr
+			}
 			f, e := os.Open(path)
 			if e != nil {
 				return e
@@ -1503,7 +1510,7 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 	if len(result.Executables) == 0 {
 		result.Blockers = append(result.Blockers, "NO_EXECUTABLE")
 	}
-	deps, depsErr := inspectELFDependencies(root, expectedArch)
+	deps, depsErr := inspectELFDependencies(payloadRoot, expectedArch)
 	if depsErr != nil {
 		return Inspection{}, depsErr
 	}
@@ -1519,6 +1526,20 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 		}
 	}
 	return result, nil
+}
+
+// normalizedInspectionRoot mirrors materialization's payload-root semantics:
+// a sole real top-level directory is packaging, not part of an executable or
+// icon path. Archives with mixed top-level entries retain their full root.
+func normalizedInspectionRoot(extracted string) (string, error) {
+	entries, err := os.ReadDir(extracted)
+	if err != nil {
+		return "", err
+	}
+	if len(entries) == 1 && entries[0].IsDir() && entries[0].Type()&os.ModeSymlink == 0 {
+		return filepath.Join(extracted, entries[0].Name()), nil
+	}
+	return extracted, nil
 }
 
 func executableCandidateScore(rel string, info os.FileInfo, evidence []byte) int {

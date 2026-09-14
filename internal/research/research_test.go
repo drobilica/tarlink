@@ -711,6 +711,55 @@ func TestInspectReportsExecutablesAndNestedEvidence(t *testing.T) {
 	}
 }
 
+func TestInspectArchiveNormalizesOnlySoleTopLevelDirectory(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		files map[string][]byte
+		want  string
+	}{
+		{
+			name:  "sole top-level directory",
+			files: map[string][]byte{"release/game": {0x7f, 'E', 'L', 'F', 2}},
+			want:  "game",
+		},
+		{
+			name:  "mixed root retains directory",
+			files: map[string][]byte{"release/game": {0x7f, 'E', 'L', 'F', 2}, "README": []byte("metadata")},
+			want:  "release/game",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			zw := zip.NewWriter(&buf)
+			for name, data := range test.files {
+				header := &zip.FileHeader{Name: name, Method: zip.Store}
+				header.SetMode(0755)
+				w, err := zw.CreateHeader(header)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := w.Write(data); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(testDir(t), "archive.zip")
+			if err := os.WriteFile(path, buf.Bytes(), 0600); err != nil {
+				t.Fatal(err)
+			}
+			inspection, err := Inspect(context.Background(), Artifact{Path: path, Size: int64(buf.Len())}, archive.FormatZip, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(inspection.Executables) != 1 || inspection.Executables[0] != test.want {
+				t.Fatalf("executables=%#v, want %q", inspection.Executables, test.want)
+			}
+		})
+	}
+}
+
 func TestInspectFindsRankedArchiveIconsWithoutRegularFileNoise(t *testing.T) {
 	var buf bytes.Buffer
 	z := zip.NewWriter(&buf)
@@ -837,6 +886,61 @@ func TestInspectAppImageArchitectureSemantics(t *testing.T) {
 	ambiguous := inspect(t, write(t, arm64), "")
 	if explicit.ArtifactType != ambiguous.ArtifactType || !reflect.DeepEqual(explicit.ComputedDigests, ambiguous.ComputedDigests) || !reflect.DeepEqual(explicit.Blockers, ambiguous.Blockers) {
 		t.Fatalf("ambiguous expectedArch changed the inspection: %#v vs %#v", explicit, ambiguous)
+	}
+}
+
+func TestAnalyzeReleaseRuntimeReviewDoesNotOverrideNeedsInput(t *testing.T) {
+	// The Linux validation image supplies a dynamically linked ELF whose
+	// external SONAMEs exercise the runtime-review path without a network
+	// dependency. Two equally viable artifacts must remain a selection
+	// ambiguity even though each also needs runtime review.
+	program, err := os.ReadFile("/bin/ls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(program, []byte{0x7f, 'E', 'L', 'F'}) {
+		t.Skip("test fixture is not an ELF executable")
+	}
+	archiveBytes := func() []byte {
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		header := &zip.FileHeader{Name: "game", Method: zip.Deflate}
+		header.SetMode(0755)
+		w, err := zw.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write(program); err != nil {
+			t.Fatal(err)
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return buf.Bytes()
+	}()
+	newAsset := func(id int64, name string) Asset {
+		sum := sha256.Sum256(archiveBytes)
+		return Asset{ID: id, ReleaseID: 10, Repository: "o/r", Name: name, URL: "https://objects.example/" + name, Size: int64(len(archiveBytes)), State: "uploaded", Digest: "sha256:" + hex.EncodeToString(sum[:])}
+	}
+	release := Release{ID: 10, Repository: "o/r", Assets: []Asset{newAsset(1, "one.zip"), newAsset(2, "two.zip")}}
+	client := &Client{CacheRoot: testDir(t), HTTP: &http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
+		return response(http.StatusOK, string(archiveBytes)), nil
+	})}}
+	analysis, err := client.AnalyzeRelease(context.Background(), release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if analysis.Assessment != AssessmentNeedsInput {
+		t.Fatalf("assessment=%q, want needs-input; analysis=%#v", analysis.Assessment, analysis)
+	}
+	foundRuntimeEvidence := false
+	for _, artifact := range analysis.Artifacts {
+		if artifact.Runtime == RuntimeIndeterminate {
+			foundRuntimeEvidence = true
+		}
+	}
+	if !foundRuntimeEvidence {
+		t.Fatalf("runtime evidence was lost: %#v", analysis.Artifacts)
 	}
 }
 
