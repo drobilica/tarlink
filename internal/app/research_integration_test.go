@@ -199,7 +199,7 @@ func TestCoreResearchCLIInspectComputesDigestWithoutGitHubDigest(t *testing.T) {
 	})
 	var out strings.Builder
 	code := (cli.Runner{Registry: cli.RegistryTools{Research: m}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--json"})
-	if code != 0 || !strings.Contains(out.String(), `"status":"READY_FOR_REVIEW"`) || !strings.Contains(out.String(), `"artifact_type":"tar.gz"`) || !strings.Contains(out.String(), `"computed_digests"`) || strings.Contains(out.String(), `"blockers":["NO_AUTHORITATIVE_DIGEST"]`) {
+	if code != 0 || !strings.Contains(out.String(), `"status":"NEEDS_INPUT"`) || !strings.Contains(out.String(), `"artifact_type":"tar.gz"`) || !strings.Contains(out.String(), `"computed_digests"`) || strings.Contains(out.String(), `"blockers":["NO_AUTHORITATIVE_DIGEST"]`) {
 		t.Fatalf("ready inspection output=%s code=%d", out.String(), code)
 	}
 }

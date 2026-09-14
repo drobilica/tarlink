@@ -20,13 +20,14 @@ type ResearchOptions struct {
 }
 
 type ResearchResult struct {
-	Repository research.Repository  `json:"repository"`
-	Release    research.Release     `json:"release"`
-	Asset      research.Asset       `json:"asset"`
-	Provenance research.Provenance  `json:"provenance"`
-	Inspection *research.Inspection `json:"inspection,omitempty"`
-	Status     string               `json:"status,omitempty"`
-	Error      *ResearchError       `json:"error,omitempty"`
+	Repository research.Repository       `json:"repository"`
+	Release    research.Release          `json:"release"`
+	Asset      research.Asset            `json:"asset"`
+	Provenance research.Provenance       `json:"provenance"`
+	Inspection *research.Inspection      `json:"inspection,omitempty"`
+	Analysis   *research.ReleaseAnalysis `json:"analysis,omitempty"`
+	Status     string                    `json:"status,omitempty"`
+	Error      *ResearchError            `json:"error,omitempty"`
 }
 
 type ResearchError struct {
@@ -93,11 +94,25 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 	if err != nil {
 		return ResearchResult{}, &ResearchFailure{ReasonCode: researchReason(err), Err: err}
 	}
-	asset, err := selectResearchAsset(release, options.Asset)
-	if err != nil {
-		return ResearchResult{}, &ResearchFailure{ReasonCode: researchReason(err), Err: err}
+	var asset research.Asset
+	var analysis *research.ReleaseAnalysis
+	if options.Asset == "" && options.Inspect {
+		value := research.AnalyzeRelease(release, nil)
+		analysis = &value
+		if value.Assessment == research.AssessmentBlocked {
+			return ResearchResult{Repository: repo, Release: release, Analysis: analysis, Status: "BLOCKED"}, nil
+		}
+		if len(value.Artifacts) != 1 {
+			return ResearchResult{Repository: repo, Release: release, Analysis: analysis, Status: "NEEDS_INPUT"}, nil
+		}
+		asset = value.Artifacts[0].Asset
+	} else {
+		asset, err = selectResearchAsset(release, options.Asset)
+		if err != nil {
+			return ResearchResult{}, &ResearchFailure{ReasonCode: researchReason(err), Err: err}
+		}
 	}
-	result := ResearchResult{Repository: repo, Release: release, Asset: asset, Provenance: research.EvaluateProvenance(repo, release, asset)}
+	result := ResearchResult{Repository: repo, Release: release, Asset: asset, Analysis: analysis, Provenance: research.EvaluateProvenance(repo, release, asset)}
 	if options.Inspect {
 		result.Status = "READY_FOR_REVIEW"
 	}
@@ -129,7 +144,15 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 			return result, classified
 		}
 		result.Inspection = &inspection
+		value := research.AnalyzeRelease(release, map[int64]research.Inspection{asset.ID: inspection})
+		result.Analysis = &value
+		if value.Assessment == research.AssessmentNeedsInput {
+			result.Status = "NEEDS_INPUT"
+			return result, nil
+		}
 		if len(inspection.Blockers) != 0 {
+			result.Status = "BLOCKED"
+		} else if value.Assessment == research.AssessmentBlocked {
 			result.Status = "BLOCKED"
 		}
 	}
@@ -193,9 +216,8 @@ func selectResearchRelease(releases []research.Release, tag string) (research.Re
 	if len(available) == 0 {
 		return research.Release{}, errors.New("release not found")
 	}
-	if len(available) != 1 {
-		return research.Release{}, errors.New("release selection is ambiguous; specify --release")
-	}
+	// GitHub returns releases newest-first. The current release is a mechanical
+	// upstream fact; artifact selection still fails closed below.
 	return available[0], nil
 }
 
