@@ -118,3 +118,10 @@ func TestGoldenDiscoverySafetyCorpus(t *testing.T) {
 		t.Fatalf("golden corpus WRONG=%d", wrong)
 	}
 }
+
+func TestRuntimeAnnotationAcceptsAppImageWithoutELFDependencyReport(t *testing.T) {
+	analysis := ReleaseAnalysis{Artifacts: []ArtifactAnalysis{{Inspection: &Inspection{ArtifactType: "appimage"}}}}
+	if analysis.Artifacts[0].Inspection.Dependencies != nil {
+		t.Fatal("test fixture")
+	}
+}

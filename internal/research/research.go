@@ -1231,7 +1231,7 @@ func (c *Client) AnalyzeRelease(ctx context.Context, release Release) (ReleaseAn
 		}
 		compatibility, runtimeID, missing := ClassifyRuntimeCompatibility(deps, nil)
 		analysis.Artifacts[i].Runtime, analysis.Artifacts[i].RuntimeID, analysis.Artifacts[i].MissingLibraries = compatibility, runtimeID, missing
-		if compatibility == RuntimeIndeterminate && analysis.Artifacts[i].Inspection != nil && len(analysis.Artifacts[i].Inspection.Dependencies.ExternalSONAMEs) != 0 {
+		if compatibility == RuntimeIndeterminate && deps != nil && len(deps.ExternalSONAMEs) != 0 {
 			analysis.Ambiguities = uniqueAnalysisStrings(append(analysis.Ambiguities, "RUNTIME"))
 			analysis.Assessment = AssessmentNeedsInput
 		}
