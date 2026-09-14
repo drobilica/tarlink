@@ -398,9 +398,36 @@ func printChanges(w io.Writer, v research.CandidateChanges) error {
 			if _, e = fmt.Fprintf(w, "%-10s %s %s%s %s\n", x.Decision, x.ID, old, current, x.Reason); e != nil {
 				return e
 			}
+			if x.Analysis != nil {
+				if _, e = fmt.Fprintf(w, "  assessment: %s\n", x.Analysis.Assessment); e != nil {
+					return e
+				}
+				if len(x.Delta) != 0 {
+					if _, e = fmt.Fprintf(w, "  delta: %s\n", strings.Join(releaseDeltas(x.Delta), ", ")); e != nil {
+						return e
+					}
+				}
+				if len(x.Analysis.Blockers) != 0 {
+					if _, e = fmt.Fprintf(w, "  blocker: %s\n", strings.Join(x.Analysis.Blockers, ", ")); e != nil {
+						return e
+					}
+				}
+				if len(x.Analysis.MissingLibraries) != 0 {
+					if _, e = fmt.Fprintf(w, "  required-libs: %s\n", strings.Join(x.Analysis.MissingLibraries, ", ")); e != nil {
+						return e
+					}
+				}
+			}
 		}
 	}
 	return nil
+}
+func releaseDeltas(values []research.ReleaseDelta) []string {
+	out := make([]string, len(values))
+	for i := range values {
+		out[i] = string(values[i])
+	}
+	return out
 }
 func printCapability(w io.Writer, v []research.CapabilityResult) error {
 	for _, x := range v {

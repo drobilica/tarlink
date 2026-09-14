@@ -34,6 +34,9 @@ func TestClassifyRuntimeCompatibilityFailsClosed(t *testing.T) {
 	if got, _, _ := ClassifyRuntimeCompatibility(deps, map[string][]string{"a": {"libSDL2.so.0"}, "b": {"libSDL2.so.0"}}); got != RuntimeIndeterminate {
 		t.Fatal(got)
 	}
+	if got, _, _ := ClassifyRuntimeCompatibility(deps, nil); got != RuntimeIndeterminate {
+		t.Fatal(got)
+	}
 }
 
 func TestCompareReleaseAnalysisIgnoresReleaseIdentityButDetectsDrift(t *testing.T) {
@@ -47,6 +50,34 @@ func TestCompareReleaseAnalysisIgnoresReleaseIdentityButDetectsDrift(t *testing.
 	if got := CompareReleaseAnalysis(a, b); len(got) != 1 || got[0] != DeltaExecutableChanged {
 		t.Fatal(got)
 	}
+}
+
+func TestCompareReleaseAnalysisDetectsLayoutRequirementsAndBlockers(t *testing.T) {
+	base := ReleaseAnalysis{Artifacts: []ArtifactAnalysis{{Format: "zip", Platform: "linux-amd64", Inspection: &Inspection{Executables: []string{"app"}, Dependencies: &ELFDependencies{ExternalSONAMEs: []string{"libSDL2.so.0"}}}}}}
+	changed := ReleaseAnalysis{Artifacts: append([]ArtifactAnalysis(nil), base.Artifacts...)}
+	changed.Artifacts[0].Inspection = &Inspection{Executables: []string{"app"}, Nested: []string{"inner.AppImage"}, Dependencies: &ELFDependencies{ExternalSONAMEs: []string{"libSDL2.so.0", "libfoo.so.1"}}}
+	got := strings.Join(releaseDeltas(CompareReleaseAnalysis(base, changed)), ",")
+	if got != "LAYOUT_CHANGED,REQUIREMENTS_CHANGED" {
+		t.Fatal(got)
+	}
+	changed = base
+	changed.Blockers = []string{"UNSUPPORTED_ARTIFACT"}
+	if got := CompareReleaseAnalysis(base, changed); len(got) != 1 || got[0] != DeltaBlockerChanged {
+		t.Fatal(got)
+	}
+	changed = base
+	changed.Assessment = AssessmentNeedsReview
+	if got := CompareReleaseAnalysis(base, changed); len(got) != 1 || got[0] != DeltaNeedsReview {
+		t.Fatal(got)
+	}
+}
+
+func releaseDeltas(values []ReleaseDelta) []string {
+	out := make([]string, len(values))
+	for i := range values {
+		out[i] = string(values[i])
+	}
+	return out
 }
 
 func TestAnalyzeReleaseFailsClosedForAmbiguityAndNegativeAssets(t *testing.T) {

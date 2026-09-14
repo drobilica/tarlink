@@ -11,9 +11,10 @@ import (
 type Assessment string
 
 const (
-	AssessmentReady      Assessment = "ready"
-	AssessmentNeedsInput Assessment = "needs-input"
-	AssessmentBlocked    Assessment = "blocked"
+	AssessmentReady       Assessment = "ready"
+	AssessmentNeedsInput  Assessment = "needs-input"
+	AssessmentBlocked     Assessment = "blocked"
+	AssessmentNeedsReview Assessment = "needs-review"
 )
 
 // ArtifactAnalysis is static, execution-free evidence for one release asset.
@@ -107,24 +108,28 @@ func ClassifyRuntimeCompatibility(deps *ELFDependencies, admitted map[string][]s
 type ReleaseDelta string
 
 const (
-	DeltaSameShape         ReleaseDelta = "SAME_SHAPE"
-	DeltaArtifactChanged   ReleaseDelta = "ARTIFACT_CHANGED"
-	DeltaPackagingChanged  ReleaseDelta = "PACKAGING_CHANGED"
-	DeltaExecutableChanged ReleaseDelta = "EXECUTABLE_CHANGED"
-	DeltaPlatformChanged   ReleaseDelta = "PLATFORM_CHANGED"
-	DeltaNewBlocker        ReleaseDelta = "NEW_BLOCKER"
-	DeltaAmbiguous         ReleaseDelta = "AMBIGUOUS"
+	DeltaSameShape           ReleaseDelta = "SAME_SHAPE"
+	DeltaArtifactChanged     ReleaseDelta = "ARTIFACT_CHANGED"
+	DeltaPackagingChanged    ReleaseDelta = "PACKAGING_CHANGED"
+	DeltaExecutableChanged   ReleaseDelta = "EXECUTABLE_CHANGED"
+	DeltaPlatformChanged     ReleaseDelta = "PLATFORM_CHANGED"
+	DeltaNewBlocker          ReleaseDelta = "NEW_BLOCKER"
+	DeltaAmbiguous           ReleaseDelta = "AMBIGUOUS"
+	DeltaLayoutChanged       ReleaseDelta = "LAYOUT_CHANGED"
+	DeltaRequirementsChanged ReleaseDelta = "REQUIREMENTS_CHANGED"
+	DeltaBlockerChanged      ReleaseDelta = "BLOCKER_CHANGED"
+	DeltaNeedsReview         ReleaseDelta = "NEEDS_REVIEW"
 )
 
 // CompareReleaseAnalysis intentionally ignores release identifiers, URLs, and
 // digests. It compares only material static shape so routine upstream rebuilds
 // do not masquerade as packaging drift.
 func CompareReleaseAnalysis(previous, current ReleaseAnalysis) []ReleaseDelta {
-	if previous.Assessment == AssessmentNeedsInput || current.Assessment == AssessmentNeedsInput {
-		return []ReleaseDelta{DeltaAmbiguous}
+	if previous.Assessment == AssessmentNeedsInput || previous.Assessment == AssessmentNeedsReview || current.Assessment == AssessmentNeedsInput || current.Assessment == AssessmentNeedsReview {
+		return []ReleaseDelta{DeltaNeedsReview}
 	}
-	if len(current.Blockers) > len(previous.Blockers) {
-		return []ReleaseDelta{DeltaNewBlocker}
+	if strings.Join(previous.Blockers, "\x00") != strings.Join(current.Blockers, "\x00") {
+		return []ReleaseDelta{DeltaBlockerChanged}
 	}
 	if len(previous.Artifacts) != len(current.Artifacts) {
 		return []ReleaseDelta{DeltaArtifactChanged}
@@ -141,12 +146,30 @@ func CompareReleaseAnalysis(previous, current ReleaseAnalysis) []ReleaseDelta {
 		if executableShape(a.Inspection) != executableShape(b.Inspection) {
 			changes = append(changes, DeltaExecutableChanged)
 		}
+		if layoutShape(a.Inspection) != layoutShape(b.Inspection) {
+			changes = append(changes, DeltaLayoutChanged)
+		}
+		if requirementShape(a.Inspection) != requirementShape(b.Inspection) {
+			changes = append(changes, DeltaRequirementsChanged)
+		}
 	}
 	changes = uniqueDeltas(changes)
 	if len(changes) == 0 {
 		return []ReleaseDelta{DeltaSameShape}
 	}
 	return changes
+}
+func layoutShape(i *Inspection) string {
+	if i == nil {
+		return ""
+	}
+	return strings.Join(i.Nested, "\x00")
+}
+func requirementShape(i *Inspection) string {
+	if i == nil || i.Dependencies == nil {
+		return ""
+	}
+	return strings.Join(i.Dependencies.ExternalSONAMEs, "\x00")
 }
 func executableShape(i *Inspection) string {
 	if i == nil {

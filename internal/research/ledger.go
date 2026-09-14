@@ -46,6 +46,7 @@ type CandidateDecision struct {
 	Reason   string           `json:"reason,omitempty"`
 	Error    string           `json:"error,omitempty"`
 	Analysis *ReleaseAnalysis `json:"analysis,omitempty"`
+	Delta    []ReleaseDelta   `json:"delta,omitempty"`
 }
 type CandidateChanges struct {
 	Summary map[string]int      `json:"summary"`
@@ -287,6 +288,10 @@ func DetectChanges(ctx context.Context, client *Client, l CandidateLedger) Candi
 					out.Summary["ERROR"]++
 				} else {
 					d.Analysis = &analysis
+					// The durable ledger deliberately stores no previous structural
+					// evidence. A fabricated comparison would be less safe than an
+					// explicit review requirement.
+					d.Delta = []ReleaseDelta{DeltaNeedsReview}
 				}
 			} else {
 				out.Summary["UNCHANGED"]++

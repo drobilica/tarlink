@@ -29,6 +29,19 @@ func TestProgressNonTTYIsBoundedAndUsesIECBytes(t *testing.T) {
 	}
 }
 
+func TestPrintChangesIncludesCanonicalAnalysis(t *testing.T) {
+	var out bytes.Buffer
+	v := research.CandidateChanges{Summary: map[string]int{"RECHECK": 1}, Results: []research.CandidateDecision{{ID: "demo", Decision: "RECHECK", Reason: "NEW_RELEASE", Old: research.ReleaseIdentity{ReleaseTag: "v1", ReleaseID: 1}, Current: &research.ReleaseIdentity{ReleaseTag: "v2", ReleaseID: 2}, Analysis: &research.ReleaseAnalysis{Assessment: research.AssessmentNeedsReview, MissingLibraries: []string{"libSDL2.so.0"}}, Delta: []research.ReleaseDelta{research.DeltaNeedsReview}}}}
+	if err := printChanges(&out, v); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"assessment: needs-review", "delta: NEEDS_REVIEW", "required-libs: libSDL2.so.0"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("missing %q in %s", want, out.String())
+		}
+	}
+}
+
 func TestProgressTTYFinishesBeforeFinalOutput(t *testing.T) {
 	var out bytes.Buffer
 	progress := newProgressRenderer(&out, true)
