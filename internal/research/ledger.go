@@ -75,6 +75,7 @@ var knownBlockers = map[string]bool{
 	"NO_LINUX_ARTIFACT": true, "MUTABLE_ARTIFACT": true, "SYSTEM_INTEGRATION_REQUIRED": true,
 	"SETUP_SCRIPT_REQUIRED": true, "WINDOWS_ONLY": true, "SOURCE_ONLY": true,
 	"MISSING_RUNTIME_LIBS": true,
+	"AMBIGUOUS_ARTIFACT":   true, "AMBIGUOUS_EXECUTABLE": true,
 }
 var reconsiderPrefixes = []string{"new-upstream-release", "manual", "capability:"}
 

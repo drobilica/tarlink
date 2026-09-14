@@ -261,3 +261,19 @@ func uniqueAnalysisStrings(values []string) []string {
 	sort.Strings(result)
 	return result
 }
+
+// BlockersFromAnalysis is the sole translation from mechanical analysis into
+// the durable candidate-ledger vocabulary. It does not invent policy reasons
+// or mutate the ledger; maintainers record the reviewed outcome separately.
+func BlockersFromAnalysis(value ReleaseAnalysis) []string {
+	out := append([]string(nil), value.Blockers...)
+	for _, ambiguity := range value.Ambiguities {
+		switch ambiguity {
+		case "EXECUTABLE":
+			out = append(out, "AMBIGUOUS_EXECUTABLE")
+		case "INSPECTION", "PLATFORM":
+			out = append(out, "AMBIGUOUS_ARTIFACT")
+		}
+	}
+	return uniqueAnalysisStrings(out)
+}

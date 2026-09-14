@@ -1,6 +1,9 @@
 package research
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestClassifyRuntimeCompatibilityFailsClosed(t *testing.T) {
 	deps := &ELFDependencies{Files: []ELFDependencyFile{{Path: "app"}}, ExternalSONAMEs: []string{"libSDL2.so.0"}}
@@ -60,5 +63,12 @@ func TestAnalyzeReleaseReadyOnlyAfterIndependentInspection(t *testing.T) {
 	got := AnalyzeRelease(r, map[int64]Inspection{1: {ArtifactType: "tar.gz", Executables: []string{"app"}}})
 	if got.Assessment != AssessmentReady || got.Artifacts[0].Platform != "linux-amd64" {
 		t.Fatalf("%+v", got)
+	}
+}
+
+func TestBlockersFromAnalysisUsesNarrowLedgerTerms(t *testing.T) {
+	got := BlockersFromAnalysis(ReleaseAnalysis{Blockers: []string{"NO_LINUX_ARTIFACT"}, Ambiguities: []string{"EXECUTABLE", "PLATFORM"}})
+	if strings.Join(got, ",") != "AMBIGUOUS_ARTIFACT,AMBIGUOUS_EXECUTABLE,NO_LINUX_ARTIFACT" {
+		t.Fatal(got)
 	}
 }
