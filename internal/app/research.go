@@ -151,14 +151,13 @@ func (m *Maintainer) Research(ctx context.Context, options ResearchOptions) (Res
 			value := research.AnalyzeRelease(release, map[int64]research.Inspection{asset.ID: inspection})
 			result.Analysis = &value
 		}
+		if len(inspection.Blockers) != 0 {
+			result.Status = "BLOCKED"
+			return result, nil
+		}
 		if result.Analysis.Assessment != research.AssessmentReady {
 			result.Status = researchStatus(result.Analysis.Assessment)
 			return result, nil
-		}
-		if len(inspection.Blockers) != 0 {
-			result.Status = "BLOCKED"
-		} else if result.Analysis.Assessment == research.AssessmentBlocked {
-			result.Status = "BLOCKED"
 		}
 	}
 	return result, nil

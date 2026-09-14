@@ -169,6 +169,29 @@ func TestCoreResearchCLIInspectWithoutGitHubDigestReportsArtifactBlocker(t *test
 	}
 }
 
+func TestCoreResearchCLIInspectSelectedBlockerPrecedesReleaseAmbiguity(t *testing.T) {
+	unsafe := strings.Replace(researchAssetJSON(20, "linux.bin", ""), `"size":1`, `"size":14`, 1)
+	other := researchAssetJSON(21, "other-linux.tar.gz", "")
+	body := researchReleaseJSON(unsafe + "," + other)
+	m := newResearchMaintainer(t, func(r *http.Request) *http.Response {
+		if strings.Contains(r.URL.Host, "objects.example.test") {
+			if !strings.HasSuffix(r.URL.Path, "/linux.bin") {
+				t.Fatalf("unexpected asset fetch: %s", r.URL)
+			}
+			return jsonResponse(http.StatusOK, "not an archive")
+		}
+		if strings.Contains(r.URL.Path, "/tags/") {
+			body = strings.TrimSuffix(strings.TrimPrefix(body, "["), "]")
+		}
+		return jsonResponse(http.StatusOK, body)
+	})
+	var out strings.Builder
+	code := (cli.Runner{Registry: cli.RegistryTools{Research: m}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "inspect", "owner/repo", "--release", "v1.2.3", "--asset", "linux.bin", "--json"})
+	if code != 0 || !strings.Contains(out.String(), `"status":"BLOCKED"`) || !strings.Contains(out.String(), `"blockers":["UNSUPPORTED_ARTIFACT"]`) {
+		t.Fatalf("selected unsafe asset must remain blocked: output=%s code=%d", out.String(), code)
+	}
+}
+
 func TestCoreResearchCLIInspectComputesDigestWithoutGitHubDigest(t *testing.T) {
 	var archiveBytes bytes.Buffer
 	zw := gzip.NewWriter(&archiveBytes)
