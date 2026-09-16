@@ -273,26 +273,6 @@ func iconPathScore(value string) int {
 	}
 }
 
-func fallbackIconScore(value string, size int) int {
-	parts := strings.Split(value, "/")
-	base := strings.ToLower(parts[len(parts)-1])
-	category := 0
-	if base == "icon.png" {
-		category = 3
-	} else {
-		for _, part := range parts[:len(parts)-1] {
-			if strings.EqualFold(part, "icon") || strings.EqualFold(part, "icons") {
-				category = 2
-				break
-			}
-		}
-		if category == 0 && base == "logo.png" {
-			category = 1
-		}
-	}
-	return category*100 + iconDimensionScore(size)
-}
-
 func fallbackTreeScore(value string) int {
 	if !strings.EqualFold(filepath.Ext(value), ".png") {
 		return 0

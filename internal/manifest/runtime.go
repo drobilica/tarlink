@@ -70,8 +70,6 @@ func ParseRuntime(r io.Reader) (*Runtime, error) {
 	return runtime, nil
 }
 
-func ParseRuntimeBytes(data []byte) (*Runtime, error) { return ParseRuntime(bytes.NewReader(data)) }
-
 // Fingerprint is the immutable deployment identity, including its fixed
 // backend contract. It intentionally omits informational verification source.
 func (r Runtime) Fingerprint() (string, error) {

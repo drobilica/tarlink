@@ -103,7 +103,7 @@ func TestFallbackIconRankingPrefers512InIcons(t *testing.T) {
 	if fallbackTreeScore("icons/512.png") <= fallbackTreeScore("logo.png") {
 		t.Fatal("explicit icons path did not outrank generic logo")
 	}
-	if fallbackIconScore("icons/512.png", 512) <= fallbackIconScore("icons/256.png", 256) {
+	if fallbackTreeScore("icons/512.png") <= fallbackTreeScore("icons/256.png") {
 		t.Fatal("512 icon did not outrank 256 icon")
 	}
 }

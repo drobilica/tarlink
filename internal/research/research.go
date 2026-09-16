@@ -710,23 +710,6 @@ func likelyApplicationIconPath(value string) bool {
 	return len(parts) <= 2
 }
 
-func looksLikeIconPath(value string) bool {
-	if !strings.EqualFold(path.Ext(value), ".png") {
-		return false
-	}
-	parts := strings.Split(value, "/")
-	base := strings.ToLower(parts[len(parts)-1])
-	if base == "icon.png" || base == "logo.png" {
-		return true
-	}
-	for _, part := range parts[:len(parts)-1] {
-		if strings.EqualFold(part, "icon") || strings.EqualFold(part, "icons") {
-			return true
-		}
-	}
-	return false
-}
-
 func (c *Client) resolveRepositoryCommit(ctx context.Context, raw, tag string) (Repository, string, string, string, error) {
 	repo, err := ParseRepository(raw)
 	if err != nil {
