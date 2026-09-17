@@ -60,6 +60,7 @@ func TestNewLayoutHonorsTemporaryHome(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
 	layout, err := NewLayout()
 	if err != nil {
 		t.Fatal(err)
