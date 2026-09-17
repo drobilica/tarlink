@@ -185,6 +185,39 @@ func TestRegistryProvenanceCommandIsRemoved(t *testing.T) {
 	}
 }
 
+func TestRepositorySelectionFlags(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      []string
+		wantUsage bool
+	}{
+		{name: "sync app", args: []string{"repository", "sync", "/tmp/repository", "--app", "magic-sushi", "--platform", "linux-amd64", "--dry-run"}},
+		{name: "sync all", args: []string{"repository", "sync", "/tmp/repository", "--all-retained", "--dry-run"}},
+		{name: "status app", args: []string{"repository", "status", "/tmp/repository", "--app", "magic-sushi"}},
+		{name: "status all", args: []string{"repository", "status", "/tmp/repository", "--all-retained"}},
+		{name: "sync neither", args: []string{"repository", "sync", "/tmp/repository", "--dry-run"}, wantUsage: true},
+		{name: "sync both", args: []string{"repository", "sync", "/tmp/repository", "--app", "magic-sushi", "--all-retained", "--dry-run"}, wantUsage: true},
+		{name: "status neither", args: []string{"repository", "status", "/tmp/repository"}, wantUsage: true},
+		{name: "status both", args: []string{"repository", "status", "/tmp/repository", "--app", "magic-sushi", "--all-retained"}, wantUsage: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := Runner{Stdout: io.Discard, Stderr: io.Discard}
+			root := runner.rootCommand(newProgressRenderer(io.Discard, false), io.Discard, io.Discard)
+			root.SetArgs(test.args)
+			_, err := root.ExecuteC()
+			gotUsage := err != nil && strings.Contains(err.Error(), "usage: tarlink repository")
+			if gotUsage != test.wantUsage {
+				t.Fatalf("selection validation usage=%v, want %v: %v", gotUsage, test.wantUsage, err)
+			}
+			if err == nil {
+				t.Fatal("command unexpectedly succeeded without a configured service")
+			}
+		})
+	}
+}
+
 func TestRegistryInspectRepositoryJSONSelectors(t *testing.T) {
 	var out bytes.Buffer
 	service := &researchService{result: app.ResearchResult{Repository: "owner/repo", Release: research.Release{ID: 10, Tag: "v1"}, Asset: research.Asset{ID: 20, Name: "linux.zip", Digest: "sha256:abc"}, Provenance: research.Provenance{Verdict: research.Acceptable, Algorithm: "sha256", Digest: "sha256:abc", Message: "ok"}}}
