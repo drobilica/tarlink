@@ -269,7 +269,7 @@ func (r Runner) repositorySyncCommand() *cobra.Command {
 	var all, dry bool
 	usage := "usage: tarlink repository sync PATH [--app ID] [--platform PLATFORM] [--all-retained] [--dry-run]"
 	command := &cobra.Command{Use: "sync PATH", Args: exactArgs(1, usage), PreRunE: func(_ *cobra.Command, _ []string) error {
-		if (appID == "") == all {
+		if (appID == "" && !all) || (appID != "" && all) {
 			return invalidCommand(usage)
 		}
 		if appID != "" && platform != "" {
@@ -307,7 +307,7 @@ func (r Runner) repositoryStatusCommand() *cobra.Command {
 	var all bool
 	usage := "usage: tarlink repository status PATH [--app ID] [--platform PLATFORM] [--all-retained]"
 	command := &cobra.Command{Use: "status PATH", Args: exactArgs(1, usage), PreRunE: func(_ *cobra.Command, _ []string) error {
-		if (appID == "") == all {
+		if (appID == "" && !all) || (appID != "" && all) {
 			return invalidCommand(usage)
 		}
 		return nil
