@@ -19,14 +19,21 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 
 Static artifact repositories are byte sources only. Their strict descriptor is
 `{"format":"content-repository","version":1}`; unsupported versions,
-unknown descriptor fields, unsafe filesystem entries, and objects whose full
-content hash does not equal their path are rejected. HTTPS source URLs may have
-a path prefix, and object URLs are formed below that prefix. Each acquisition
-uses the verified local cache first, then ordered configured repositories, then
-the exact upstream URL recorded by the validated official registry. Repository
-failures are bounded and diagnosable; cancellation and destination write
-failures stop the operation. A future offline mode must prohibit both registry
-refresh and every network repository source.
+unknown descriptor fields, oversized descriptors, unsafe filesystem entries,
+extra public-tree entries, and objects whose full content hash does not equal
+their path are rejected. Initialized repositories use non-secret `0755`
+directory permissions and `0644` descriptor/object permissions so a separate
+static reader such as nginx can serve the completed tree; sync locks and
+staging remain private. HTTPS source URLs may have a path prefix, and object
+URLs are formed below that prefix. Each acquisition uses the verified local
+cache first, then ordered configured repositories, then the exact upstream URL
+recorded by the validated official registry. Repository body-read,
+truncation, size, and digest failures are ordinary source failures and fall
+through to the next source; cancellation and destination-write failures stop
+the operation. A malformed optional `repositories.json` is retained as an
+acquisition error rather than being partially or silently used, while local
+lifecycle commands can still start. A future offline mode must prohibit both
+registry refresh and every network repository source.
 
 The official registry is the artifact-approval boundary. Schema-v5
 `verification.source` records an official upstream release or artifact origin
@@ -80,7 +87,7 @@ Files are created exclusively and every parent is checked with `lstat`. Archive 
 
 Effective UID 0 is rejected. State uses a temporary file, flush, atomic rename, and directory `fsync`. Active-version links are relative and replaced atomically. Only the current and one previous validated version are retained.
 
-State is accepted for removal only when its application ID, versions, executable, executable integration, optional desktop integration, icon destination/source metadata, and ownership digests match the canonical current-user layout. Existing integrations are validated before deletion. Missing integrations make interrupted cleanup retryable; replacements or modifications are conflicts. Application roots and TarLink product roots are removed through containment and symlink checks that never select their broader parent directories. Icon sources are regular files below the verified application root; icon destinations are fixed hicolor `scalable/apps` (SVG), `48x48/apps` (archive rasters), or the inferred `WxW/apps` (verified remote PNGs) paths.
+State is accepted for removal only when its application ID, versions, executable, executable integration, optional desktop integration, icon destination/source metadata, and ownership digests match the canonical current-user layout. Existing integrations are validated before deletion. Missing integrations make interrupted cleanup retryable; replacements or modifications are conflicts. Application roots and TarLink product roots are removed through containment and symlink checks that never select their broader parent directories. Full purge includes the config product root containing `repositories.json` and its lock. Icon sources are regular files below the verified application root; icon destinations are fixed hicolor `scalable/apps` (SVG), `48x48/apps` (archive rasters), or the inferred `WxW/apps` (verified remote PNGs) paths.
 
 The shell installer records a private, atomic SHA-256 marker for the canonical TarLink binary. Replacement and bootstrap removal require a regular, non-symlink marker whose exact lowercase digest matches the binary; XDG state paths remain absolute, clean, below `HOME`, and free of symlink components. This self-upgrade marker and the official TarLink release contract remain SHA-256-only.
 
@@ -119,6 +126,8 @@ For S3-compatible static hosting, an operator can use an external sync tool:
 aws s3 sync REPOSITORY/ s3://BUCKET/tarlink/
 ```
 
+The initialized tree's public directories and regular files are readable by a
+separate nginx reader, while TarLink's lock and staging entries remain private.
 The server or bucket should serve `repository.json` and `v1/` without rewriting
 their paths. TarLink never uploads, deletes, computes an index, or configures a
 server.

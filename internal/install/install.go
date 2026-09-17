@@ -786,6 +786,9 @@ func (manager *Manager) validateUninstallRoots(states []state.State) ([]string, 
 	if err := manager.checkUninstallAnchor(manager.Layout.CacheHome, manager.Layout.Cache); err != nil {
 		return nil, err
 	}
+	if err := manager.checkUninstallAnchor(manager.Layout.ConfigHome, filepath.Dir(manager.Layout.RepositoryConfig)); err != nil {
+		return nil, err
+	}
 	if err := manager.checkUninstallAnchor(manager.Layout.StateHome, manager.Layout.Locks); err != nil {
 		return nil, err
 	}
@@ -850,6 +853,7 @@ func (manager *Manager) removeUninstallRoots() error {
 	for _, root := range []struct{ anchor, path string }{
 		{manager.Layout.DataHome, manager.Layout.Apps}, {manager.Layout.DataHome, manager.Layout.Runtimes}, {manager.Layout.StateHome, manager.Layout.States},
 		{manager.Layout.StateHome, manager.Layout.Locks}, {manager.Layout.CacheHome, manager.Layout.Cache},
+		{manager.Layout.ConfigHome, filepath.Dir(manager.Layout.RepositoryConfig)},
 	} {
 		if err := filesystem.SafeRemoveIfExists(root.anchor, root.path); err != nil {
 			return err

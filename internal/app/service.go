@@ -42,11 +42,15 @@ func NewCore(layout filesystem.Layout, client *download.Client) (*Core, error) {
 	if client == nil {
 		client = download.NewClient()
 	}
-	sources, err := artifactrepo.LoadSources(layout.RepositoryConfig)
-	if err != nil {
-		return nil, fmt.Errorf("load repository sources: %w", err)
+	sources, sourceErr := artifactrepo.LoadSources(layout.RepositoryConfig)
+	if sourceErr != nil {
+		// Repository configuration is optional for local lifecycle commands. Do
+		// not parse or partially use malformed content; acquisition receives the
+		// error explicitly through SourceConfigError instead.
+		sources = nil
 	}
 	client.Sources = sources
+	client.SourceConfigError = sourceErr
 	installer := install.New(layout, client)
 	upgradeClient := download.NewClient()
 	upgradeClient.HTTP = client.HTTP
@@ -81,6 +85,7 @@ func (core *Core) AddRepositorySource(value string) error {
 		return err
 	}
 	core.installer.Client.Sources, err = artifactrepo.LoadSources(core.layout.RepositoryConfig)
+	core.installer.Client.SourceConfigError = err
 	return err
 }
 
@@ -97,6 +102,7 @@ func (core *Core) RemoveRepositorySource(value string) error {
 		return err
 	}
 	core.installer.Client.Sources, err = artifactrepo.LoadSources(core.layout.RepositoryConfig)
+	core.installer.Client.SourceConfigError = err
 	return err
 }
 

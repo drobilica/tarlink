@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/locking"
@@ -44,7 +46,17 @@ func NormalizeSource(value, cwd string) (string, error) {
 }
 
 func LoadSources(path string) ([]string, error) {
-	file, err := os.Open(path)
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("repository sources must be a regular file")
+	}
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if os.IsNotExist(err) {
 		return nil, nil
 	}
@@ -57,6 +69,10 @@ func LoadSources(path string) ([]string, error) {
 	var value sourceFile
 	if err := decoder.Decode(&value); err != nil {
 		return nil, fmt.Errorf("read repository sources: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return nil, errors.New("read repository sources: expected one JSON object")
 	}
 	return append([]string(nil), value.Sources...), nil
 }
@@ -72,7 +88,7 @@ func SaveSources(path string, sources []string) error {
 	if err != nil {
 		return err
 	}
-	return atomicWrite(path, append(data, '\n'))
+	return atomicWrite(path, append(data, '\n'), 0600)
 }
 
 func AddSource(path, value string) error {

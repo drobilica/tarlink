@@ -13,6 +13,8 @@
 - Downloaded archives, names, metadata, redirects, and compressed streams.
 - Downloaded AppImage bytes and their embedded filesystem metadata.
 - Malformed registry manifests and repository archives.
+- Malicious or accidentally extra entries in a static artifact repository and
+  response bodies that fail or truncate during source acquisition.
 - Corrupt state and unexpected local filesystem objects.
 - Network failure and concurrent cooperating TarLink processes.
 
@@ -41,6 +43,8 @@
 | Unapproved historical/channel target | Exact platform, version, and channel resolution are limited to schema-v5 artifact definitions and explicit channel heads in the validated official registry; local retention remains current-plus-one-previous |
 | Weak or ambiguous verification | Explicit SHA-256 or SHA-512 algorithm, fixed digest length, lowercase hex, official HTTPS artifact and informational origin; other algorithms rejected |
 | Alternate registry substitution | Exact compiled HTTPS source, bounded staged archive, direct manifest validation, normalized immutable generation |
+| Static repository tree confusion | Exact descriptor, `v1` algorithm directories, digest-named regular objects, and narrowly allowlisted sync transients; public extras and links are rejected |
+| Repository source failure | Body-read, truncation, size, and digest failures fall through ordered sources; cancellation and destination writes remain terminal |
 | Offline or failed refresh | Previously validated cache remains active; absent/invalid cache cannot fall back |
 | Zip-slip / tar traversal | UTF-8 canonical relative paths with depth and length limits |
 | Symlink or hardlink escape | Hardlinks rejected; symlinks confined to same-directory regular-file chains; parent `lstat`; exclusive creation |
@@ -53,7 +57,7 @@
 | Concurrent mutation | Shared lifecycle `flock`, narrower registry/per-application locks, and non-overwriting integration creation |
 | Unsafe self-upgrade | Official stable release filtering, exact platform asset, strict checksum, owned canonical path/marker, same-directory staging, atomic replacement, and rollback on publication failure |
 | Arbitrary deletion | Canonical layout-bound state, pre-deletion integration validation, contained exact-root removal |
-| Broad purge | Only fixed TarLink product roots and recorded narrow integrations are candidates; shared parents survive |
+| Broad purge | Only fixed TarLink data, state, cache, and config product roots plus recorded narrow integrations are candidates; shared parents survive |
 
 ## Outside the boundary
 

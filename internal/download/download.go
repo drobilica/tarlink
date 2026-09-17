@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	DefaultMaxArtifactBytes   int64 = 8 << 30
-	DefaultMaxRegistryBytes   int64 = 64 << 20
-	DefaultRedirectLimit            = 5
-	DefaultMaxArtifactSources       = 16
+	DefaultMaxArtifactBytes      int64 = 8 << 30
+	DefaultMaxRegistryBytes      int64 = 64 << 20
+	maxRepositoryDescriptorBytes int64 = 4 << 10
+	DefaultRedirectLimit               = 5
+	DefaultMaxArtifactSources          = 16
 )
 
 var (
@@ -85,6 +86,9 @@ type Client struct {
 	// ordinary acquisition failures are recorded and skipped.
 	Sources          []string
 	SourceDiagnostic func(string)
+	// SourceConfigError prevents acquisition from silently ignoring a malformed
+	// optional repositories.json while allowing local-only commands to start.
+	SourceConfigError error
 }
 
 func NewClient() *Client {
@@ -106,6 +110,9 @@ func NewClient() *Client {
 }
 
 func (c *Client) FetchArtifact(ctx context.Context, request ArtifactRequest) (Result, error) {
+	if c != nil && c.SourceConfigError != nil {
+		return Result{}, fmt.Errorf("load repository sources: %w", c.SourceConfigError)
+	}
 	if err := validateDigest(request.Algorithm, request.Digest); err != nil {
 		return Result{}, err
 	}
@@ -245,38 +252,134 @@ func validateRepositoryRoot(root string) error {
 		return fmt.Errorf("invalid repository root: %w", err)
 	}
 	defer rootDirectory.Close()
-	file, err := openNoFollowFileAt(rootDirectory, "repository.json")
+	entries, err := rootDirectory.ReadDir(-1)
 	if err != nil {
-		return fmt.Errorf("invalid repository descriptor: %w", err)
-	}
-	defer file.Close()
-	opened, err := file.Stat()
-	if err != nil || !opened.Mode().IsRegular() || !singleLink(opened) {
-		return errors.New("invalid repository descriptor: not a regular file")
-	}
-	if err := validateRepositoryDescriptor(file); err != nil {
 		return err
 	}
-	v1, err := openNoFollowDirectoryAt(rootDirectory, "v1")
-	if err != nil {
-		return fmt.Errorf("invalid repository directory %q: %w", "v1", err)
+	seenDescriptor, seenV1 := false, false
+	for _, entry := range entries {
+		name := entry.Name()
+		switch {
+		case name == "repository.json":
+			seenDescriptor = true
+			file, openErr := openNoFollowFileAt(rootDirectory, name)
+			if openErr != nil {
+				return fmt.Errorf("invalid repository descriptor: %w", openErr)
+			}
+			info, statErr := file.Stat()
+			if statErr != nil || !info.Mode().IsRegular() || !singleLink(info) {
+				file.Close()
+				return errors.New("invalid repository descriptor: not a regular file")
+			}
+			decodeErr := validateRepositoryDescriptor(file)
+			closeErr := file.Close()
+			if decodeErr != nil {
+				return decodeErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+		case name == "v1":
+			seenV1 = true
+			v1, openErr := openNoFollowDirectoryAt(rootDirectory, name)
+			if openErr != nil {
+				return fmt.Errorf("invalid repository directory %q: %w", name, openErr)
+			}
+			if err := validateRepositoryAlgorithms(v1); err != nil {
+				v1.Close()
+				return err
+			}
+			if closeErr := v1.Close(); closeErr != nil {
+				return closeErr
+			}
+		case name == ".sync.lock":
+			if err := validateRepositoryTransientFile(rootDirectory, name); err != nil {
+				return err
+			}
+		case strings.HasPrefix(name, ".object-stage-") && len(name) > len(".object-stage-"):
+			staging, openErr := openNoFollowDirectoryAt(rootDirectory, name)
+			if openErr != nil {
+				return fmt.Errorf("invalid repository staging entry %q: %w", name, openErr)
+			}
+			staging.Close()
+		case strings.HasPrefix(name, ".descriptor-") && len(name) > len(".descriptor-"):
+			if err := validateRepositoryTransientFile(rootDirectory, name); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("repository contains unexpected entry %q", name)
+		}
 	}
-	defer v1.Close()
-	for _, name := range []string{"sha256", "sha512"} {
-		child, childErr := openNoFollowDirectoryAt(v1, name)
-		if os.IsNotExist(childErr) {
-			continue
+	if !seenDescriptor || !seenV1 {
+		return errors.New("repository descriptor or v1 directory is missing")
+	}
+	return nil
+}
+
+func validateRepositoryTransientFile(parent *os.File, name string) error {
+	file, err := openNoFollowFileAt(parent, name)
+	if err != nil {
+		return fmt.Errorf("invalid repository transient entry %q: %w", name, err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() || !singleLink(info) {
+		return fmt.Errorf("invalid repository transient entry %q", name)
+	}
+	return nil
+}
+
+func validateRepositoryAlgorithms(v1 *os.File) error {
+	entries, err := v1.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() != "sha256" && entry.Name() != "sha512" {
+			return fmt.Errorf("repository v1 contains unexpected entry %q", entry.Name())
 		}
-		if childErr != nil {
-			return fmt.Errorf("invalid repository directory %q: %w", name, childErr)
+		directory, openErr := openNoFollowDirectoryAt(v1, entry.Name())
+		if openErr != nil {
+			return fmt.Errorf("invalid repository directory %q: %w", entry.Name(), openErr)
 		}
-		child.Close()
+		objects, readErr := directory.ReadDir(-1)
+		if readErr != nil {
+			directory.Close()
+			return readErr
+		}
+		for _, object := range objects {
+			if _, err := checksum.NewHasher(entry.Name(), object.Name()); err != nil {
+				directory.Close()
+				return fmt.Errorf("unsafe repository object %q: %w", object.Name(), err)
+			}
+			file, fileErr := openNoFollowFileAt(directory, object.Name())
+			if fileErr != nil {
+				directory.Close()
+				return fmt.Errorf("unsafe repository object %q: %w", object.Name(), fileErr)
+			}
+			info, statErr := file.Stat()
+			file.Close()
+			if statErr != nil || !info.Mode().IsRegular() || !singleLink(info) {
+				directory.Close()
+				return fmt.Errorf("unsafe repository object %q", object.Name())
+			}
+		}
+		if closeErr := directory.Close(); closeErr != nil {
+			return closeErr
+		}
 	}
 	return nil
 }
 
 func validateRepositoryDescriptor(reader io.Reader) error {
-	decoder := json.NewDecoder(io.LimitReader(reader, 4097))
+	data, err := io.ReadAll(io.LimitReader(reader, maxRepositoryDescriptorBytes+1))
+	if err != nil {
+		return fmt.Errorf("invalid repository descriptor: %w", err)
+	}
+	if int64(len(data)) > maxRepositoryDescriptorBytes {
+		return fmt.Errorf("repository descriptor exceeds %d bytes", maxRepositoryDescriptorBytes)
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	var descriptor repositoryDescriptor
 	if err := decoder.Decode(&descriptor); err != nil {
@@ -322,7 +425,7 @@ func copyLocalArtifact(ctx context.Context, sourceRoot, destination string, maxB
 	if err != nil {
 		return 0, err
 	}
-	n, err := io.Copy(io.MultiWriter(temporary, h), io.LimitReader(contextReader{ctx: ctx, reader: file}, maxBytes+1))
+	n, err := io.Copy(io.MultiWriter(destinationWriter{Writer: temporary}, h), io.LimitReader(contextReader{ctx: ctx, reader: file}, maxBytes+1))
 	if err != nil {
 		if contextErr := ctx.Err(); contextErr != nil {
 			return 0, contextErr
@@ -350,6 +453,18 @@ func copyLocalArtifact(ctx context.Context, sourceRoot, destination string, maxB
 	}
 	if err := syncDirectory(filepath.Dir(destination)); err != nil {
 		return 0, fmt.Errorf("%w: flush source directory: %v", ErrDestinationWrite, err)
+	}
+	return n, nil
+}
+
+type destinationWriter struct {
+	io.Writer
+}
+
+func (w destinationWriter) Write(p []byte) (int, error) {
+	n, err := w.Writer.Write(p)
+	if err != nil {
+		return n, fmt.Errorf("%w: write local artifact: %w", ErrDestinationWrite, err)
 	}
 	return n, nil
 }
@@ -453,6 +568,22 @@ func (r contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.reader.Read(p)
+}
+
+type responseBodyReader struct {
+	ctx  context.Context
+	body io.Reader
+}
+
+func (r responseBodyReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	n, err := r.body.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return n, fmt.Errorf("%w: read response body: %v", ErrNetwork, err)
+	}
+	return n, err
 }
 
 // FetchRegistry intentionally has no checksum parameter: the official registry
@@ -565,7 +696,7 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 		return Result{}, fmt.Errorf("%w: secure temporary download: %v", ErrDestinationWrite, err)
 	}
 
-	limited := io.LimitReader(resp.Body, maxBytes+1)
+	limited := io.LimitReader(responseBodyReader{ctx: ctx, body: resp.Body}, maxBytes+1)
 	writer := io.Writer(temporary)
 	if hasher != nil {
 		writer = io.MultiWriter(temporary, hasher)
@@ -575,7 +706,13 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 		if contextErr := ctx.Err(); contextErr != nil {
 			return Result{}, contextErr
 		}
+		if errors.Is(err, ErrNetwork) {
+			return Result{}, err
+		}
 		return Result{}, fmt.Errorf("%w: write download: %v", ErrDestinationWrite, err)
+	}
+	if resp.ContentLength > 0 && written != resp.ContentLength {
+		return Result{}, fmt.Errorf("%w: response body truncated: expected %d bytes, got %d", ErrNetwork, resp.ContentLength, written)
 	}
 	if written > maxBytes {
 		return Result{}, ErrTooLarge

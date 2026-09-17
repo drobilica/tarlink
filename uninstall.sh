@@ -38,6 +38,7 @@ binary=$home/.local/bin/tarlink
 data_home=${XDG_DATA_HOME:-$home/.local/share}
 state_home=${XDG_STATE_HOME:-$home/.local/state}
 cache_home=${XDG_CACHE_HOME:-$home/.cache}
+config_home=${XDG_CONFIG_HOME:-$home/.config}
 marker=$state_home/tarlink/install.sha256
 
 safe_layout_path() {
@@ -72,7 +73,7 @@ safe_layout_path() {
 	done
 }
 
-for xdg_home in "$data_home" "$state_home" "$cache_home"; do
+for xdg_home in "$data_home" "$state_home" "$cache_home" "$config_home"; do
 	if ! safe_layout_path "$xdg_home"; then
 		echo 'XDG homes must be clean paths below HOME' >&2
 		exit 1
@@ -150,7 +151,7 @@ if [ ! -e "$binary" ]; then
 	if [ -n "$path_binary" ] && [ "$path_binary" != "$binary" ]; then
 		fail_missing
 	fi
-	for product in "$data_home/tarlink" "$state_home/tarlink" "$cache_home/tarlink"; do
+	for product in "$data_home/tarlink" "$state_home/tarlink" "$cache_home/tarlink" "$config_home/tarlink"; do
 		if [ -e "$product" ] || [ -L "$product" ]; then
 			fail_missing
 		fi
@@ -176,7 +177,7 @@ test "$binary_digest" = "$expected_digest" || {
 rm "$marker"
 rm "$binary"
 
-for product in "$data_home/tarlink" "$state_home/tarlink" "$cache_home/tarlink"; do
+for product in "$data_home/tarlink" "$state_home/tarlink" "$cache_home/tarlink" "$config_home/tarlink"; do
 	safe_layout_path "$product" || continue
 	rmdir "$product" 2>/dev/null || :
 done

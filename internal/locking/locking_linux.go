@@ -77,6 +77,48 @@ func AcquireWithTimeout(ctx context.Context, path string, timeout time.Duration)
 	return acquireOpened(ctx, f, timeout)
 }
 
+// AcquireExistingWithTimeout acquires a lock file below an existing, owned
+// directory without changing that directory's permissions. It is used for
+// public trees whose parent must remain readable by a separate static reader.
+func AcquireExistingWithTimeout(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return nil, errors.New("lock path must be absolute and clean")
+	}
+	if timeout <= 0 {
+		timeout = DefaultTimeout
+	}
+	if err := filesystem.CheckOwnedDirectory(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
+	fd, err := syscall.Open(path, syscall.O_CREAT|syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	if f == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open lock file")
+	}
+	var info syscall.Stat_t
+	if err := syscall.Fstat(fd, &info); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if info.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		_ = f.Close()
+		return nil, errors.New("lock path is not a regular file")
+	}
+	return acquireOpened(ctx, f, timeout)
+}
+
 func AcquireDirectoryWithTimeout(ctx context.Context, directory string, timeout time.Duration) (*Lock, error) {
 	if ctx == nil {
 		ctx = context.Background()
