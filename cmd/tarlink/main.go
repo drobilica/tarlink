@@ -31,6 +31,9 @@ func main() {
 		os.Exit(runner.Fail(err))
 	}
 	client := download.NewClient()
+	client.SourceDiagnostic = func(message string) {
+		_, _ = fmt.Fprintf(os.Stderr, "artifact source: %s\n", message)
+	}
 	// `run` is intentionally handled before the Cobra lifecycle: it resolves
 	// only local state and replaces this process with the compiled closure.
 	// It cannot refresh the registry, download, or select another runtime.

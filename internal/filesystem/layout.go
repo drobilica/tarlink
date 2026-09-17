@@ -16,22 +16,24 @@ const productDir = "tarlink"
 // Layout is the complete set of directories TarLink may use. All paths are
 // absolute and are below the current user's home directory (or an XDG home).
 type Layout struct {
-	Home      string
-	DataHome  string
-	StateHome string
-	CacheHome string
+	Home       string
+	DataHome   string
+	StateHome  string
+	CacheHome  string
+	ConfigHome string
 
 	Apps string
 	// Runtimes contains immutable dependency deployments. It is deliberately
 	// separate from application payloads: an application package only retains a
 	// reference to a runtime deployment, never a copied runtime tree.
-	Runtimes string
-	States   string
-	Cache    string
-	Locks    string
-	Bin      string
-	Desktop  string
-	Icons    string
+	Runtimes         string
+	States           string
+	Cache            string
+	RepositoryConfig string
+	Locks            string
+	Bin              string
+	Desktop          string
+	Icons            string
 }
 
 // NewLayout resolves the layout for the current user.
@@ -75,12 +77,17 @@ func LayoutFor(home string, getenv func(string) string) (Layout, error) {
 	if err != nil {
 		return Layout{}, err
 	}
+	config, err := resolve("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if err != nil {
+		return Layout{}, err
+	}
 
-	l := Layout{Home: home, DataHome: data, StateHome: state, CacheHome: cache}
+	l := Layout{Home: home, DataHome: data, StateHome: state, CacheHome: cache, ConfigHome: config}
 	l.Apps = filepath.Join(data, productDir, "apps")
 	l.Runtimes = filepath.Join(data, productDir, "runtimes")
 	l.States = filepath.Join(state, productDir, "states")
 	l.Cache = filepath.Join(cache, productDir)
+	l.RepositoryConfig = filepath.Join(config, productDir, "repositories.json")
 	l.Locks = filepath.Join(state, productDir, "locks")
 	l.Bin = filepath.Join(home, ".local", "bin")
 	l.Desktop = filepath.Join(data, "applications")
@@ -103,7 +110,11 @@ func validLayoutPath(value string) bool {
 // Ensure creates TarLink's private directories. Integration directories are
 // also created because they are user-owned and are part of the layout.
 func (l Layout) Ensure() error {
-	for _, dir := range []string{l.Apps, l.Runtimes, l.States, l.Cache, l.Locks} {
+	dirs := []string{l.Apps, l.Runtimes, l.States, l.Cache, l.Locks}
+	if l.RepositoryConfig != "" {
+		dirs = append(dirs, filepath.Dir(l.RepositoryConfig))
+	}
+	for _, dir := range dirs {
 		if err := SecureMkdirAll(dir, 0700); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)
 		}

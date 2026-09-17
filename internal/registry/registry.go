@@ -2,6 +2,8 @@
 package registry
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,6 +44,7 @@ func (e *PlatformError) Unwrap() error { return ErrUnavailableForPlatform }
 
 type Catalog struct {
 	FetchedAt time.Time
+	Revision  string
 	Variants  map[string]map[manifest.Platform]*manifest.Manifest
 	Runtimes  map[string]*manifest.Runtime
 }
@@ -111,7 +114,62 @@ func validateTree(root string, readMetadata bool) (*Catalog, error) {
 			}
 		}
 	}
-	return &Catalog{FetchedAt: fetchedAt, Variants: variants, Runtimes: runtimes}, nil
+	revision, err := treeRevision(variants, runtimes)
+	if err != nil {
+		return nil, err
+	}
+	return &Catalog{FetchedAt: fetchedAt, Revision: revision, Variants: variants, Runtimes: runtimes}, nil
+}
+
+// treeRevision is a deterministic identity of the validated catalog. It is
+// deliberately computed from normalized decoded content, never from time or
+// filesystem metadata.
+func treeRevision(variants map[string]map[manifest.Platform]*manifest.Manifest, runtimes map[string]*manifest.Runtime) (string, error) {
+	var data []byte
+	ids := make([]string, 0, len(variants))
+	for id := range variants {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		platforms := make([]string, 0, len(variants[id]))
+		for p := range variants[id] {
+			platforms = append(platforms, p.OS+"/"+p.Arch)
+		}
+		sort.Strings(platforms)
+		for _, key := range platforms {
+			var p manifest.Platform
+			parts := strings.SplitN(key, "/", 2)
+			p.OS, p.Arch = parts[0], parts[1]
+			value, err := json.Marshal(variants[id][p])
+			if err != nil {
+				return "", err
+			}
+			data = append(data, []byte(id)...)
+			data = append(data, 0)
+			data = append(data, []byte(key)...)
+			data = append(data, 0)
+			data = append(data, value...)
+			data = append(data, 0)
+		}
+	}
+	runtimeIDs := make([]string, 0, len(runtimes))
+	for id := range runtimes {
+		runtimeIDs = append(runtimeIDs, id)
+	}
+	sort.Strings(runtimeIDs)
+	for _, id := range runtimeIDs {
+		value, err := json.Marshal(runtimes[id])
+		if err != nil {
+			return "", err
+		}
+		data = append(data, []byte(id)...)
+		data = append(data, 0)
+		data = append(data, value...)
+		data = append(data, 0)
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 type generationMetadata struct {

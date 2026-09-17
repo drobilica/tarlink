@@ -1,0 +1,595 @@
+// Package artifactrepo implements TarLink's static, content-addressed artifact
+// repositories. It has no index and is safe to publish with ordinary static
+// hosting tools.
+package artifactrepo
+
+import (
+	"context"
+	"crypto/sha256"
+	"crypto/sha512"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"hash"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"syscall"
+
+	"github.com/drobilica/tarlink/internal/filesystem"
+	"github.com/drobilica/tarlink/internal/locking"
+	"github.com/drobilica/tarlink/internal/manifest"
+	"github.com/drobilica/tarlink/internal/registry"
+	"golang.org/x/sys/unix"
+)
+
+const (
+	Format                     = "content-repository"
+	Version                    = 1
+	MaxObjectBytes       int64 = 8 << 30
+	MaxRepositoryObjects       = 100000
+)
+
+type Descriptor struct {
+	Format  string `json:"format"`
+	Version int    `json:"version"`
+}
+type Object struct {
+	Algorithm string
+	Digest    string
+	Size      int64
+	URL       string
+}
+type Fetch func(context.Context, string, string, string, string) error
+
+var ErrDestinationWrite = errors.New("repository destination write failed")
+
+type Selection struct {
+	App         string
+	Platform    string
+	AllRetained bool
+}
+
+func Required(catalog *registry.Catalog, selection Selection) ([]Object, error) {
+	if catalog == nil || catalog.Revision == "" {
+		return nil, errors.New("validated registry revision is required")
+	}
+	if (selection.App == "") == selection.AllRetained {
+		return nil, errors.New("select exactly one of an app or all-retained")
+	}
+	var objects []Object
+	seen := map[string]bool{}
+	add := func(algorithm, digest, url string) error {
+		if algorithm == "" {
+			algorithm = "sha256"
+		}
+		if _, err := objectPath("/", algorithm, digest); err != nil {
+			return err
+		}
+		key := algorithm + ":" + digest
+		if !seen[key] {
+			seen[key] = true
+			objects = append(objects, Object{Algorithm: algorithm, Digest: digest, URL: url})
+		}
+		return nil
+	}
+	ids := make([]string, 0, len(catalog.Variants))
+	for id := range catalog.Variants {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		platforms := catalog.Variants[id]
+		if !selection.AllRetained && id != selection.App {
+			continue
+		}
+		platformKeys := make([]string, 0, len(platforms))
+		for platform := range platforms {
+			platformKeys = append(platformKeys, platform.OS+"-"+platform.Arch)
+		}
+		sort.Strings(platformKeys)
+		for _, platformKey := range platformKeys {
+			platform, ok := manifest.ParsePlatformKey(platformKey)
+			if !ok {
+				return nil, fmt.Errorf("unsupported platform %q", platformKey)
+			}
+			item := platforms[platform]
+			if selection.Platform != "" && selection.Platform != platformKey {
+				continue
+			}
+			for _, release := range item.ReleaseHistory.Releases {
+				if err := add(release.Verification.Algorithm, release.Verification.Digest, release.URL); err != nil {
+					return nil, fmt.Errorf("%s %s: %w", id, release.Version, err)
+				}
+				if release.Runtime != nil {
+					runtime := release.Runtime
+					if err := add(runtime.Artifact.Verification.Algorithm, runtime.Artifact.Verification.Digest, runtime.Artifact.URL); err != nil {
+						return nil, err
+					}
+				}
+			}
+		}
+	}
+	if len(objects) == 0 {
+		return nil, errors.New("selection matched no retained releases")
+	}
+	return objects, nil
+}
+
+func (s Selection) Validate() error {
+	if s.Platform != "" {
+		if _, ok := manifest.ParsePlatformKey(s.Platform); !ok {
+			return errors.New("unsupported platform")
+		}
+	}
+	return nil
+}
+
+func objectPath(root, algorithm, digest string) (string, error) {
+	length := map[string]int{"sha256": 64, "sha512": 128}[algorithm]
+	if length == 0 || len(digest) != length || strings.ToLower(digest) != digest {
+		return "", errors.New("unsupported or invalid object digest")
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return "", errors.New("object digest is not lowercase hexadecimal")
+	}
+	return filepath.Join(root, "v1", algorithm, digest), nil
+}
+
+func Init(root string) error {
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	if _, statErr := os.Lstat(filepath.Join(root, "repository.json")); statErr == nil {
+		return Open(root)
+	} else if !os.IsNotExist(statErr) {
+		return statErr
+	}
+	if err = filesystem.SecureMkdirAll(filepath.Join(root, "v1", "sha256"), 0700); err != nil {
+		return err
+	}
+	if err = filesystem.SecureMkdirAll(filepath.Join(root, "v1", "sha512"), 0700); err != nil {
+		return err
+	}
+	data, _ := json.Marshal(Descriptor{Format: Format, Version: Version})
+	return atomicWrite(filepath.Join(root, "repository.json"), data)
+}
+
+func Open(root string) error {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return errors.New("repository path must be absolute and clean")
+	}
+	if err := filesystem.CheckOwnedDirectory(root); err != nil {
+		return fmt.Errorf("repository root: %w", err)
+	}
+	rootDirectory, err := openRepositoryDirectory(root)
+	if err != nil {
+		return err
+	}
+	defer rootDirectory.Close()
+	file, err := openRepositoryFileAt(rootDirectory, "repository.json")
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() || !singleLink(openedInfo) {
+		return errors.New("repository descriptor is not a regular file")
+	}
+	decoder := json.NewDecoder(io.LimitReader(file, 4097))
+	decoder.DisallowUnknownFields()
+	var d Descriptor
+	if err := decoder.Decode(&d); err != nil {
+		return fmt.Errorf("invalid repository descriptor: %w", err)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return errors.New("repository descriptor must contain one JSON object")
+	}
+	if d.Format != Format || d.Version != Version {
+		return fmt.Errorf("unsupported repository descriptor format/version %q/%d", d.Format, d.Version)
+	}
+	v1, err := openRepositoryDirectoryAt(rootDirectory, "v1")
+	if err != nil {
+		return err
+	}
+	defer v1.Close()
+	for _, name := range []string{"sha256", "sha512"} {
+		algorithmDirectory, directoryErr := openRepositoryDirectoryAt(v1, name)
+		if os.IsNotExist(directoryErr) {
+			continue
+		}
+		if directoryErr != nil {
+			return fmt.Errorf("repository tree contains unsafe directory %q: %w", name, directoryErr)
+		}
+		algorithmDirectory.Close()
+	}
+	return nil
+}
+
+func Verify(root string) ([]Object, error) {
+	return VerifyContext(context.Background(), root)
+}
+
+func VerifyContext(ctx context.Context, root string) ([]Object, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := Open(root); err != nil {
+		return nil, err
+	}
+	rootDirectory, err := openRepositoryDirectory(root)
+	if err != nil {
+		return nil, err
+	}
+	defer rootDirectory.Close()
+	v1, err := openRepositoryDirectoryAt(rootDirectory, "v1")
+	if err != nil {
+		return nil, err
+	}
+	defer v1.Close()
+	var objects []Object
+	for _, algorithm := range []string{"sha256", "sha512"} {
+		directory, err := openRepositoryDirectoryAt(v1, algorithm)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		defer directory.Close()
+		entries, err := directory.ReadDir(MaxRepositoryObjects + 1)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		if len(entries) > MaxRepositoryObjects {
+			return nil, errors.New("repository contains too many objects")
+		}
+		for _, entry := range entries {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if entry.Type()&os.ModeSymlink != 0 || !entry.Type().IsRegular() {
+				return nil, fmt.Errorf("unsafe repository object %q", entry.Name())
+			}
+			if _, err := objectPath(root, algorithm, entry.Name()); err != nil {
+				return nil, err
+			}
+			size, err := verifyFileAt(ctx, directory, entry.Name(), algorithm, entry.Name(), MaxObjectBytes)
+			if err != nil {
+				return nil, err
+			}
+			objects = append(objects, Object{Algorithm: algorithm, Digest: entry.Name(), Size: size})
+		}
+	}
+	return objects, nil
+}
+
+// VerifyObject hashes one object without treating registry approval as part of
+// the result. Callers should call Open first when checking a repository.
+func VerifyObject(root string, object Object) (int64, error) {
+	return VerifyObjectContext(context.Background(), root, object)
+}
+
+func VerifyObjectContext(ctx context.Context, root string, object Object) (int64, error) {
+	if err := Open(root); err != nil {
+		return 0, err
+	}
+	if _, err := objectPath(root, object.Algorithm, object.Digest); err != nil {
+		return 0, err
+	}
+	rootDirectory, err := openRepositoryDirectory(root)
+	if err != nil {
+		return 0, err
+	}
+	defer rootDirectory.Close()
+	v1, err := openRepositoryDirectoryAt(rootDirectory, "v1")
+	if err != nil {
+		return 0, err
+	}
+	defer v1.Close()
+	directory, err := openRepositoryDirectoryAt(v1, object.Algorithm)
+	if err != nil {
+		return 0, err
+	}
+	defer directory.Close()
+	return verifyFileAt(ctx, directory, object.Digest, object.Algorithm, object.Digest, MaxObjectBytes)
+}
+
+func verifyFileAt(ctx context.Context, directory *os.File, name, algorithm, expected string, maxBytes int64) (int64, error) {
+	f, err := openRepositoryFileAt(directory, name)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() || !singleLink(info) {
+		return 0, errors.New("repository object is not regular")
+	}
+	return verifyOpenedFile(ctx, f, algorithm, expected, maxBytes)
+}
+
+func verifyOpenedFile(ctx context.Context, f *os.File, algorithm, expected string, maxBytes int64) (int64, error) {
+	var h hash.Hash
+	if algorithm == "sha256" {
+		h = sha256.New()
+	} else {
+		h = sha512.New()
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	n, err := io.Copy(h, io.LimitReader(contextReader{ctx: ctx, reader: f}, maxBytes+1))
+	if err != nil {
+		return 0, err
+	}
+	if n > maxBytes {
+		return 0, errors.New("repository object exceeds size limit")
+	}
+	if hex.EncodeToString(h.Sum(nil)) != expected {
+		return 0, fmt.Errorf("repository object %s has incorrect digest", expected)
+	}
+	return n, nil
+}
+
+func Add(ctx context.Context, root, algorithm, digest string, fetch Fetch, url string) error {
+	if err := Open(root); err != nil {
+		return err
+	}
+	destination, err := objectPath(root, algorithm, digest)
+	if err != nil {
+		return err
+	}
+	if err := filesystem.SecureMkdirAll(filepath.Dir(destination), 0700); err != nil {
+		return fmt.Errorf("%w: prepare object directory: %v", ErrDestinationWrite, err)
+	}
+	destinationDirectory, err := openRepositoryDirectory(filepath.Dir(destination))
+	if err != nil {
+		return fmt.Errorf("%w: open object directory: %v", ErrDestinationWrite, err)
+	}
+	defer destinationDirectory.Close()
+	if size, err := VerifyObjectContext(ctx, root, Object{Algorithm: algorithm, Digest: digest}); err == nil && size >= 0 {
+		return nil
+	}
+	if fetch == nil {
+		return errors.New("artifact fetcher is not configured")
+	}
+	stageDirectoryPath, err := os.MkdirTemp(filepath.Dir(destination), ".object-stage-*")
+	if err != nil {
+		return fmt.Errorf("%w: create object staging: %v", ErrDestinationWrite, err)
+	}
+	stageDirectory, err := openRepositoryDirectory(stageDirectoryPath)
+	if err != nil {
+		_ = unix.Unlinkat(int(destinationDirectory.Fd()), filepath.Base(stageDirectoryPath), unix.AT_REMOVEDIR)
+		return fmt.Errorf("%w: open object staging: %v", ErrDestinationWrite, err)
+	}
+	defer func() {
+		_ = unix.Unlinkat(int(stageDirectory.Fd()), "object", 0)
+		_ = stageDirectory.Close()
+		_ = unix.Unlinkat(int(destinationDirectory.Fd()), filepath.Base(stageDirectoryPath), unix.AT_REMOVEDIR)
+	}()
+	stagePath := filepath.Join(stageDirectoryPath, "object")
+	stage, err := os.OpenFile(stagePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return fmt.Errorf("%w: create object staging: %v", ErrDestinationWrite, err)
+	}
+	if err := stage.Close(); err != nil {
+		return fmt.Errorf("%w: close object staging: %v", ErrDestinationWrite, err)
+	}
+	if err := fetch(ctx, url, algorithm, digest, stagePath); err != nil {
+		return err
+	}
+	stageFile, err := openRepositoryFileAt(stageDirectory, "object")
+	if err != nil {
+		return err
+	}
+	defer stageFile.Close()
+	stageInfo, err := stageFile.Stat()
+	if err != nil || !stageInfo.Mode().IsRegular() || !singleLink(stageInfo) {
+		return errors.New("repository staging file is not regular")
+	}
+	if _, err := verifyOpenedFile(ctx, stageFile, algorithm, digest, MaxObjectBytes); err != nil {
+		return err
+	}
+	if _, err := VerifyObjectContext(ctx, root, Object{Algorithm: algorithm, Digest: digest}); err == nil {
+		return nil
+	}
+	if err := renameObjectWithinRepository(root, stageDirectory, "object", destination, stageInfo); err != nil {
+		if os.IsExist(err) {
+			if _, verifyErr := VerifyObjectContext(ctx, root, Object{Algorithm: algorithm, Digest: digest}); verifyErr == nil {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: replace object: %v", ErrDestinationWrite, err)
+	}
+	return nil
+}
+
+func Sync(ctx context.Context, root string, objects []Object, fetch Fetch) error {
+	var err error
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	if err := Init(root); err != nil {
+		return err
+	}
+	lock, err := locking.AcquireWithTimeout(ctx, filepath.Join(root, ".sync.lock"), locking.DefaultTimeout)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	var failures []error
+	for _, object := range objects {
+		if err := Add(ctx, root, object.Algorithm, object.Digest, fetch, object.URL); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrDestinationWrite) {
+				return err
+			}
+			failures = append(failures, fmt.Errorf("%s:%s: %w", object.Algorithm, object.Digest, err))
+			continue
+		}
+	}
+	return errors.Join(failures...)
+}
+func atomicWrite(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".descriptor-*")
+	if err != nil {
+		return err
+	}
+	p := f.Name()
+	defer os.Remove(p)
+	if _, err = f.Write(data); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = renameWithinDirectory(p, path)
+	}
+	return err
+}
+
+func singleLink(info os.FileInfo) bool {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	return !ok || stat.Nlink == 1
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+
+func renameWithinDirectory(source, destination string) error {
+	parent := filepath.Dir(destination)
+	fd, err := syscall.Open(parent, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	directory := os.NewFile(uintptr(fd), parent)
+	if directory == nil {
+		_ = syscall.Close(fd)
+		return errors.New("open repository directory")
+	}
+	defer directory.Close()
+	if filepath.Dir(source) != parent {
+		return errors.New("repository staging file is outside destination directory")
+	}
+	if err := syscall.Renameat(int(directory.Fd()), filepath.Base(source), int(directory.Fd()), filepath.Base(destination)); err != nil {
+		return err
+	}
+	return directory.Sync()
+}
+
+func renameObjectWithinRepository(root string, sourceDirectory *os.File, sourceName, destination string, expected os.FileInfo) error {
+	rootDirectory, err := openRepositoryDirectory(root)
+	if err != nil {
+		return err
+	}
+	v1, err := openRepositoryDirectoryAt(rootDirectory, "v1")
+	rootDirectory.Close()
+	if err != nil {
+		return err
+	}
+	algorithm := filepath.Base(filepath.Dir(destination))
+	objects, err := openRepositoryDirectoryAt(v1, algorithm)
+	v1.Close()
+	if err != nil {
+		return err
+	}
+	defer objects.Close()
+	if err := syscall.Renameat(int(sourceDirectory.Fd()), sourceName, int(objects.Fd()), filepath.Base(destination)); err != nil {
+		return err
+	}
+	fd, err := syscall.Openat(int(objects.Fd()), filepath.Base(destination), syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	published := os.NewFile(uintptr(fd), filepath.Base(destination))
+	if published == nil {
+		_ = syscall.Close(fd)
+		return errors.New("open published repository object")
+	}
+	defer published.Close()
+	publishedInfo, err := published.Stat()
+	if err != nil || !os.SameFile(expected, publishedInfo) {
+		return errors.New("published repository object differs from staged file")
+	}
+	return objects.Sync()
+}
+
+func openRepositoryDirectory(path string) (*os.File, error) {
+	fd, err := openNoFollowPath(path, true)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open repository directory")
+	}
+	return file, nil
+}
+
+func openNoFollowPath(path string, directory bool) (int, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return -1, errors.New("repository path must be absolute and clean")
+	}
+	fd, err := syscall.Open(string(filepath.Separator), syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, err
+	}
+	for _, part := range strings.Split(strings.TrimPrefix(path, string(filepath.Separator)), string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		flags := syscall.O_RDONLY | syscall.O_NOFOLLOW | syscall.O_CLOEXEC
+		if directory || part != filepath.Base(path) {
+			flags |= syscall.O_DIRECTORY
+		}
+		next, openErr := syscall.Openat(fd, part, flags, 0)
+		_ = syscall.Close(fd)
+		if openErr != nil {
+			return -1, openErr
+		}
+		fd = next
+	}
+	return fd, nil
+}
+
+func openRepositoryDirectoryAt(parent *os.File, name string) (*os.File, error) {
+	fd, err := syscall.Openat(int(parent.Fd()), name, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open repository directory")
+	}
+	return file, nil
+}
+
+func openRepositoryFileAt(parent *os.File, name string) (*os.File, error) {
+	fd, err := syscall.Openat(int(parent.Fd()), name, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), name)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, errors.New("open repository file")
+	}
+	return file, nil
+}

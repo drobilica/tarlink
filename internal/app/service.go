@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/drobilica/tarlink/internal/archive"
+	"github.com/drobilica/tarlink/internal/artifactrepo"
 	"github.com/drobilica/tarlink/internal/download"
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/install"
@@ -38,7 +39,18 @@ type Core struct {
 }
 
 func NewCore(layout filesystem.Layout, client *download.Client) (*Core, error) {
+	if client == nil {
+		client = download.NewClient()
+	}
+	sources, err := artifactrepo.LoadSources(layout.RepositoryConfig)
+	if err != nil {
+		return nil, fmt.Errorf("load repository sources: %w", err)
+	}
+	client.Sources = sources
 	installer := install.New(layout, client)
+	upgradeClient := download.NewClient()
+	upgradeClient.HTTP = client.HTTP
+	upgradeClient.RedirectLimit = client.RedirectLimit
 	syncer := &registry.Syncer{
 		CacheRoot: filepath.Join(layout.Cache, "registry"),
 		LocksRoot: layout.Locks,
@@ -48,8 +60,142 @@ func NewCore(layout filesystem.Layout, client *download.Client) (*Core, error) {
 		layout: layout, installer: installer, syncer: syncer,
 		now: time.Now, registryMaxAge: registry.DefaultMaxAge,
 		goos: runtime.GOOS, goarch: runtime.GOARCH,
-		upgrader: &upgrade.Service{Layout: layout, Client: client, Current: version.Current},
+		upgrader: &upgrade.Service{Layout: layout, Client: upgradeClient, Current: version.Current},
 	}, nil
+}
+
+func (core *Core) RepositorySources() ([]string, error) {
+	return artifactrepo.LoadSources(core.layout.RepositoryConfig)
+}
+
+func (core *Core) AddRepositorySource(value string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	normalized, err := artifactrepo.NormalizeSource(value, cwd)
+	if err != nil {
+		return err
+	}
+	if err := artifactrepo.AddSource(core.layout.RepositoryConfig, normalized); err != nil {
+		return err
+	}
+	core.installer.Client.Sources, err = artifactrepo.LoadSources(core.layout.RepositoryConfig)
+	return err
+}
+
+func (core *Core) RemoveRepositorySource(value string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	normalized, err := artifactrepo.NormalizeSource(value, cwd)
+	if err != nil {
+		normalized = value
+	}
+	if err := artifactrepo.RemoveSource(core.layout.RepositoryConfig, normalized); err != nil {
+		return err
+	}
+	core.installer.Client.Sources, err = artifactrepo.LoadSources(core.layout.RepositoryConfig)
+	return err
+}
+
+type RepositoryReport struct {
+	Revision                            string
+	Required, Present, Missing, Corrupt int
+	Objects                             []artifactrepo.Object
+}
+
+func (core *Core) RepositoryInit(path string) error {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	return artifactrepo.Init(absolute)
+}
+func (core *Core) RepositoryVerify(ctx context.Context, path string) ([]artifactrepo.Object, error) {
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	return artifactrepo.VerifyContext(ctx, absolute)
+}
+func (core *Core) RepositoryStatus(ctx context.Context, path string, selection artifactrepo.Selection) (RepositoryReport, error) {
+	catalog, err := registry.Open(filepath.Join(core.layout.Cache, "registry"))
+	if err != nil {
+		return RepositoryReport{}, err
+	}
+	return core.repositoryReport(ctx, catalog, path, selection)
+}
+
+func (core *Core) repositoryReport(ctx context.Context, catalog *registry.Catalog, path string, selection artifactrepo.Selection) (RepositoryReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return RepositoryReport{}, err
+	}
+	if err := selection.Validate(); err != nil {
+		return RepositoryReport{}, err
+	}
+	objects, err := artifactrepo.Required(catalog, selection)
+	if err != nil {
+		return RepositoryReport{}, err
+	}
+	if err := artifactrepo.Open(path); err != nil {
+		return RepositoryReport{}, err
+	}
+	report := RepositoryReport{Revision: catalog.Revision, Required: len(objects), Objects: objects}
+	for _, object := range objects {
+		if err := ctx.Err(); err != nil {
+			return RepositoryReport{}, err
+		}
+		target := filepath.Join(path, "v1", object.Algorithm, object.Digest)
+		if _, statErr := os.Lstat(target); os.IsNotExist(statErr) {
+			report.Missing++
+			continue
+		} else if statErr != nil {
+			return RepositoryReport{}, statErr
+		}
+		if _, verifyErr := artifactrepo.VerifyObjectContext(ctx, path, object); verifyErr == nil {
+			report.Present++
+		} else if errors.Is(verifyErr, context.Canceled) || errors.Is(verifyErr, context.DeadlineExceeded) {
+			return RepositoryReport{}, verifyErr
+		} else {
+			report.Corrupt++
+		}
+	}
+	return report, nil
+}
+func (core *Core) RepositorySync(ctx context.Context, path string, selection artifactrepo.Selection, dryRun bool) (RepositoryReport, error) {
+	var catalog *registry.Catalog
+	var err error
+	if dryRun {
+		catalog, err = registry.Open(filepath.Join(core.layout.Cache, "registry"))
+	} else {
+		catalog, err = core.catalog(ctx, nil)
+	}
+	if err != nil {
+		return RepositoryReport{}, err
+	}
+	report, err := core.repositoryReport(ctx, catalog, path, selection)
+	if err != nil || dryRun {
+		return report, err
+	}
+	objects := report.Objects
+	err = artifactrepo.Sync(ctx, path, objects, func(ctx context.Context, url, algorithm, digest, destination string) error {
+		_, err := core.installer.Client.FetchArtifact(ctx, download.ArtifactRequest{URL: url, Algorithm: algorithm, Digest: digest, Destination: destination})
+		if errors.Is(err, download.ErrDestinationWrite) {
+			return fmt.Errorf("%w: %v", artifactrepo.ErrDestinationWrite, err)
+		}
+		return err
+	})
+	final, statusErr := core.repositoryReport(ctx, catalog, path, selection)
+	if statusErr != nil {
+		return report, errors.Join(err, statusErr)
+	}
+	return final, err
 }
 
 func (core *Core) CheckTarLinkVersion(ctx context.Context) (TarLinkVersion, error) {

@@ -62,6 +62,32 @@ func createRegistry(t *testing.T) string {
 	return root
 }
 
+func TestValidatedCatalogHasDeterministicContentRevision(t *testing.T) {
+	root := createRegistry(t)
+	first, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Revision == "" || first.Revision != second.Revision {
+		t.Fatalf("revisions=%q and %q", first.Revision, second.Revision)
+	}
+	changed := strings.Replace(testManifest, "3D creation suite", "Changed suite", 1)
+	if err := os.WriteFile(filepath.Join(root, "apps", "blender", "manifest.yaml"), []byte(changed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	third, err := ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Revision == first.Revision {
+		t.Fatal("registry content change did not change revision")
+	}
+}
+
 func writeTestRuntime(t *testing.T, root, id, version string) {
 	t.Helper()
 	directory := filepath.Join(root, "runtimes", id)
