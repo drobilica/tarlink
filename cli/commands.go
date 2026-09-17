@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/drobilica/tarlink/internal/app"
+	"github.com/drobilica/tarlink/internal/artifactrepo"
+	"github.com/drobilica/tarlink/internal/manifest"
 	"github.com/drobilica/tarlink/internal/research"
 	"github.com/drobilica/tarlink/internal/version"
 	"github.com/spf13/cobra"
@@ -48,6 +50,9 @@ Maintenance:
   self-update  Update TarLink itself
   version      Show TarLink version (-v, --version)
   completion   Generate a Bash, Zsh, Fish, or PowerShell completion script
+
+Repositories:
+  repository   Manage static artifact repositories
 
 Registry development:
   registry     Registry validation and maintainer tools
@@ -205,9 +210,187 @@ func (r Runner) rootCommand(progress *progressRenderer, tuiStdout, tuiStderr io.
 		r.lockCommand(), r.updateCommand(progress), r.pinCommand(true), r.pinCommand(false),
 		r.selfUpdateCommand(progress), r.doctorCommand(), r.listCommand(), r.installedCommand(),
 		r.infoCommand(), r.versionsCommand(), r.rollbackCommand(progress), r.uninstallCommand(progress),
-		r.registryCommand(),
+		r.registryCommand(), r.repositoryCommand(),
 	)
 	return root
+}
+
+func (r Runner) repositoryCommand() *cobra.Command {
+	command := &cobra.Command{Use: "repository", Short: "Manage static artifact repositories"}
+	command.AddCommand(r.repositoryInitCommand(), r.repositorySyncCommand(), r.repositoryVerifyCommand(), r.repositoryStatusCommand(), r.repositoryAddCommand(), r.repositoryRemoveCommand(), r.repositoryListCommand())
+	return command
+}
+
+type repositoryOperations interface {
+	RepositoryInit(string) error
+	RepositoryVerify(context.Context, string) ([]artifactrepo.Object, error)
+	RepositorySync(context.Context, string, artifactrepo.Selection, bool) (app.RepositoryReport, error)
+	RepositoryStatus(context.Context, string, artifactrepo.Selection) (app.RepositoryReport, error)
+}
+
+func (r Runner) repositoryInitCommand() *cobra.Command {
+	usage := "usage: tarlink repository init PATH"
+	command := &cobra.Command{Use: "init PATH", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
+		service, err := r.requireService()
+		if err != nil {
+			return err
+		}
+		ops, ok := service.(repositoryOperations)
+		if !ok {
+			return errors.New("repository management is unavailable")
+		}
+		return ops.RepositoryInit(args[0])
+	}}
+	configureCommand(command, usage)
+	return command
+}
+func (r Runner) repositoryVerifyCommand() *cobra.Command {
+	usage := "usage: tarlink repository verify PATH"
+	command := &cobra.Command{Use: "verify PATH", Args: exactArgs(1, usage), RunE: func(cmd *cobra.Command, args []string) error {
+		service, err := r.requireService()
+		if err != nil {
+			return err
+		}
+		ops, ok := service.(repositoryOperations)
+		if !ok {
+			return errors.New("repository management is unavailable")
+		}
+		objects, err := ops.RepositoryVerify(cmd.Context(), args[0])
+		if err == nil {
+			_, err = fmt.Fprintf(r.Stdout, "Verified %d objects. Registry approval is not implied.\n", len(objects))
+		}
+		return err
+	}}
+	configureCommand(command, usage)
+	return command
+}
+func (r Runner) repositorySyncCommand() *cobra.Command {
+	var appID, platform string
+	var all, dry bool
+	usage := "usage: tarlink repository sync PATH [--app ID] [--platform PLATFORM] [--all-retained] [--dry-run]"
+	command := &cobra.Command{Use: "sync PATH", Args: exactArgs(1, usage), PreRunE: func(_ *cobra.Command, _ []string) error {
+		if (appID == "") == all {
+			return invalidCommand(usage)
+		}
+		if appID != "" && platform != "" {
+			if _, ok := manifest.ParsePlatformKey(platform); !ok {
+				return invalidCommand(usage)
+			}
+		}
+		return nil
+	}, RunE: func(ctx *cobra.Command, args []string) error {
+		service, err := r.requireService()
+		if err != nil {
+			return err
+		}
+		ops, ok := service.(repositoryOperations)
+		if !ok {
+			return errors.New("repository management is unavailable")
+		}
+		report, err := ops.RepositorySync(ctx.Context(), args[0], artifactrepo.Selection{App: appID, Platform: platform, AllRetained: all}, dry)
+		if report.Revision != "" {
+			if _, printErr := fmt.Fprintf(r.Stdout, "revision %s: required=%d present=%d missing=%d corrupt=%d\n", report.Revision, report.Required, report.Present, report.Missing, report.Corrupt); err == nil {
+				err = printErr
+			}
+		}
+		return err
+	}}
+	command.Flags().StringVar(&appID, "app", "", "exact application ID")
+	command.Flags().StringVar(&platform, "platform", "", "linux-amd64 or linux-arm64")
+	command.Flags().BoolVar(&all, "all-retained", false, "include all retained releases")
+	command.Flags().BoolVar(&dry, "dry-run", false, "report without downloading or mutating")
+	configureCommand(command, usage)
+	return command
+}
+func (r Runner) repositoryStatusCommand() *cobra.Command {
+	var appID, platform string
+	var all bool
+	usage := "usage: tarlink repository status PATH [--app ID] [--platform PLATFORM] [--all-retained]"
+	command := &cobra.Command{Use: "status PATH", Args: exactArgs(1, usage), PreRunE: func(_ *cobra.Command, _ []string) error {
+		if (appID == "") == all {
+			return invalidCommand(usage)
+		}
+		return nil
+	}, RunE: func(cmd *cobra.Command, args []string) error {
+		service, err := r.requireService()
+		if err != nil {
+			return err
+		}
+		ops, ok := service.(repositoryOperations)
+		if !ok {
+			return errors.New("repository management is unavailable")
+		}
+		report, err := ops.RepositoryStatus(cmd.Context(), args[0], artifactrepo.Selection{App: appID, Platform: platform, AllRetained: all})
+		if err == nil {
+			_, err = fmt.Fprintf(r.Stdout, "revision %s: required=%d present=%d missing=%d corrupt=%d\n", report.Revision, report.Required, report.Present, report.Missing, report.Corrupt)
+		}
+		return err
+	}}
+	command.Flags().StringVar(&appID, "app", "", "exact application ID")
+	command.Flags().StringVar(&platform, "platform", "", "linux-amd64 or linux-arm64")
+	command.Flags().BoolVar(&all, "all-retained", false, "include all retained releases")
+	configureCommand(command, usage)
+	return command
+}
+
+func (r Runner) repositoryAddCommand() *cobra.Command {
+	usage := "usage: tarlink repository add URL_OR_PATH"
+	command := &cobra.Command{Use: "add URL_OR_PATH", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
+		service, err := r.requireService()
+		if err != nil {
+			return err
+		}
+		value, ok := service.(interface{ AddRepositorySource(string) error })
+		if !ok {
+			return errors.New("repository management is unavailable")
+		}
+		return value.AddRepositorySource(args[0])
+	}}
+	configureCommand(command, usage)
+	return command
+}
+
+func (r Runner) repositoryRemoveCommand() *cobra.Command {
+	usage := "usage: tarlink repository remove URL_OR_PATH"
+	command := &cobra.Command{Use: "remove URL_OR_PATH", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
+		service, err := r.requireService()
+		if err != nil {
+			return err
+		}
+		value, ok := service.(interface{ RemoveRepositorySource(string) error })
+		if !ok {
+			return errors.New("repository management is unavailable")
+		}
+		return value.RemoveRepositorySource(args[0])
+	}}
+	configureCommand(command, usage)
+	return command
+}
+
+func (r Runner) repositoryListCommand() *cobra.Command {
+	usage := "usage: tarlink repository list"
+	command := &cobra.Command{Use: "list", Args: noArgs(usage), RunE: func(_ *cobra.Command, _ []string) error {
+		service, err := r.requireService()
+		if err != nil {
+			return err
+		}
+		value, ok := service.(interface{ RepositorySources() ([]string, error) })
+		if !ok {
+			return errors.New("repository management is unavailable")
+		}
+		sources, err := value.RepositorySources()
+		if err != nil {
+			return err
+		}
+		for _, source := range sources {
+			if _, err := fmt.Fprintln(r.Stdout, source); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	configureCommand(command, usage)
+	return command
 }
 
 func (r Runner) completionCommand() *cobra.Command {

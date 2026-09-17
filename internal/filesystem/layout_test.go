@@ -17,6 +17,9 @@ func TestLayoutForAndRejectsRelativeXDG(t *testing.T) {
 	if l.Apps != filepath.Join(home, "data", "tarlink", "apps") {
 		t.Fatalf("apps=%s", l.Apps)
 	}
+	if l.ConfigHome != filepath.Join(home, ".config") || l.RepositoryConfig != filepath.Join(home, ".config", "tarlink", "repositories.json") {
+		t.Fatalf("config layout=%#v", l)
+	}
 	if _, err := LayoutFor(home, func(k string) string {
 		if k == "XDG_CACHE_HOME" {
 			return "cache"
@@ -41,6 +44,14 @@ func TestLayoutForAndRejectsRelativeXDG(t *testing.T) {
 	}); err == nil {
 		t.Fatal("control character in XDG value accepted")
 	}
+	if _, err := LayoutFor(home, func(k string) string {
+		if k == "XDG_CONFIG_HOME" {
+			return "config"
+		}
+		return ""
+	}); err == nil {
+		t.Fatal("relative XDG config value accepted")
+	}
 }
 
 func TestNewLayoutHonorsTemporaryHome(t *testing.T) {
@@ -49,6 +60,7 @@ func TestNewLayoutHonorsTemporaryHome(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("XDG_STATE_HOME", "")
 	t.Setenv("XDG_CACHE_HOME", "")
+	t.Setenv("XDG_CONFIG_HOME", "")
 	layout, err := NewLayout()
 	if err != nil {
 		t.Fatal(err)

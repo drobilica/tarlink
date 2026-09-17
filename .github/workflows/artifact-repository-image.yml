@@ -1,0 +1,67 @@
+name: Artifact repository image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - build/artifact-repository/**
+      - cmd/**
+      - cli/**
+      - internal/**
+      - go.mod
+      - go.sum
+      - tui/**
+      - .github/workflows/artifact-repository-image.yml
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: artifact-repository-image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install desktop entry validator
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y desktop-file-utils
+
+      - name: Run canonical validation
+        run: ./scripts/validate.sh
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: Determine immutable image reference
+        run: echo "IMAGE=ghcr.io/drobilica/tarlink-artifact-repository:${GITHUB_SHA}" >> "$GITHUB_ENV"
+
+      - name: Build and publish artifact repository image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: build/artifact-repository/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}
+          cache-from: type=gha,scope=artifact-repository-image
+          cache-to: type=gha,mode=max,scope=artifact-repository-image

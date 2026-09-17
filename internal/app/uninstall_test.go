@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/drobilica/tarlink/internal/download"
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/install"
 	"github.com/drobilica/tarlink/internal/integration"
@@ -165,6 +166,15 @@ func TestUninstallAllPurgesApplicationsAndPreservesSharedSiblings(t *testing.T) 
 	}
 	writeInstalledUninstallFixture(t, layout, "alpha")
 	writeInstalledUninstallFixture(t, layout, "beta")
+	if err := os.MkdirAll(filepath.Dir(layout.RepositoryConfig), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.RepositoryConfig, []byte("malformed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.RepositoryConfig+".lock", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, path := range []string{
 		filepath.Join(layout.DataHome, "keep-data"), filepath.Join(layout.StateHome, "keep-state"),
 		filepath.Join(layout.CacheHome, "keep-cache"), filepath.Join(layout.Bin, "keep-tool"),
@@ -179,7 +189,7 @@ func TestUninstallAllPurgesApplicationsAndPreservesSharedSiblings(t *testing.T) 
 	if _, err := core.UninstallAll(context.Background(), nil); err != nil {
 		t.Fatalf("UninstallAll() error = %v", err)
 	}
-	for _, path := range []string{layout.Apps, layout.States, layout.Locks, layout.Cache} {
+	for _, path := range []string{layout.Apps, layout.States, layout.Locks, layout.Cache, filepath.Dir(layout.RepositoryConfig)} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {
 			t.Fatalf("TarLink root remains at %s: %v", path, err)
 		}
@@ -196,6 +206,32 @@ func TestUninstallAllPurgesApplicationsAndPreservesSharedSiblings(t *testing.T) 
 	}
 	if _, err := core.UninstallAll(context.Background(), nil); err != nil {
 		t.Fatalf("second UninstallAll() error = %v", err)
+	}
+}
+
+func TestNewCoreAllowsMalformedRepositoryConfigForLocalPurge(t *testing.T) {
+	layout := uninstallTestLayout(t)
+	if err := os.MkdirAll(filepath.Dir(layout.RepositoryConfig), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.RepositoryConfig, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	core, err := NewCore(layout, &download.Client{})
+	if err != nil {
+		t.Fatalf("NewCore() error = %v", err)
+	}
+	if core.installer.Client.SourceConfigError == nil {
+		t.Fatal("malformed repository configuration was not retained as an acquisition error")
+	}
+	if _, err := core.RepositorySources(); err == nil {
+		t.Fatal("RepositorySources() accepted malformed configuration")
+	}
+	if _, err := core.UninstallAll(context.Background(), nil); err != nil {
+		t.Fatalf("local purge failed with malformed optional configuration: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Dir(layout.RepositoryConfig)); !os.IsNotExist(err) {
+		t.Fatalf("configuration product root remains: %v", err)
 	}
 }
 

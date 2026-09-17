@@ -2,7 +2,7 @@
 
 set -eu
 
-unset XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
+unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME
 sha256sum_dir=$(dirname "$(command -v sha256sum)")
 test -n "$sha256sum_dir"
 
@@ -28,7 +28,7 @@ trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
 fake_home=$fixture/home
-mkdir -p "$fake_home/.local/bin" "$fake_home/.local/share/tarlink" "$fake_home/.cache/tarlink"
+mkdir -p "$fake_home/.local/bin" "$fake_home/.local/share/tarlink" "$fake_home/.cache/tarlink" "$fake_home/.config/tarlink"
 cat > "$fake_home/.local/bin/tarlink" <<'EOF'
 #!/bin/sh
 set -eu
@@ -47,6 +47,7 @@ test ! -e "$fake_home/.local/bin/tarlink"
 test ! -e "$fake_home/.local/state/tarlink/install.sha256"
 test ! -e "$fake_home/.local/share/tarlink"
 test ! -e "$fake_home/.cache/tarlink"
+test ! -e "$fake_home/.config/tarlink"
 test -d "$fake_home/.local/bin"
 test -d "$fake_home/.local/state"
 test -d "$fake_home/.local/share"
@@ -86,7 +87,7 @@ HOME="$unicode_home" PATH="$sha256sum_dir:/usr/bin:/bin" "$uninstaller"
 test ! -e "$unicode_home/.local/bin/tarlink"
 
 partial_home=$fixture/partial-home
-mkdir -p "$partial_home/.local/bin" "$partial_home/.local/share/tarlink"
+mkdir -p "$partial_home/.local/bin" "$partial_home/.local/share/tarlink" "$partial_home/.config/tarlink"
 cat > "$partial_home/.local/bin/tarlink" <<'EOF'
 #!/bin/sh
 exit 1
@@ -99,6 +100,7 @@ if HOME=$partial_home PATH="$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"$fixt
 fi
 test -x "$partial_home/.local/bin/tarlink"
 test -d "$partial_home/.local/share/tarlink"
+test -d "$partial_home/.config/tarlink"
 
 cat > "$fake_home/.local/bin/tarlink" <<'EOF'
 #!/bin/sh
@@ -217,18 +219,21 @@ fi
 test ! -e "$fixture/symlink-parent-marker"
 
 owned_home=$fixture/owned-home
-mkdir -p "$owned_home/.local/bin" "$owned_home/data/tarlink" "$owned_home/state/tarlink" "$owned_home/cache/tarlink"
+mkdir -p "$owned_home/.local/bin" "$owned_home/data/tarlink" "$owned_home/state/tarlink" "$owned_home/cache/tarlink" "$owned_home/config/tarlink"
 cat > "$owned_home/.local/bin/tarlink" <<'EOF'
 #!/bin/sh
 exit 0
 EOF
 chmod 0755 "$owned_home/.local/bin/tarlink"
 printf '%s\n' 'user-owned' > "$owned_home/data/tarlink/keep.txt"
+printf '%s\n' 'user-owned' > "$owned_home/config/tarlink/keep.txt"
 write_marker "$owned_home" "$owned_home/state"
 HOME=$owned_home XDG_DATA_HOME=$owned_home/data XDG_STATE_HOME=$owned_home/state XDG_CACHE_HOME=$owned_home/cache PATH="$sha256sum_dir:/usr/bin:/bin" "$uninstaller"
 test ! -e "$owned_home/.local/bin/tarlink"
 test -f "$owned_home/data/tarlink/keep.txt"
 test -d "$owned_home/data/tarlink"
+test -f "$owned_home/config/tarlink/keep.txt"
+test -d "$owned_home/config/tarlink"
 test ! -e "$owned_home/state/tarlink"
 test ! -e "$owned_home/cache/tarlink"
 

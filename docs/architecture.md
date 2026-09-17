@@ -52,6 +52,15 @@ bounded download ── digest verification ── staging directory
 
 The official registry is the only catalog and artifact-approval authority. TarLink directly enumerates each strict `apps/<id>/manifest.yaml` and resolves only its exact canonical platform entry; there is no generated index, compatibility filename fallback, architecture fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves only its normalized `apps/` data into a private generation, records the successful checked-at value as private generation metadata, validates and flushes that generation, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations. Historical releases remain registry-approved metadata; they do not imply local retention, and channel heads are never inferred by version sorting.
 
+Static artifact repositories are byte-only sources. A strict repository contains
+only `repository.json`, `v1/sha256/`, `v1/sha512/`, and digest-named regular
+objects. `Open` and `Verify` reject symlinks, extra public entries, malformed
+or oversized descriptors, and invalid object names. During atomic sync they
+also allow only TarLink's `.sync.lock`, `.object-stage-*`, and `.descriptor-*`
+transients. `Required` includes each resolved platform's exact digest-pinned
+remote desktop icon, so repository sync acquires icons through the same source
+ordering and digest verification as application and runtime artifacts.
+
 Normal registry-dependent commands bootstrap a missing cache automatically. Valid caches remain local-only for 24 hours according to their explicit checked-at metadata. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache without advancing checked-at. `refresh` always fetches and validates the current official registry, activates it before returning, and prints the successful UTC checked-at value. Local operations such as rollback and uninstall do not require networking. The CLI `list` command enumerates the available platform catalog and annotates installed state; the TUI's installed list remains a separate view.
 
 TarLink release discovery is separate from the application registry. A 24-hour
@@ -103,7 +112,7 @@ No step invokes an archive-provided program, shell, hook, installer, or arbitrar
 
 ## Removal flow
 
-Single-application uninstall loads strict state, requires canonical paths for the configured layout, validates every existing executable link, desktop entry, and icon, removes only those integrations, then removes the exact application root and state file. When a state record is corrupt, unparseable, or layout-invalid, uninstall degrades to removing only the TarLink-owned product paths plus the integrations proven by canonical path and content markers — `~/.local/bin` links resolving into the app payload and the canonical desktop entry carrying TarLink's `X-TarLink-AppID` marker while referencing the payload — and reports anything unprovable, including icons, as warnings. Full purge first enumerates those same state records and uses normal application uninstall. It removes fixed TarLink-owned child roots after application cleanup succeeds and removes product parents only when empty; shared directories such as `~/.local/bin`, `$XDG_DATA_HOME/applications`, and the hicolor icon hierarchy are never broadly deleted.
+Single-application uninstall loads strict state, requires canonical paths for the configured layout, validates every existing executable link, desktop entry, and icon, removes only those integrations, then removes the exact application root and state file. When a state record is corrupt, unparseable, or layout-invalid, uninstall degrades to removing only the TarLink-owned product paths plus the integrations proven by canonical path and content markers — `~/.local/bin` links resolving into the app payload and the canonical desktop entry carrying TarLink's `X-TarLink-AppID` marker while referencing the payload — and reports anything unprovable, including icons, as warnings. Full purge first enumerates those same state records and uses normal application uninstall. It removes fixed TarLink-owned data, state, cache, and config product roots — including `repositories.json` and its lock — after application cleanup succeeds, and removes product parents only when empty; shared directories such as `~/.local/bin`, `$XDG_DATA_HOME/applications`, and the hicolor icon hierarchy are never broadly deleted.
 
 The bootstrap `uninstall.sh` contains no application-cleanup implementation. It validates the install marker against the canonical binary, invokes `~/.local/bin/tarlink uninstall --all`, rechecks the retained digest after Go reports success, and then removes the marker and binary.
 
