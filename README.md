@@ -11,7 +11,7 @@ registry. Applications are versioned, verified, and easy to roll back—without
 Install TarLink:
 
 ```sh
-RELEASE=v0.18.0
+RELEASE=v0.18.1
 curl -fL --proto '=https' --tlsv1.2 -o tarlink-install.sh \
   "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/install.sh"
 sed -n '1,$p' tarlink-install.sh
@@ -21,7 +21,7 @@ sh tarlink-install.sh "$RELEASE"
 Uninstall TarLink:
 
 ```sh
-RELEASE=v0.18.0
+RELEASE=v0.18.1
 curl -fL --proto '=https' --tlsv1.2 -o tarlink-uninstall.sh \
   "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/uninstall.sh"
 sed -n '1,$p' tarlink-uninstall.sh
@@ -48,13 +48,12 @@ Run `tarlink` without a command to open the interactive TUI.
 
 ## Version status
 
-The latest stable release is `v0.18.0`. It predates static artifact
-repositories, which were added to current `main` afterward. This README follows
-current `main`; the `tarlink repository` commands and
+The latest stable release is `v0.18.1`. It includes static artifact
+repositories: the `tarlink repository` commands and
 `$XDG_CONFIG_HOME/tarlink/repositories.json` sources described in the technical
-documentation are therefore not available in the `v0.18.0` binary. That
-release acquires application, runtime, and remote-icon bytes from the HTTPS
-sources declared by the official registry.
+documentation are available in the release. Application, runtime, and
+remote-icon bytes remain governed by the HTTPS sources and exact digests
+declared by the official registry.
 
 ## Why TarLink?
 

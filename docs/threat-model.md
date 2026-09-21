@@ -1,7 +1,7 @@
 # Threat model
 
-This page follows current `main`. Static artifact repository controls are not
-present in the stable `v0.18.0` binary.
+This page follows current `main`. Static artifact repository controls are
+present in the stable `v0.18.1` binary.
 
 ## Trusted
 
