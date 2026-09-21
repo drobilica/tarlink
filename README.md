@@ -11,16 +11,32 @@ registry. Applications are versioned, verified, and easy to roll back—without
 Install TarLink:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/drobilica/tarlink/main/install.sh | sh
+RELEASE=v0.18.0
+curl -fL --proto '=https' --tlsv1.2 -o tarlink-install.sh \
+  "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/install.sh"
+sed -n '1,$p' tarlink-install.sh
+sh tarlink-install.sh "$RELEASE"
 ```
 
 Uninstall TarLink:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/drobilica/tarlink/main/uninstall.sh | sh
+RELEASE=v0.18.0
+curl -fL --proto '=https' --tlsv1.2 -o tarlink-uninstall.sh \
+  "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/uninstall.sh"
+sed -n '1,$p' tarlink-uninstall.sh
+sh tarlink-uninstall.sh
 ```
 
-It removes every managed application and the TarLink binary, leaving files it cannot prove TarLink owns and reporting them as warnings.
+The release-specific installer uses the same `RELEASE` for the official
+binary and `checksums.txt`; the uninstaller is downloaded from that release as
+well. These commands make the shell scripts inspectable before execution.
+Release tags and assets are publisher-controlled, so their checksums do not
+independently authenticate the publisher. Self-update is explicit and binds
+the latest resolved stable version to its checksum and binary before atomic
+replacement. Uninstallation removes every managed application and the
+TarLink binary, leaving files it cannot prove TarLink owns and reporting them
+as warnings.
 
 Install an application from the [official registry](https://github.com/drobilica/tarlink-registry):
 
