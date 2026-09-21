@@ -85,6 +85,9 @@ these sources, then the registry-declared upstream URL. Filesystem sources do
 not use links or hardlinks. A static repository can be published with nginx,
 for example by copying the completed tree into a document root, or to S3 with
 an external sync tool; TarLink does not perform publication or configure those
-services. Offline installation and recovery are not implemented. Any future
-offline mode must use a validated local registry snapshot and disable registry
-refresh and every network repository source.
+services. The bundled nginx image is compatible with a read-only root only when
+its `/tmp` runtime directory is writable; Kubernetes deployments should mount
+an `emptyDir` at `/tmp` and keep the repository document root separate. Offline
+installation and recovery are not implemented. Any future offline mode must use
+a validated local registry snapshot and disable registry refresh and every
+network repository source.
