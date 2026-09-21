@@ -102,6 +102,108 @@ test -x "$partial_home/.local/bin/tarlink"
 test -d "$partial_home/.local/share/tarlink"
 test -d "$partial_home/.config/tarlink"
 
+staging_failure_home=$fixture/staging-failure-home
+mkdir -p "$staging_failure_home/.local/bin"
+cat > "$staging_failure_home/.local/bin/tarlink" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 0755 "$staging_failure_home/.local/bin/tarlink"
+write_marker "$staging_failure_home"
+failing_mv_dir=$fixture/failing-mv
+mkdir -p "$failing_mv_dir"
+failing_mv=$failing_mv_dir/mv
+cat > "$failing_mv" <<'EOF'
+#!/bin/sh
+set -eu
+destination=
+for argument do
+  destination=$argument
+done
+case "$destination" in
+  */.tarlink-uninstall.*/tarlink) exit 1 ;;
+esac
+exec "$REAL_MV" "$@"
+EOF
+chmod 0755 "$failing_mv"
+if REAL_MV=$(command -v mv) HOME=$staging_failure_home PATH="$failing_mv_dir:$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"$fixture/staging-failure.stdout" 2>"$fixture/staging-failure.stderr"; then
+	printf '%s\n' 'injected removal staging failure unexpectedly succeeded' >&2
+	exit 1
+fi
+test -x "$staging_failure_home/.local/bin/tarlink"
+test -f "$staging_failure_home/.local/state/tarlink/install.sha256"
+grep -F 'installation preserved' "$fixture/staging-failure.stderr" >/dev/null
+HOME=$staging_failure_home PATH="$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"$fixture/staging-retry.stdout"
+test ! -e "$staging_failure_home/.local/bin/tarlink"
+test ! -e "$staging_failure_home/.local/state/tarlink/install.sha256"
+
+partial_removal_home=$fixture/partial-removal-home
+mkdir -p "$partial_removal_home/.local/bin"
+cat > "$partial_removal_home/.local/bin/tarlink" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 0755 "$partial_removal_home/.local/bin/tarlink"
+write_marker "$partial_removal_home"
+partial_rm_dir=$fixture/partial-rm
+mkdir -p "$partial_rm_dir"
+partial_rm=$partial_rm_dir/rm
+cat > "$partial_rm" <<'EOF'
+#!/bin/sh
+set -eu
+for argument do
+  case "$argument" in
+    */.tarlink-uninstall.*/tarlink)
+      "$REAL_RM" "$argument"
+      exit 1
+      ;;
+  esac
+done
+exec "$REAL_RM" "$@"
+EOF
+chmod 0755 "$partial_rm"
+if REAL_RM=$(command -v rm) HOME=$partial_removal_home PATH="$partial_rm_dir:$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"$fixture/partial-removal.stdout" 2>"$fixture/partial-removal.stderr"; then
+	printf '%s\n' 'injected partial removal failure unexpectedly succeeded' >&2
+	exit 1
+fi
+test -x "$partial_removal_home/.local/bin/tarlink"
+test -f "$partial_removal_home/.local/state/tarlink/install.sha256"
+test "$(cat "$partial_removal_home/.local/state/tarlink/install.sha256")" = "$(sha256sum "$partial_removal_home/.local/bin/tarlink" | awk '{print $1}')"
+grep -F 'installation preserved' "$fixture/partial-removal.stderr" >/dev/null
+HOME=$partial_removal_home PATH="$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"$fixture/partial-removal-retry.stdout"
+test ! -e "$partial_removal_home/.local/bin/tarlink"
+test ! -e "$partial_removal_home/.local/state/tarlink/install.sha256"
+
+cleanup_failure_home=$fixture/cleanup-failure-home
+mkdir -p "$cleanup_failure_home/.local/bin"
+cat > "$cleanup_failure_home/.local/bin/tarlink" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 0755 "$cleanup_failure_home/.local/bin/tarlink"
+write_marker "$cleanup_failure_home"
+cleanup_rm_dir=$fixture/cleanup-rm
+mkdir -p "$cleanup_rm_dir"
+cleanup_rm=$cleanup_rm_dir/rm
+cat > "$cleanup_rm" <<'EOF'
+#!/bin/sh
+set -eu
+for argument do
+  case "$argument" in
+    */.tarlink-uninstall.*/rollback/tarlink) exit 1 ;;
+  esac
+done
+exec "$REAL_RM" "$@"
+EOF
+chmod 0755 "$cleanup_rm"
+if REAL_RM=$(command -v rm) HOME=$cleanup_failure_home PATH="$cleanup_rm_dir:$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"$fixture/cleanup-failure.stdout" 2>"$fixture/cleanup-failure.stderr"; then
+	printf '%s\n' 'injected cleanup failure unexpectedly succeeded' >&2
+	exit 1
+fi
+test ! -e "$cleanup_failure_home/.local/bin/tarlink"
+test ! -e "$cleanup_failure_home/.local/state/tarlink/install.sha256"
+grep -F 'private cleanup is incomplete' "$fixture/cleanup-failure.stderr" >/dev/null
+
 cat > "$fake_home/.local/bin/tarlink" <<'EOF'
 #!/bin/sh
 exit 0

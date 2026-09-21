@@ -59,7 +59,7 @@ remote_verify_job=$(awk '
   in_job { print }
 ' "$release_workflow")
 printf '%s\n' "$remote_verify_job" | grep -E '^    permissions:$' >/dev/null
-printf '%s\n' "$remote_verify_job" | grep -E '^      contents: write$' >/dev/null
+printf '%s\n' "$remote_verify_job" | grep -E '^      contents: read$' >/dev/null
 if grep -F 'gh release download "$RELEASE_TAG"' "$release_workflow" >/dev/null; then
 	printf '%s\n' 'draft assets must be downloaded through the authenticated asset API' >&2
 	exit 1

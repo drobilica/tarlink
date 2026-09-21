@@ -138,10 +138,17 @@ case "$release" in
 	'')
 		fail 'release must not be empty'
 		;;
-	*[!A-Za-z0-9._-]*)
-		fail 'release may contain only letters, numbers, dots, underscores, and hyphens'
-		;;
 esac
+
+stable_release() {
+	printf '%s' "$1" | TARLINK_RELEASE="$1" awk '
+		BEGIN {
+			if (index(ENVIRON["TARLINK_RELEASE"], "\n") != 0) exit 1
+		}
+		NR == 1 && /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/ { found=1 }
+		END { exit !(NR == 1 && found) }
+	'
+}
 
 if [ "$release" = latest ]; then
 	latest_location=$(curl -q --fail --location --max-redirs 5 --connect-timeout 15 --max-time 600 \
@@ -153,9 +160,13 @@ if [ "$release" = latest ]; then
 		*) fail 'latest TarLink release redirect is not official' ;;
 	esac
 	release=${latest_location#"$repository/releases/tag/"}
-	if ! printf '%s\n' "$release" | awk '/^v[0-9]+\.[0-9]+\.[0-9]+$/ { found=1 } END { exit !found }'; then
+	if ! stable_release "$release"; then
 		fail 'latest TarLink release redirect has an invalid version'
 	fi
+fi
+
+if ! stable_release "$release"; then
+	fail 'release must be a stable vMAJOR.MINOR.PATCH version'
 fi
 
 case "$(uname -s)" in

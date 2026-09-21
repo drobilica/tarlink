@@ -170,12 +170,98 @@ if ! "$binary" uninstall --all; then
 fi
 
 verify_owned_binary
-test "$binary_digest" = "$expected_digest" || {
-	echo "tarlink binary changed during uninstall: $binary" >&2
+	test "$binary_digest" = "$expected_digest" || {
+		echo "tarlink binary changed during uninstall: $binary" >&2
+		exit 1
+	}
+
+bin_dir=${binary%/*}
+staged_dir=$(mktemp -d "$bin_dir/.tarlink-uninstall.XXXXXXXX") || {
+	echo 'uninstall.sh: could not create a removal staging directory' >&2
 	exit 1
 }
-rm "$marker"
-rm "$binary"
+if ! safe_layout_path "$staged_dir"; then
+	rmdir "$staged_dir" 2>/dev/null || :
+	echo "uninstall.sh: removal staging directory is unsafe: $staged_dir" >&2
+	exit 1
+fi
+
+rollback_dir=$staged_dir/rollback
+
+rollback_staged_removal() {
+	rollback_status=0
+	for name in tarlink install.sha256; do
+		destination=$binary
+		[ "$name" = install.sha256 ] && destination=$marker
+		if [ -e "$destination" ] || [ -L "$destination" ]; then
+			if [ -e "$staged_dir/$name" ] || [ -e "$rollback_dir/$name" ]; then
+				rollback_status=1
+			fi
+			continue
+		fi
+		source=
+		if [ -e "$staged_dir/$name" ]; then
+			source=$staged_dir/$name
+		elif [ -e "$rollback_dir/$name" ]; then
+			source=$rollback_dir/$name
+		else
+			rollback_status=1
+			continue
+		fi
+		if ! mv "$source" "$destination"; then
+			rollback_status=1
+		elif [ "$source" = "$staged_dir/$name" ] && [ -e "$rollback_dir/$name" ] && ! rm "$rollback_dir/$name"; then
+			rollback_status=1
+		fi
+	done
+	if [ -d "$rollback_dir" ]; then
+		rmdir "$rollback_dir" 2>/dev/null || rollback_status=1
+	fi
+	rmdir "$staged_dir" 2>/dev/null || rollback_status=1
+	return "$rollback_status"
+}
+
+rollback_on_signal() {
+	trap - HUP INT TERM
+	rollback_staged_removal || echo 'uninstall.sh: rollback after interruption was incomplete' >&2
+	exit 1
+}
+
+trap rollback_on_signal HUP INT TERM
+
+if ! mv "$binary" "$staged_dir/tarlink"; then
+	rmdir "$staged_dir" 2>/dev/null || :
+	echo 'uninstall.sh: could not stage the canonical binary; installation preserved' >&2
+	exit 1
+fi
+if ! mv "$marker" "$staged_dir/install.sha256"; then
+	rollback_staged_removal || echo 'uninstall.sh: rollback after staging failure was incomplete' >&2
+	echo 'uninstall.sh: could not stage the ownership marker; installation preserved' >&2
+	exit 1
+fi
+
+if ! mkdir "$rollback_dir" || ! cp -p "$staged_dir/tarlink" "$rollback_dir/tarlink" || ! cp -p "$staged_dir/install.sha256" "$rollback_dir/install.sha256"; then
+	rollback_staged_removal || echo 'uninstall.sh: rollback after backup failure was incomplete' >&2
+	echo 'uninstall.sh: could not prepare removal rollback; installation preserved' >&2
+	exit 1
+fi
+
+if ! rm "$staged_dir/tarlink" || ! rm "$staged_dir/install.sha256"; then
+	rollback_staged_removal || echo 'uninstall.sh: rollback after removal failure was incomplete' >&2
+	echo 'uninstall.sh: could not remove staged TarLink files; installation preserved' >&2
+	exit 1
+fi
+
+trap - HUP INT TERM
+cleanup_status=0
+rm "$rollback_dir/tarlink" 2>/dev/null || cleanup_status=1
+rm "$rollback_dir/install.sha256" 2>/dev/null || cleanup_status=1
+rmdir "$rollback_dir" 2>/dev/null || cleanup_status=1
+rmdir "$staged_dir" 2>/dev/null || cleanup_status=1
+if [ "$cleanup_status" -ne 0 ]; then
+	echo 'uninstall.sh: TarLink files were removed, but private cleanup is incomplete' >&2
+	exit 1
+fi
 
 for product in "$data_home/tarlink" "$state_home/tarlink" "$cache_home/tarlink" "$config_home/tarlink"; do
 	safe_layout_path "$product" || continue
