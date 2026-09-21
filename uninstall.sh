@@ -221,6 +221,14 @@ rollback_staged_removal() {
 	return "$rollback_status"
 }
 
+rollback_on_signal() {
+	trap - HUP INT TERM
+	rollback_staged_removal || echo 'uninstall.sh: rollback after interruption was incomplete' >&2
+	exit 1
+}
+
+trap rollback_on_signal HUP INT TERM
+
 if ! mv "$binary" "$staged_dir/tarlink"; then
 	rmdir "$staged_dir" 2>/dev/null || :
 	echo 'uninstall.sh: could not stage the canonical binary; installation preserved' >&2
@@ -243,8 +251,16 @@ if ! rm "$staged_dir/tarlink" || ! rm "$staged_dir/install.sha256"; then
 	echo 'uninstall.sh: could not remove staged TarLink files; installation preserved' >&2
 	exit 1
 fi
-if ! rm -rf "$staged_dir"; then
+
+trap - HUP INT TERM
+cleanup_status=0
+rm "$rollback_dir/tarlink" 2>/dev/null || cleanup_status=1
+rm "$rollback_dir/install.sha256" 2>/dev/null || cleanup_status=1
+rmdir "$rollback_dir" 2>/dev/null || cleanup_status=1
+rmdir "$staged_dir" 2>/dev/null || cleanup_status=1
+if [ "$cleanup_status" -ne 0 ]; then
 	echo 'uninstall.sh: TarLink files were removed, but private cleanup is incomplete' >&2
+	exit 1
 fi
 
 for product in "$data_home/tarlink" "$state_home/tarlink" "$cache_home/tarlink" "$config_home/tarlink"; do

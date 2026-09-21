@@ -174,6 +174,36 @@ HOME=$partial_removal_home PATH="$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"
 test ! -e "$partial_removal_home/.local/bin/tarlink"
 test ! -e "$partial_removal_home/.local/state/tarlink/install.sha256"
 
+cleanup_failure_home=$fixture/cleanup-failure-home
+mkdir -p "$cleanup_failure_home/.local/bin"
+cat > "$cleanup_failure_home/.local/bin/tarlink" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 0755 "$cleanup_failure_home/.local/bin/tarlink"
+write_marker "$cleanup_failure_home"
+cleanup_rm_dir=$fixture/cleanup-rm
+mkdir -p "$cleanup_rm_dir"
+cleanup_rm=$cleanup_rm_dir/rm
+cat > "$cleanup_rm" <<'EOF'
+#!/bin/sh
+set -eu
+for argument do
+  case "$argument" in
+    */.tarlink-uninstall.*/rollback/tarlink) exit 1 ;;
+  esac
+done
+exec "$REAL_RM" "$@"
+EOF
+chmod 0755 "$cleanup_rm"
+if REAL_RM=$(command -v rm) HOME=$cleanup_failure_home PATH="$cleanup_rm_dir:$sha256sum_dir:/usr/bin:/bin" "$uninstaller" >"$fixture/cleanup-failure.stdout" 2>"$fixture/cleanup-failure.stderr"; then
+	printf '%s\n' 'injected cleanup failure unexpectedly succeeded' >&2
+	exit 1
+fi
+test ! -e "$cleanup_failure_home/.local/bin/tarlink"
+test ! -e "$cleanup_failure_home/.local/state/tarlink/install.sha256"
+grep -F 'private cleanup is incomplete' "$fixture/cleanup-failure.stderr" >/dev/null
+
 cat > "$fake_home/.local/bin/tarlink" <<'EOF'
 #!/bin/sh
 exit 0
