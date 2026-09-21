@@ -23,7 +23,7 @@ These are integrity and failure-safety guarantees, not independent publisher
 authentication. Release tags, assets, the registry, and their checksums remain
 publisher-controlled. A checksum delivered by the same compromised publisher
 cannot authenticate that publisher. The reviewed GitHub metadata reports the
-current `v0.18.0` release as `immutable: false`; its annotated tag is also
+prior `v0.18.0` release as `immutable: false`; its annotated tag is also
 unsigned, so the release tag is an identity selector, not an independent trust
 root.
 

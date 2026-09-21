@@ -17,8 +17,8 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 - A missing registry is fetched automatically. Explicit refresh always fetches the current official registry. Each activated cache generation stores the successful UTC check time as private metadata; failed stale or explicit refreshes cannot advance that time or replace the last successfully validated cache.
 - XDG data, state, and cache homes must be absolute paths below the user's home and cannot contain control characters. Managed directory chains are checked without accepting symlink components before mutation.
 
-Static artifact repositories are a current-main feature, not part of the
-`v0.18.0` release. They are byte sources only. Their strict descriptor is
+Static artifact repositories are included in the `v0.18.1` release. They are
+byte sources only. Their strict descriptor is
 `{"format":"content-repository","version":1}`; unsupported versions,
 unknown descriptor fields, oversized descriptors, unsafe filesystem entries,
 extra public-tree entries, and objects whose full content hash does not equal
@@ -140,7 +140,7 @@ their paths. The bundled nginx image keeps its PID and temporary paths under
 using that mode must mount a writable `emptyDir` at `/tmp`. The repository
 document root remains a separate data volume. TarLink never uploads, deletes,
 computes an index, or configures a server.
-### Static repository operation (current main; not in v0.18.0)
+### Static repository operation
 
 Static repositories are untrusted content stores, never registry authorities.
 TarLink accepts only the exact descriptor format/version, rejects unsafe
