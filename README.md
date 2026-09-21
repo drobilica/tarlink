@@ -30,12 +30,23 @@ tarlink install blender
 
 Run `tarlink` without a command to open the interactive TUI.
 
+## Version status
+
+The latest stable release is `v0.18.0`. It predates static artifact
+repositories, which were added to current `main` afterward. This README follows
+current `main`; the `tarlink repository` commands and
+`$XDG_CONFIG_HOME/tarlink/repositories.json` sources described in the technical
+documentation are therefore not available in the `v0.18.0` binary. That
+release acquires application, runtime, and remote-icon bytes from the HTTPS
+sources declared by the official registry.
+
 ## Why TarLink?
 
 - **Rootless and user-owned.** Everything TarLink manages stays in your user
   environment; no `sudo`, daemon, or system package is required.
-- **Verified upstream artifacts.** Registry manifests identify exact official
+- **Digest-pinned artifacts.** Registry manifests identify exact official
   upstream releases and require a registry-approved SHA-256 or SHA-512 digest.
+  The digest verifies the downloaded bytes; it is not publisher authentication.
 - **Safe, versioned lifecycle.** Downloads are staged, installs are activated
   atomically, and the current version plus one previous version are retained
   for rollback.
@@ -53,12 +64,10 @@ Run `tarlink` without a command to open the interactive TUI.
 ## How it works
 
 ```text
-Official registry
+Official registry: exact release and digest
         ↓
-Exact upstream release
-        ↓
-Digest verification
-        ↓
+Configured static repository or registry-declared HTTPS source
+        ↓ exact-byte digest verification
 Safe staging
         ↓
 Versioned user-owned install
@@ -102,6 +111,12 @@ applications, and never removes extra installed applications. Use
 to every selected application when installing either explicit applications or
 a lock snapshot.
 
+A lock snapshot contains no artifact URLs, checksums, or payloads. Replay is a
+catalog re-resolution workflow, not an offline backup or recovery guarantee: it
+cannot proceed when the validated registry metadata needed to resolve an entry
+is unavailable. It may use already available local bytes, but it does not
+replace the registry or retained application state.
+
 In the TUI, use `↑`/`↓` or `j`/`k` to navigate and `Enter` to open details or
 review the current selection. `Space` selects applications by stable ID; move
 the cursor afterward without changing the selection. Confirming a batch shows
@@ -118,9 +133,12 @@ so it depends on the Linux architecture published by each upstream.
 ## Security
 
 TarLink treats registry data, release downloads, archives, and local managed
-files as untrusted input. It accepts only the official registry and verified
-official release artifacts, enforces HTTPS and resource limits, rejects unsafe
-archive structures, and validates ownership before changing or removing files.
+files as untrusted input. It accepts only the official registry and exact
+digest-verified artifact bytes, enforces HTTPS and resource limits, rejects
+unsafe archive structures, and validates ownership before changing or removing
+files. A digest proves that the bytes match trusted registry metadata; it does
+not authenticate the upstream publisher or the mutable registry. Exact
+platform and runtime-closure checks address compatibility, not isolation.
 TarLink does not sandbox applications after activation; they run with the
 user's permissions.
 
@@ -151,12 +169,12 @@ changes before the project reaches 1.0.
 
 ## Future direction (planned, not implemented)
 
-TarLink may consume generic SHA-256-addressed artifact caches that can be public
-or user-hosted; `tarlink-data` may consume the same kind of cache independently.
-Each consumer will remain responsible for verifying its exact expected digest.
-Shared low-level cache primitives will be considered only after real
-implementations show what should be shared, with possible reuse by other open
-source tools. No cache transport—including OCI/ORAS—is selected or promised.
+An offline installation or recovery mode remains planned. It would require a
+validated local registry snapshot and would have to disable registry refresh and
+network repository sources; the current lock workflow is not that mode. Shared
+low-level cache primitives may be considered after real implementations show
+what should be shared, with possible reuse by other open-source tools. No cache
+transport—including OCI/ORAS—is selected or promised.
 The projects will continue to favor Unix-style composition and small, stable
 machine interfaces. Minor releases receive a source dead-code audit; routine
 patch releases do not require one.
