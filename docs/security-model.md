@@ -135,8 +135,11 @@ aws s3 sync REPOSITORY/ s3://BUCKET/tarlink/
 The initialized tree's public directories and regular files are readable by a
 separate nginx reader, while TarLink's lock and staging entries remain private.
 The server or bucket should serve `repository.json` and `v1/` without rewriting
-their paths. TarLink never uploads, deletes, computes an index, or configures a
-server.
+their paths. The bundled nginx image keeps its PID and temporary paths under
+`/tmp` so it can run with a read-only root filesystem; a Kubernetes deployment
+using that mode must mount a writable `emptyDir` at `/tmp`. The repository
+document root remains a separate data volume. TarLink never uploads, deletes,
+computes an index, or configures a server.
 ### Static repository operation (current main; not in v0.18.0)
 
 Static repositories are untrusted content stores, never registry authorities.
