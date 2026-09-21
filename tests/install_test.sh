@@ -141,6 +141,10 @@ case "$url" in
     if [ "${FAIL_BINARY_DOWNLOAD:-0}" = 1 ]; then
       exit 22
     fi
+    if [ "${CORRUPT_BINARY_DOWNLOAD:-0}" = 1 ]; then
+      printf 'truncated-corrupt-binary\n' > "$output"
+      exit 0
+    fi
     if [ -n "${TARLINK_TEST_ASSET_DIR:-}" ]; then
       asset=${url##*/}
       cp "$TARLINK_TEST_ASSET_DIR/$asset" "$output"
@@ -289,7 +293,8 @@ fi
 
 for invalid_latest in \
   'https://github.com/drobilica/other/releases/tag/v0.9.8' \
-  'https://github.com/drobilica/tarlink/releases/tag/latest'; do
+  'https://github.com/drobilica/tarlink/releases/tag/latest' \
+  'https://github.com/drobilica/tarlink/releases/tag/v01.2.3'; do
   invalid_latest_home=$fixture/invalid-latest-$(printf '%s' "$invalid_latest" | sha256sum | awk '{print substr($1,1,8)}')
   mkdir -p "$invalid_latest_home"
   if FAKE_LATEST_LOCATION=$invalid_latest HOME=$invalid_latest_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$invalid_latest_home.log" "$installer" >"$invalid_latest_home.stdout" 2>"$invalid_latest_home.stderr"; then
@@ -298,6 +303,42 @@ for invalid_latest in \
   fi
   grep -F 'latest TarLink release' "$invalid_latest_home.stderr" >/dev/null
 done
+
+for invalid_explicit in v1.2.3-rc.1 v01.2.3 v1.02.3 v1.2.03 v1.2; do
+  invalid_explicit_home=$fixture/invalid-explicit-$(printf '%s' "$invalid_explicit" | sha256sum | awk '{print substr($1,1,8)}')
+  mkdir -p "$invalid_explicit_home"
+  if HOME=$invalid_explicit_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$invalid_explicit_home.log" "$installer" "$invalid_explicit" >"$invalid_explicit_home.stdout" 2>"$invalid_explicit_home.stderr"; then
+    printf '%s\n' 'invalid explicit release unexpectedly succeeded' >&2
+    exit 1
+  fi
+  test ! -e "$invalid_explicit_home/.local/bin/tarlink"
+  test ! -e "$invalid_explicit_home.log"
+  grep -F 'release must be a stable vMAJOR.MINOR.PATCH version' "$invalid_explicit_home.stderr" >/dev/null
+done
+
+invalid_multiline_home=$fixture/invalid-multiline-home
+mkdir -p "$invalid_multiline_home"
+invalid_multiline_release='v1.2.3
+v9.9.9'
+if HOME=$invalid_multiline_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$invalid_multiline_home.log" "$installer" "$invalid_multiline_release" >"$invalid_multiline_home.stdout" 2>"$invalid_multiline_home.stderr"; then
+  printf '%s\n' 'multiline explicit release unexpectedly succeeded' >&2
+  exit 1
+fi
+test ! -e "$invalid_multiline_home/.local/bin/tarlink"
+test ! -e "$invalid_multiline_home.log"
+grep -F 'release must be a stable vMAJOR.MINOR.PATCH version' "$invalid_multiline_home.stderr" >/dev/null
+
+invalid_trailing_newline_home=$fixture/invalid-trailing-newline-home
+mkdir -p "$invalid_trailing_newline_home"
+invalid_trailing_newline_release='v1.2.3
+'
+if HOME=$invalid_trailing_newline_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$invalid_trailing_newline_home.log" "$installer" "$invalid_trailing_newline_release" >"$invalid_trailing_newline_home.stdout" 2>"$invalid_trailing_newline_home.stderr"; then
+  printf '%s\n' 'trailing-newline explicit release unexpectedly succeeded' >&2
+  exit 1
+fi
+test ! -e "$invalid_trailing_newline_home/.local/bin/tarlink"
+test ! -e "$invalid_trailing_newline_home.log"
+grep -F 'release must be a stable vMAJOR.MINOR.PATCH version' "$invalid_trailing_newline_home.stderr" >/dev/null
 
 ownership_mismatch_home=$fixture/ownership-mismatch-home
 mkdir -p "$ownership_mismatch_home/.local/bin"
@@ -356,6 +397,19 @@ if FAIL_BINARY_DOWNLOAD=1 HOME=$binary_failed_home PATH="$fake_bin:/sbin:/usr/bi
 fi
 test "$(cat "$binary_failed_home/.local/bin/tarlink")" = previous
 grep -F 'could not download tarlink-linux-' "$fixture/binary-failed.stderr" >/dev/null
+
+corrupt_binary_home=$fixture/corrupt-binary-home
+mkdir -p "$corrupt_binary_home/.local/bin"
+printf 'previous\n' > "$corrupt_binary_home/.local/bin/tarlink"
+chmod 0755 "$corrupt_binary_home/.local/bin/tarlink"
+write_marker "$corrupt_binary_home"
+if CORRUPT_BINARY_DOWNLOAD=1 HOME=$corrupt_binary_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$fixture/corrupt-binary.log" "$installer" >"$fixture/corrupt-binary.stdout" 2>"$fixture/corrupt-binary.stderr"; then
+  printf '%s\n' 'corrupt binary download unexpectedly succeeded' >&2
+  exit 1
+fi
+test "$(cat "$corrupt_binary_home/.local/bin/tarlink")" = previous
+test "$(cat "$corrupt_binary_home/.local/state/tarlink/install.sha256")" = "$(sha256sum "$corrupt_binary_home/.local/bin/tarlink" | awk '{print $1}')"
+grep -F 'SHA-256 verification failed' "$fixture/corrupt-binary.stderr" >/dev/null
 
 relative_home=$fixture/relative-home
 if (cd "$fixture" && HOME=relative-home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$fixture/relative.log "$installer" >"$fixture/relative.stdout" 2>"$fixture/relative.stderr"); then
