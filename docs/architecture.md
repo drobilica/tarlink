@@ -52,7 +52,8 @@ bounded download ── digest verification ── staging directory
 
 The official registry is the only catalog and artifact-approval authority. TarLink directly enumerates each strict `apps/<id>/manifest.yaml` and resolves only its exact canonical platform entry; there is no generated index, compatibility filename fallback, architecture fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves only its normalized `apps/` data into a private generation, records the successful checked-at value as private generation metadata, validates and flushes that generation, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations. Historical releases remain registry-approved metadata; they do not imply local retention, and channel heads are never inferred by version sorting.
 
-Static artifact repositories are byte-only sources. A strict repository contains
+Static artifact repositories are a current-main feature, not part of the
+`v0.18.0` release. They are byte-only sources. A strict repository contains
 only `repository.json`, `v1/sha256/`, `v1/sha512/`, and digest-named regular
 objects. `Open` and `Verify` reject symlinks, extra public entries, malformed
 or oversized descriptors, and invalid object names. During atomic sync they
@@ -61,7 +62,7 @@ transients. `Required` includes each resolved platform's exact digest-pinned
 remote desktop icon, so repository sync acquires icons through the same source
 ordering and digest verification as application and runtime artifacts.
 
-Normal registry-dependent commands bootstrap a missing cache automatically. Valid caches remain local-only for 24 hours according to their explicit checked-at metadata. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache without advancing checked-at. `refresh` always fetches and validates the current official registry, activates it before returning, and prints the successful UTC checked-at value. Local operations such as rollback and uninstall do not require networking. The CLI `list` command enumerates the available platform catalog and annotates installed state; the TUI's installed list remains a separate view.
+Normal registry-dependent commands bootstrap a missing official-registry cache automatically. Valid official-registry caches remain local-only for 24 hours according to their explicit checked-at metadata. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache without advancing checked-at. `refresh` always fetches and validates the current official registry, activates it before returning, and prints the successful UTC checked-at value. Local operations such as rollback and uninstall do not require networking. The CLI `list` command enumerates the available platform catalog and annotates installed state; the TUI's installed list remains a separate view.
 
 TarLink release discovery is separate from the application registry. A 24-hour
 XDG cache makes version checks advisory and non-blocking for normal operations.

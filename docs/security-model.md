@@ -17,7 +17,8 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 - A missing registry is fetched automatically. Explicit refresh always fetches the current official registry. Each activated cache generation stores the successful UTC check time as private metadata; failed stale or explicit refreshes cannot advance that time or replace the last successfully validated cache.
 - XDG data, state, and cache homes must be absolute paths below the user's home and cannot contain control characters. Managed directory chains are checked without accepting symlink components before mutation.
 
-Static artifact repositories are byte sources only. Their strict descriptor is
+Static artifact repositories are a current-main feature, not part of the
+`v0.18.0` release. They are byte sources only. Their strict descriptor is
 `{"format":"content-repository","version":1}`; unsupported versions,
 unknown descriptor fields, oversized descriptors, unsafe filesystem entries,
 extra public-tree entries, and objects whose full content hash does not equal
@@ -32,8 +33,9 @@ truncation, size, and digest failures are ordinary source failures and fall
 through to the next source; cancellation and destination-write failures stop
 the operation. A malformed optional `repositories.json` is retained as an
 acquisition error rather than being partially or silently used, while local
-lifecycle commands can still start. A future offline mode must prohibit both
-registry refresh and every network repository source.
+lifecycle commands can still start. No offline installation or recovery mode is
+implemented. A future offline mode would have to prohibit both registry refresh
+and every network repository source.
 
 The official registry is the artifact-approval boundary. Schema-v5
 `verification.source` records an official upstream release or artifact origin
@@ -108,7 +110,11 @@ installations are refused.
 
 TarLink has no telemetry, plugins, manifest-controlled arbitrary command arguments, hooks, custom destinations, automatic updater, daemon, background updater, system-wide installation, or operating-system package manager. It uses no CGO. The sole external execution interface is the compiled, locally validated Valve v2 adapter described above; it accepts only the stored application executable plus user launch arguments, with no shell. Self-upgrade is explicit only; it never executes or restarts the replacement binary.
 
-TarLink proves that downloaded bytes match the reviewed registry digest. It does not independently prove that the registry or upstream publisher is uncompromised and does not sandbox the installed application at runtime.
+TarLink proves that downloaded bytes match the reviewed registry digest. This is
+integrity verification, not publisher authentication: TarLink does not
+independently prove that the registry or upstream publisher is uncompromised.
+Exact platform and runtime-closure checks address compatibility, not isolation;
+TarLink does not sandbox the installed application at runtime.
 
 ### Publishing a static repository
 
@@ -131,7 +137,7 @@ separate nginx reader, while TarLink's lock and staging entries remain private.
 The server or bucket should serve `repository.json` and `v1/` without rewriting
 their paths. TarLink never uploads, deletes, computes an index, or configures a
 server.
-# Static artifact repositories
+### Static repository operation (current main; not in v0.18.0)
 
 Static repositories are untrusted content stores, never registry authorities.
 TarLink accepts only the exact descriptor format/version, rejects unsafe
