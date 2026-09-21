@@ -49,6 +49,8 @@ test "$(grep -Fc 'git ls-remote origin' "$release_workflow")" -ge 2
 grep -F 'EXPECTED_SHA: ${{ github.sha }}' "$release_workflow" >/dev/null
 test "$(grep -Fc 'cmp -- "release-assets/$name" "remote/$name"' "$release_workflow")" -ge 2
 test "$(grep -Fc 'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"' "$release_workflow")" -ge 2
+test "$(grep -Fc 'for attempt in $(seq 1 15)' "$release_workflow")" -ge 2
+test "$(grep -Fc 'sleep 2' "$release_workflow")" -ge 2
 test "$(grep -Fc "gh api --header 'Accept: application/octet-stream' \"\$asset_url\"" "$release_workflow")" -ge 2
 test "$(grep -Fc './tests/release_artifacts_test.sh' "$release_workflow")" -ge 3
 test "$(grep -Fc 'registry validate "$PWD/registry"' "$release_workflow")" -ge 2

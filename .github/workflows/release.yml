@@ -414,8 +414,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           release_pages="$RUNNER_TEMP/tarlink-release-pages.json"
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$release_pages"
-          release_count=$(jq -r --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)] | length' "$release_pages")
+          release_count=0
+          for attempt in $(seq 1 15); do
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$release_pages"
+            release_count=$(jq -r --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)] | length' "$release_pages")
+            [[ "$release_count" == 1 ]] && break
+            sleep 2
+          done
           test "$release_count" = 1 || {
             echo "expected exactly one draft release for tag $RELEASE_TAG, found $release_count" >&2
             exit 1
@@ -523,8 +528,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           release_pages="$RUNNER_TEMP/tarlink-release-pages.json"
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$release_pages"
-          release_count=$(jq -r --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)] | length' "$release_pages")
+          release_count=0
+          for attempt in $(seq 1 15); do
+            gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$release_pages"
+            release_count=$(jq -r --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)] | length' "$release_pages")
+            [[ "$release_count" == 1 ]] && break
+            sleep 2
+          done
           test "$release_count" = 1 || {
             echo "expected exactly one draft release for tag $RELEASE_TAG, found $release_count" >&2
             exit 1
