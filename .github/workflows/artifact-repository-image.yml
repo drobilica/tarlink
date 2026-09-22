@@ -1,6 +1,12 @@
 name: Artifact repository image
 
 on:
+  workflow_dispatch:
+    inputs:
+      image_version:
+        description: Independent artifact repository image version (for example v0.1.0)
+        required: true
+        type: string
   push:
     branches:
       - main
@@ -19,11 +25,12 @@ permissions:
   packages: write
 
 concurrency:
-  group: artifact-repository-image-${{ github.ref }}
-  cancel-in-progress: true
+  group: artifact-repository-image-publish
+  cancel-in-progress: false
 
 jobs:
   publish:
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -55,6 +62,26 @@ jobs:
       - name: Determine immutable image reference
         run: echo "IMAGE=ghcr.io/drobilica/tarlink-artifact-repository:${GITHUB_SHA}" >> "$GITHUB_ENV"
 
+      - name: Check version tag is new
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          IMAGE_VERSION: ${{ inputs.image_version }}
+        run: |
+          if [[ ! "$IMAGE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Image version must use vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          version_image="ghcr.io/drobilica/tarlink-artifact-repository:${IMAGE_VERSION}"
+          if docker buildx imagetools inspect "$version_image" > /tmp/version-inspect.log 2>&1; then
+            echo "Image version already exists: $version_image" >&2
+            exit 1
+          fi
+          if ! grep -Eq 'manifest unknown|not found' /tmp/version-inspect.log; then
+            cat /tmp/version-inspect.log >&2
+            exit 1
+          fi
+          echo "VERSION_IMAGE=$version_image" >> "$GITHUB_ENV"
+
       - name: Build and publish artifact repository image
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
@@ -62,6 +89,8 @@ jobs:
           file: build/artifact-repository/Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ${{ env.IMAGE }}
+          tags: |
+            ${{ env.IMAGE }}
+            ${{ env.VERSION_IMAGE }}
           cache-from: type=gha,scope=artifact-repository-image
           cache-to: type=gha,mode=max,scope=artifact-repository-image
