@@ -22,4 +22,6 @@ ENV HOME=/tmp/tarlink-home \
     XDG_STATE_HOME=/tmp/tarlink-home/state \
     XDG_CACHE_HOME=/tmp/tarlink-home/cache
 
+ENTRYPOINT ["nginx", "-g", "daemon off;"]
+
 EXPOSE 8080
