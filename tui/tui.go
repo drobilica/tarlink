@@ -17,10 +17,13 @@ import (
 	"charm.land/bubbles/v2/progress"
 	"charm.land/bubbles/v2/table"
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/clipperhouse/displaywidth"
 	"github.com/drobilica/tarlink/internal/app"
+	"github.com/drobilica/tarlink/internal/version"
 )
 
 type screen uint8
@@ -48,9 +51,10 @@ const (
 )
 
 type loadedMsg struct {
-	available []app.Application
-	installed []app.Application
-	err       error
+	available  []app.Application
+	installed  []app.Application
+	err        error
+	generation uint64
 }
 
 type searchMsg struct {
@@ -87,22 +91,27 @@ type operationMsg struct {
 	move         bool
 	clearUpgrade bool
 	conflict     *app.UninstallConflict
+	generation   uint64
+	appID        string
+	partial      bool
 }
 
 type progressMsg struct {
-	hub   *operationHub
-	event app.Progress
+	hub        *operationHub
+	event      app.Progress
+	generation uint64
 }
 
 type operationHub struct {
-	mu        sync.Mutex
-	pending   []app.Progress
-	latest    *app.Progress
-	lastStage app.ProgressStage
-	lastEmit  time.Time
-	wake      chan struct{}
-	result    chan operationMsg
-	ctx       context.Context
+	mu         sync.Mutex
+	pending    []app.Progress
+	latest     *app.Progress
+	lastStage  app.ProgressStage
+	lastEmit   time.Time
+	wake       chan struct{}
+	result     chan operationMsg
+	ctx        context.Context
+	generation uint64
 }
 
 type model struct {
@@ -116,6 +125,8 @@ type model struct {
 	pathConflicts       []app.PathConflict
 	available           []app.Application
 	installed           []app.Application
+	dataLoaded          bool
+	loading             bool
 	applicationFilter   applicationFilter
 	versions            []app.Version
 	selected            int
@@ -128,8 +139,14 @@ type model struct {
 	detail              *app.Application
 	searching           bool
 	query               string
+	searchFrom          screen
+	searchPriorQuery    string
+	searchPriorSelected int
+	searchPriorCursorID string
 	busy                string
 	status              string
+	feedbackAppID       string
+	feedbackPartial     bool
 	err                 error
 	width               int
 	height              int
@@ -137,6 +154,8 @@ type model struct {
 	progressSpeed       float64
 	progressSpeedAt     time.Time
 	estimator           speedEstimator
+	operationGeneration uint64
+	requestGeneration   uint64
 	color               bool
 	theme               tuiTheme
 	help                help.Model
@@ -150,6 +169,8 @@ type model struct {
 	helpOverlay         bool
 	componentsReady     bool
 	searchInput         textinput.Model
+	reviewScroll        int
+	overlayScroll       int
 }
 
 // Run starts the terminal renderer. All application changes are delegated to
@@ -160,7 +181,7 @@ func Run(ctx context.Context, service app.Service, input io.Reader, output io.Wr
 	}
 	operationContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	m := model{ctx: operationContext, service: service, screen: screenAvailable, color: colorEnabled(output), theme: newTheme(colorEnabled(output)), help: newHelp(colorEnabled(output)), progressBar: newProgress(colorEnabled(output)), cancel: cancel}
+	m := model{ctx: operationContext, service: service, screen: screenAvailable, loading: true, color: colorEnabled(output), theme: newTheme(colorEnabled(output)), help: newHelp(colorEnabled(output)), progressBar: newProgress(colorEnabled(output)), cancel: cancel}
 	m.initComponents()
 	program := tea.NewProgram(
 		m,
@@ -182,13 +203,24 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = message.Width
 		m.height = message.Height
 		m.clampSelection()
+		if m.screen == screenDetails || m.screen == screenVersions {
+			v := m.reviewViewport(max(1, m.height-4))
+			m.reviewScroll = v.YOffset()
+		}
 		m.help.SetWidth(m.width)
 		m.progressBar.SetWidth(progressBarWidthFor(m.width))
 		m.searchInput.SetWidth(max(12, m.width-18))
 		return m, nil
 	case loadedMsg:
+		if message.generation != m.requestGeneration {
+			return m, nil
+		}
 		m.busy = ""
+		m.loading = false
 		m.err = message.err
+		// Keep previously loaded counts during a refresh failure; only the
+		// initial unavailable state suppresses aggregate counts.
+		m.dataLoaded = m.dataLoaded || message.err == nil
 		if message.err == nil {
 			m.available = message.available
 			m.installed = message.installed
@@ -217,7 +249,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.pathConflicts = message.conflicts
 		if len(message.conflicts) != 0 {
-			m.returnTo = m.screen
+			m.confirmTo = m.screen
+			m.confirmSet = true
 			m.screen = screenInstallConfirm
 			return m, nil
 		}
@@ -245,6 +278,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.available = message.values
 		}
 		m.selected = 0
+		m.clampSelection()
 		return m, nil
 	case versionsMsg:
 		m.busy = ""
@@ -261,12 +295,17 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case operationMsg:
+		if message.generation != m.operationGeneration || m.opCancel == nil {
+			return m, nil
+		}
 		m.busy = ""
 		m.resetProgress()
 		m.opCancel = nil
 		m.err = message.err
 		m.uninstallConflict = message.conflict
 		m.status = message.message
+		m.feedbackAppID = message.appID
+		m.feedbackPartial = message.partial
 		if errors.Is(message.err, context.Canceled) {
 			m.err = nil
 			m.status = "Operation cancelled"
@@ -292,6 +331,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.loadCmd()
 	case progressMsg:
+		if message.generation != m.operationGeneration || m.opCancel == nil {
+			return m, nil
+		}
 		now := time.Now()
 		counterReset := message.event.BytesDone < m.progress.BytesDone || (message.event.BytesDone == 0 && m.progress.BytesDone > 0)
 		if m.progress.Stage != message.event.Stage || counterReset {
@@ -317,11 +359,7 @@ func (m model) View() tea.View {
 	body := m.bodyLines()
 	footer := fit(m.helpView(), m.width)
 	if m.height > 0 {
-		available := max(0, m.height-1)
-		if len(body) > available {
-			body = body[:available]
-		}
-		body = append(body, make([]string, max(0, available-len(body)))...)
+		body = append(body, make([]string, max(0, m.height-1-len(body)))...)
 	}
 	lines := append(body, footer)
 	view := tea.NewView(strings.Join(lines, "\n") + "\n")
@@ -331,53 +369,67 @@ func (m model) View() tea.View {
 
 // bodyLines is the shared shell and screen content.
 func (m model) bodyLines() []string {
+	if m.width > 0 && m.height > 0 && (m.width < 30 || m.height < 10) {
+		return []string{fit("TarLink — enlarge terminal", m.width)}
+	}
 	lines := []string{m.headerLine(), m.tabsLine(), m.separator()}
 	add := func(value string) {
 		for _, part := range strings.Split(value, "\n") {
 			lines = append(lines, fit(part, m.width))
 		}
 	}
-	if m.status != "" {
-		add(m.style(m.status, success))
-		lines = append(lines, "")
+	showFeedback := m.feedbackAppID == "" || m.isListScreen() || (m.detail != nil && m.detail.ID == m.feedbackAppID)
+	if m.status != "" && showFeedback && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions)) {
+		tone := success
+		if m.feedbackPartial {
+			tone = warning
+		}
+		add(m.style(m.status, tone))
 	}
-	if m.err != nil {
+	if m.err != nil && showFeedback && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions)) {
 		add(m.style("Operation failed", danger))
 		add(m.style(m.err.Error(), danger))
-		lines = append(lines, "")
 	}
-	if m.uninstallConflict != nil {
+	if m.uninstallConflict != nil && (m.screen == screenUninstall || m.screen == screenUninstallConflictConfirm) {
 		add("Conflicting integration: " + m.uninstallConflict.Path)
 	}
-	if m.busy != "" {
-		add(m.style(m.busy, accent))
-		add(m.progressLine())
-		lines = append(lines, "")
-	}
-	if m.upgradeAvailable {
-		add(m.style("TarLink update available: "+m.tarlinkVersion.Current+" → "+m.tarlinkVersion.Latest, warning))
-		add(m.style("Run: tarlink self-update", warning))
-	}
-	workspace, _ := m.workspaceLines()
-	if m.isOverlay() || m.screen == screenDetails || m.screen == screenVersions {
-		content := workspace
-		if m.isOverlay() {
-			content = m.overlayLines()
+	remaining := max(0, m.height-len(lines)-1)
+	var expanded []string
+	if m.helpOverlay {
+		expanded = m.helpOverlayLines()
+		if len(expanded) > max(1, remaining-2) {
+			expanded = expanded[:max(1, remaining-2)]
 		}
-		remaining := max(1, max(1, m.height)-len(lines)-1)
-		card := m.renderCard(content, viewWidth(m.width))
-		placed := lipgloss.Place(viewWidth(m.width), remaining, lipgloss.Center, lipgloss.Center, card)
+		remaining = max(0, remaining-len(expanded)-1)
+	}
+	workspace, _ := m.workspaceLinesFor(remaining)
+	if m.isOverlay() && m.busy == "" && remaining < 5 {
+		if remaining > 0 {
+			lines = append(lines, fit("Modal open · Esc closes Help", m.width))
+		}
+	} else if m.isOverlay() && m.busy == "" {
+		contentWidth, _ := m.modalContent(m.overlayLines(), viewWidth(m.width))
+		innerHeight := max(1, remaining-4)
+		card := m.theme.modal.Width(contentWidth).Render(m.modalViewport(innerHeight).View())
+		for strings.Count(card, "\n")+1 > remaining && innerHeight > 1 {
+			innerHeight--
+			card = m.theme.modal.Width(contentWidth).Render(m.modalViewport(innerHeight).View())
+		}
+		placed := lipgloss.Place(viewWidth(m.width), max(1, remaining), lipgloss.Center, lipgloss.Center, card)
 		for _, line := range strings.Split(placed, "\n") {
+			if len(lines) >= m.height-1 {
+				break
+			}
 			lines = append(lines, fit(line, m.width))
 		}
 	} else {
 		for _, line := range workspace {
-			lines = append(lines, fit(line, m.width))
+			lines = append(lines, lipgloss.NewStyle().PaddingLeft(1).Render(fit(line, max(1, viewWidth(m.width)-1))))
 		}
 	}
 	if m.helpOverlay {
 		lines = append(lines, "")
-		for _, line := range m.helpOverlayLines() {
+		for _, line := range expanded {
 			lines = append(lines, fit(line, m.width))
 		}
 	}
@@ -409,45 +461,160 @@ func (m model) isOverlay() bool {
 	return m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm || m.screen == screenInstallChannel || m.screen == screenUninstallConflictConfirm
 }
 
-func (m model) workspaceLines() ([]string, int) {
+func (m model) workspaceLinesFor(budget int) ([]string, int) {
 	values := m.visibleApplications()
+	if budget <= 0 {
+		return nil, 0
+	}
+	if m.busy != "" {
+		lines := []string{m.theme.panel.Render(m.busy)}
+		if m.progress.AppID != "" {
+			lines = append(lines, m.progress.AppID)
+		}
+		if detail := m.detail; detail != nil && m.progress.AppID == "" && m.operationGeneration > 0 {
+			lines = append(lines, detail.Name)
+		}
+		if progress := m.progressLine(); progress != "" {
+			lines = append(lines, "", progress)
+		}
+		if len(lines) > budget {
+			lines = lines[:budget]
+		}
+		return lines, 1
+	}
+	if m.isListScreen() && m.loading && !m.dataLoaded {
+		return []string{m.theme.accent.Render("Loading applications…")}, 1
+	}
+	if m.isListScreen() && !m.dataLoaded && m.err != nil {
+		return []string{m.theme.danger.Render("Application data unavailable.")}, 1
+	}
+	previewRows := 0
 	if m.isListScreen() {
-		m.configureApplicationTable(values, max(1, viewWidth(m.width)-4), max(3, m.height-8))
+		headingRows := 1
+		if m.screen == screenAvailable {
+			headingRows++
+		}
+		if m.hasPreview(values) && budget >= headingRows+8 {
+			previewRows = 3
+		}
+		tableBudget := max(2, budget-headingRows-previewRows)
+		m.configureApplicationTable(values, max(1, viewWidth(m.width)-2), min(tableBudget, max(3, len(values)+2)))
 	}
 	if m.isListScreen() {
 		lines := []string{m.theme.panel.Render("Applications")}
 		if m.screen == screenAvailable {
 			lines = append(lines, m.filterView())
 		}
-		if m.searching {
-			lines = append(lines, m.searchInput.View())
+		lines = append(lines, strings.Split(strings.TrimSuffix(m.applicationTable.View(), "\n"), "\n")...)
+		if previewRows > 0 {
+			lines = append(lines, "")
+			lines = append(lines, m.previewLines(values)...)
 		}
-		lines = append(lines, strings.Split(m.applicationTable.View(), "\n")...)
+		if len(lines) > budget {
+			lines = lines[:budget]
+		}
 		return lines, 3
 	}
-	return m.reviewLines(), 1
+	view := m.reviewViewport(budget)
+	return strings.Split(strings.TrimSuffix(view.View(), "\n"), "\n"), 1
+}
+
+func (m model) reviewViewport(height int) viewport.Model {
+	view := viewport.New(viewport.WithWidth(max(1, viewWidth(m.width)-1)), viewport.WithHeight(max(1, height)))
+	view.SetContent(strings.Join(m.reviewLines(), "\n"))
+	view.SetYOffset(m.reviewScroll)
+	return view
+}
+
+func (m model) workspaceHeight() int {
+	// Header, navigation, separator, and contextual help consume four rows.
+	feedback := 0
+	if m.status != "" {
+		feedback++
+	}
+	if m.err != nil {
+		feedback += 2
+	}
+	return max(3, max(1, m.height)-4-feedback)
+}
+
+func (m model) hasPreview(values []app.Application) bool {
+	return m.isListScreen() && len(values) > 0 && m.workspaceHeight() >= 8
+}
+
+func (m model) previewLines(values []app.Application) []string {
+	if len(values) == 0 || m.selected < 0 || m.selected >= len(values) {
+		return nil
+	}
+	value := values[m.selected]
+	name := m.theme.panel.Render(value.Name)
+	description := value.Summary
+	if description == "" {
+		description = applicationStatus(value)
+	}
+	transition := value.InstalledVersion
+	if value.RegistryVersion != "" && value.RegistryVersion != value.InstalledVersion {
+		transition += " → " + value.RegistryVersion
+	}
+	if value.DefaultChannel != "" {
+		transition += " · " + value.DefaultChannel
+	}
+	return []string{fit(name+" — "+description, max(1, viewWidth(m.width)-2)), fit(transition, max(1, viewWidth(m.width)-2))}
 }
 
 func (m *model) configureApplicationTable(values []app.Application, width, height int) {
-	const columnCount = 6
+	// Keep both version identities on compact terminals. Channel is useful
+	// metadata, but it yields first when the table cannot fit all columns.
+	compact := width < 80
+	updatesCompact := compact && m.screen == screenUpdates
+	columnCount := 6
+	if compact {
+		columnCount = 5
+	}
+	if updatesCompact {
+		columnCount = 4
+	}
 	// Column widths describe content. Bubbles adds the shared cell padding
 	// around every column, so reserve exactly that visible overhead here.
 	_, paddingRight, _, paddingLeft := applicationTableCellStyle.GetPadding()
 	contentWidth := max(1, width-columnCount*(paddingLeft+paddingRight))
 	selectionWidth := 1
+	if !m.color {
+		selectionWidth = 2
+	}
 	statusWidth := 9 // longest status label is AVAILABLE
 	channelWidth := 8
 	nameWidth := 1
 	versionWidth := 15
+	if compact {
+		channelWidth = 0
+		statusWidth = 8
+		versionWidth = 10
+	}
+	if updatesCompact {
+		statusWidth = 0
+	}
 	versionBudget := max(2, contentWidth-nameWidth-selectionWidth-statusWidth-channelWidth)
 	installedWidth := min(versionWidth, max(1, versionBudget/2))
 	availableWidth := min(versionWidth, max(1, versionBudget-installedWidth))
 	nameWidth = max(1, contentWidth-selectionWidth-statusWidth-installedWidth-availableWidth-channelWidth)
 	rows := make([]table.Row, 0, len(values))
-	for _, value := range values {
+	for index, value := range values {
 		marker := " "
 		if m.selectedIDs[value.ID] {
 			marker = "✓"
+		}
+		if !m.color {
+			marker = "  "
+			if m.selectedIDs[value.ID] {
+				marker = " ✓"
+			}
+			if value.ID == m.cursorID || (m.cursorID == "" && index == m.selected) {
+				marker = "> "
+				if m.selectedIDs[value.ID] {
+					marker = ">✓"
+				}
+			}
 		}
 		var status string
 		if value.UpdateAvailable && !value.Pinned {
@@ -463,31 +630,58 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 		if channel == "" {
 			channel = value.DefaultChannel
 		}
-		rows = append(rows, table.Row{marker, value.Name, status, emptyDash(value.InstalledVersion), emptyDash(value.RegistryVersion), emptyDash(channel)})
+		if updatesCompact {
+			rows = append(rows, table.Row{marker, value.Name, emptyDash(value.InstalledVersion), emptyDash(value.RegistryVersion)})
+		} else if compact {
+			rows = append(rows, table.Row{marker, value.Name, status, emptyDash(value.InstalledVersion), emptyDash(value.RegistryVersion)})
+		} else {
+			rows = append(rows, table.Row{marker, value.Name, status, emptyDash(value.InstalledVersion), emptyDash(value.RegistryVersion), emptyDash(channel)})
+		}
 	}
 	if len(rows) == 0 {
-		rows = append(rows, table.Row{"", "No applications.", "", "", "", ""})
+		placeholder := "No applications."
+		if m.query != "" {
+			placeholder = "No matches for \"" + truncate(m.query, 24, "…") + "\"."
+		} else if m.screen == screenInstalled {
+			placeholder = "No installed applications."
+		} else if m.screen == screenUpdates {
+			placeholder = "No updates available."
+		}
+		if updatesCompact {
+			rows = append(rows, table.Row{"", placeholder, "", ""})
+		} else if compact {
+			rows = append(rows, table.Row{"", placeholder, "", "", ""})
+		} else {
+			rows = append(rows, table.Row{"", placeholder, "", "", "", ""})
+		}
 	}
 	columns := []table.Column{
 		{Title: "", Width: selectionWidth},
 		{Title: "APPLICATION", Width: nameWidth},
-		{Title: "STATUS", Width: statusWidth},
-		{Title: "INSTALLED", Width: installedWidth},
-		{Title: "AVAILABLE", Width: availableWidth},
-		{Title: "CHANNEL", Width: channelWidth},
+	}
+	if !updatesCompact {
+		columns = append(columns, table.Column{Title: "STATUS", Width: statusWidth})
+	}
+	columns = append(columns, table.Column{Title: "INSTALLED", Width: installedWidth}, table.Column{Title: "AVAILABLE", Width: availableWidth})
+	if !compact {
+		columns = append(columns, table.Column{Title: "CHANNEL", Width: channelWidth})
 	}
 	if len(values) == 0 {
 		columns[1].Width = max(1, width-2*(paddingLeft+paddingRight)-selectionWidth)
-		// Keep all six columns so SetColumns never renders the previous
-		// six-cell rows against fewer columns; headersView and renderRow skip
-		// zero-width columns, preserving the empty layout.
-		columns[2].Width = 0
-		columns[3].Width = 0
-		columns[4].Width = 0
-		columns[5].Width = 0
+		for index := 2; index < len(columns); index++ {
+			columns[index].Width = 0
+		}
 	}
+	// Bubbles renders while columns change. Clear rows first so a transition
+	// between six and compact columns cannot index an old row shape.
+	m.applicationTable.SetRows(nil)
 	m.applicationTable.SetColumns(columns)
 	m.applicationTable.SetRows(rows)
+	if len(values) == 0 {
+		m.applicationTable.Blur()
+	} else {
+		m.applicationTable.Focus()
+	}
 	m.applicationTable.SetWidth(max(1, width))
 	m.applicationTable.SetHeight(max(2, height))
 	cursor := 0
@@ -527,26 +721,61 @@ func (m model) reviewLines() []string {
 				lines = append(lines, "  "+value.Name+" · "+installedLabel(value))
 			}
 		}
-		lines = append(lines, "", "Press Enter to apply or Esc to return.")
+		lines = append(lines, "")
 		return lines
 	}
 	if m.detail == nil {
 		return []string{"Select an application to review."}
 	}
 	if m.screen == screenVersions {
-		lines := []string{m.theme.panel.Render(m.detail.Name + " / Versions"), versionHeading(viewWidth(m.width))}
+		lines := []string{m.theme.panel.Render(detailName(m.detail)), "Version history"}
+		if len(m.versions) == 0 {
+			return append(lines, "", "No versions available.")
+		}
+		showChannel := false
 		for _, value := range m.versions {
-			lines = append(lines, versionRow(value, viewWidth(m.width)))
+			showChannel = showChannel || value.Channel != ""
+		}
+		lines = append(lines, "", versionHeadingColumns(viewWidth(m.width)-1, showChannel))
+		for _, value := range m.versions {
+			lines = append(lines, versionRowColumns(value, viewWidth(m.width)-1, showChannel))
 		}
 		return lines
 	}
-	lines := []string{m.theme.panel.Render("Review"), m.theme.accent.Render(m.detail.Name)}
-	if m.detail.Summary != "" {
-		lines = append(lines, m.detail.Summary)
+	lines := []string{m.theme.panel.Render(m.detail.Name)}
+	state := applicationStatus(*m.detail)
+	if m.detail.UpdateAvailable && !m.detail.Pinned {
+		state = "Update"
+	}
+	if state != "" {
+		available := max(1, viewWidth(m.width)-2)
+		stateStyle := m.theme.success
+		if m.detail.UpdateAvailable && !m.detail.Pinned {
+			stateStyle = m.theme.warning
+		}
+		if m.detail.InstalledVersion == "" {
+			stateStyle = m.theme.muted
+		}
+		stateText := stateStyle.Render(state)
+		stateWidth := displaywidth.Options{ControlSequences: true}.String(stateText)
+		lines[0] = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(max(1, available-stateWidth)).Render(truncate(lines[0], max(1, available-stateWidth), "…")), stateText)
+	}
+	lines = append(lines, wrappedLines(m.detail.Summary, max(1, viewWidth(m.width)-2))...)
+	if m.feedbackAppID == m.detail.ID && m.feedbackAppID != "" {
+		if m.status != "" {
+			tone := success
+			if m.feedbackPartial {
+				tone = warning
+			}
+			lines = append(lines, m.style(m.status, tone))
+		}
+		if m.err != nil {
+			lines = append(lines, m.style("Operation failed", danger))
+			lines = append(lines, wrappedLines(m.err.Error(), max(1, viewWidth(m.width)-2))...)
+		}
 	}
 	lines = append(lines, "")
-	addDetailFields(&lines, *m.detail, viewWidth(m.width), m.theme)
-	lines = append(lines, "", "Press Enter to apply or Esc to return.")
+	addDetailFields(&lines, *m.detail, viewWidth(m.width)-2, m.theme)
 	return lines
 }
 
@@ -601,51 +830,86 @@ func (m model) overlayLines() []string {
 			lines = append(lines, prefix+channel)
 		}
 	}
-	lines = append(lines, "", m.modalHelp(max(1, viewWidth(m.width)-8)))
+	// Modal controls are rendered by the shell footer. Keeping one command
+	// surface prevents the overlay and footer from drifting apart.
 	return lines
 }
 
-func (m model) modalHelp(width int) string {
-	helper := m.help
-	if helper.ShortSeparator == "" {
-		helper = newHelp(m.color)
-	}
-	helper.SetWidth(width)
-	return helper.FullHelpView([][]keypkg.Binding{m.actionBindings()})
+func (m model) renderCard(content []string, width int) string {
+	contentWidth, bounded := m.modalContent(content, width)
+	return m.theme.modal.Width(contentWidth).Render(strings.Join(bounded, "\n"))
 }
 
-func (m model) renderCard(content []string, width int) string {
+func (m model) modalContent(content []string, width int) (int, []string) {
 	available := max(1, width-8)
 	contentWidth := min(72, available)
 	for _, line := range content {
 		contentWidth = max(contentWidth, displaywidth.Options{ControlSequences: true}.String(line))
 	}
 	contentWidth = min(contentWidth, available)
-	bounded := make([]string, len(content))
-	for i, line := range content {
-		bounded[i] = truncate(line, contentWidth, "…")
+	bounded := make([]string, 0, len(content))
+	for _, line := range content {
+		if line == "" {
+			bounded = append(bounded, "")
+			continue
+		}
+		bounded = append(bounded, wrappedLines(line, contentWidth)...)
 	}
-	return m.theme.modal.Width(contentWidth).Render(strings.Join(bounded, "\n"))
+	return contentWidth, bounded
+}
+
+func (m model) modalViewport(height int) viewport.Model {
+	width, lines := m.modalContent(m.overlayLines(), viewWidth(m.width))
+	v := viewport.New(viewport.WithWidth(width), viewport.WithHeight(max(1, height)))
+	v.SetContent(strings.Join(lines, "\n"))
+	v.SetYOffset(m.overlayScroll)
+	return v
 }
 
 func (m model) helpOverlayLines() []string {
 	bindings := m.actionBindings()
 	m.help.SetWidth(max(1, viewWidth(m.width)-4))
-	return []string{m.theme.panel.Render("Keyboard reference"), m.help.FullHelpView([][]keypkg.Binding{bindings})}
+	return append([]string{m.theme.panel.Render("Keyboard reference")}, strings.Split(m.help.FullHelpView([][]keypkg.Binding{bindings}), "\n")...)
 }
 
 func (m model) headerLine() string {
-	left := m.theme.panel.Render("TarLink")
-	count := len(updates(m.installed))
-	right := fmt.Sprintf("Installed %d   Updates %d", len(m.installed), count)
-	if viewWidth(m.width) < displaywidth.String(left)+displaywidth.String(right)+3 {
+	left := m.theme.panel.Render("TarLink " + version.Current)
+	right := ""
+	if m.upgradeAvailable {
+		right = m.theme.warning.Render("TarLink update available")
+	}
+	if right == "" {
 		return fit(left, m.width)
 	}
-	return left + strings.Repeat(" ", viewWidth(m.width)-displaywidth.String(left)-displaywidth.String(right)) + right
+	measure := displaywidth.Options{ControlSequences: true}
+	if viewWidth(m.width) < measure.String(left)+measure.String(right)+3 {
+		return fit(left, m.width)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(viewWidth(m.width)-measure.String(right)).Render(left), right)
 }
 
 func (m model) tabsLine() string {
-	labels := []string{"Browse", fmt.Sprintf("Installed %d", len(m.installed)), fmt.Sprintf("Updates %d", len(updates(m.installed)))}
+	if m.searching {
+		return fit("Search  "+m.searchInput.View(), m.width)
+	}
+	if m.screen == screenDetails || m.screen == screenVersions {
+		name := detailName(m.detail)
+		root := "Browse"
+		if m.returnTo == screenInstalled {
+			root = "Installed"
+		} else if m.returnTo == screenUpdates {
+			root = "Updates"
+		}
+		if m.screen == screenVersions {
+			return fit(root+" › "+name+" › Versions", m.width)
+		}
+		return fit(root+" › "+name, m.width)
+	}
+	labels := []string{"Browse", "Installed", "Updates"}
+	if m.dataLoaded {
+		labels[1] = fmt.Sprintf("Installed %d", len(m.installed))
+		labels[2] = fmt.Sprintf("Updates %d", len(updates(m.installed)))
+	}
 	active := 0
 	if m.screen == screenInstalled {
 		active = 1
@@ -661,17 +925,7 @@ func (m model) tabsLine() string {
 			parts[i] = m.theme.control.Render(label)
 		}
 	}
-	search := "[ / Search ]"
-	if m.screen == screenUpdates {
-		search = fmt.Sprintf("%d updates available", len(updates(m.installed))) + "   " + search
-	}
-	if m.searching {
-		search = "[ / " + m.searchInput.View() + " ]"
-	}
-	if viewWidth(m.width) < displaywidth.String(strings.Join(parts, "   "))+displaywidth.String(search)+3 {
-		return fit(strings.Join(parts, "  "), m.width)
-	}
-	return strings.Join(parts, "   ") + strings.Repeat(" ", max(1, viewWidth(m.width)-displaywidth.String(strings.Join(parts, "   "))-displaywidth.String(search))) + search
+	return fit(strings.Join(parts, "   "), m.width)
 }
 
 func (m model) separator() string { return strings.Repeat("─", viewWidth(m.width)) }
@@ -688,7 +942,6 @@ func (m model) isListScreen() bool {
 
 func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.initComponents()
-	pressed := message.String()
 	bindings := newKeyMap()
 	if keypkg.Matches(message, bindings.CtrlC) {
 		if m.opCancel != nil {
@@ -699,16 +952,6 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	}
-	if keypkg.Matches(message, bindings.Help) {
-		m.helpOverlay = !m.helpOverlay
-		return m, nil
-	}
-	if m.helpOverlay {
-		if keypkg.Matches(message, bindings.Cancel) {
-			m.helpOverlay = false
-		}
-		return m, nil
-	}
 	if m.searching {
 		switch {
 		case keypkg.Matches(message, bindings.Cancel):
@@ -717,22 +960,38 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.searching = false
 			m.searchInput.Blur()
+			m.screen = m.searchFrom
+			m.query = m.searchPriorQuery
+			m.selected = m.searchPriorSelected
+			m.cursorID = m.searchPriorCursorID
+			m.clampSelection()
 			return m, nil
 		case keypkg.Matches(message, bindings.Enter):
 			if !m.matchesAction(message, actionEnter) {
 				return m, nil
 			}
 			m.searching = false
+			m.query = m.searchInput.Value()
 			m.busy = "Searching"
+			m.requestGeneration++
 			cmd, cancel := m.searchCmd()
 			m.opCancel = cancel
 			return m, cmd
 		default:
 			var cmd tea.Cmd
 			m.searchInput, cmd = m.searchInput.Update(message)
-			m.query = m.searchInput.Value()
 			return m, cmd
 		}
+	}
+	if m.matchesAction(message, actionHelp) {
+		m.helpOverlay = !m.helpOverlay
+		return m, nil
+	}
+	if m.helpOverlay {
+		if keypkg.Matches(message, bindings.Cancel) {
+			m.helpOverlay = false
+		}
+		return m, nil
 	}
 
 	if m.matchesAction(message, actionQuit) {
@@ -750,7 +1009,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if m.isListScreen() && (pressed == " " || pressed == "space") {
+	if m.matchesAction(message, actionToggle) {
 		visible := m.visibleApplications()
 		cursor := m.applicationTable.Cursor()
 		if len(visible) > 0 && cursor < len(visible) {
@@ -780,15 +1039,23 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if keypkg.Matches(message, bindings.Down) {
 			delta = 1
 		}
-		if m.screen == screenInstallChannel {
+		if m.screen == screenDetails || m.screen == screenVersions {
+			m.moveReviewScroll(delta)
+		} else if m.screen == screenInstallChannel {
 			m.moveChannel(delta)
+		} else if m.isOverlay() {
+			m.moveOverlayScroll(delta)
 		} else {
 			m.moveSelection(delta)
 		}
 	case m.matchesAction(message, actionDown):
 		m.clearFeedback()
-		if m.screen == screenInstallChannel {
+		if m.screen == screenDetails || m.screen == screenVersions {
+			m.moveReviewScroll(1)
+		} else if m.screen == screenInstallChannel {
 			m.moveChannel(1)
+		} else if m.isOverlay() {
+			m.moveOverlayScroll(1)
 		} else {
 			m.moveSelection(1)
 		}
@@ -804,12 +1071,14 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	case m.matchesAction(message, actionSearch):
 		m.clearFeedback()
+		m.searchFrom = m.screen
+		m.searchPriorQuery = m.query
+		m.searchPriorSelected = m.selected
+		m.searchPriorCursorID = m.cursorID
 		m.screen = screenAvailable
 		m.searching = true
-		m.query = ""
-		m.searchInput.SetValue("")
+		m.searchInput.SetValue(m.query)
 		m.searchInput.Focus()
-		m.selected = 0
 	case m.matchesAction(message, actionInstalled):
 		m.clearFeedback()
 		m.selectedIDs = nil
@@ -822,6 +1091,11 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.selected = 0
 	case m.matchesAction(message, actionCancel):
 		m.clearFeedback()
+		if m.screen == screenUninstall {
+			m.uninstallConflict = nil
+		}
+		m.reviewScroll = 0
+		m.overlayScroll = 0
 		if m.screen == screenInstallChannel {
 			m.screen = screenDetails
 		} else if m.screen == screenRollback || m.screen == screenUninstall || m.screen == screenUpgrade || m.screen == screenInstallConfirm || m.screen == screenUninstallConflictConfirm {
@@ -851,6 +1125,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.detail != nil && len(m.channels) > 0 && m.channelSelected < len(m.channels) {
 				m.clearFeedback()
 				m.busy = "Checking installation path"
+				m.requestGeneration++
 				cmd, cancel := m.pathCheckCmd(m.detail.ID)
 				m.opCancel = cancel
 				return m, cmd
@@ -905,6 +1180,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.screen == screenInstallConfirm {
 			if len(m.batchTargets) > 0 {
 				m.busy = "Installing selected applications"
+				m.screen = screenDetails
 				m.startOperation()
 				cmd, cancel := m.batchInstallCmd(m.batchIDs)
 				m.opCancel = cancel
@@ -912,6 +1188,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			if id := m.selectedID(); id != "" {
 				m.busy = "Installing " + id
+				m.screen = screenDetails
 				m.startOperation()
 				cmd, cancel := m.installCmd(m.installSelector(id))
 				m.opCancel = cancel
@@ -958,12 +1235,14 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.detail = &selected
 			}
 			m.returnTo = m.screen
+			m.reviewScroll = 0
 			m.screen = screenDetails
 			return m, nil
 		}
 	case m.matchesAction(message, actionVersions):
 		if id := m.selectedID(); id != "" && m.selectedInstalled() {
 			m.clearFeedback()
+			m.reviewScroll = 0
 			m.setDetail(id)
 			if m.screen == screenDetails {
 				m.versionsFromDetails = true
@@ -972,6 +1251,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.versionsFromDetails = false
 			}
 			m.busy = "Loading versions"
+			m.requestGeneration++
 			cmd, cancel := m.versionsCmd(id)
 			m.opCancel = cancel
 			return m, cmd
@@ -1027,6 +1307,34 @@ func (m *model) moveSelection(delta int) {
 	}
 }
 
+func (m *model) moveReviewScroll(delta int) {
+	v := m.reviewViewport(max(1, m.height-4))
+	if delta < 0 {
+		v.ScrollUp(-delta)
+	} else {
+		v.ScrollDown(delta)
+	}
+	m.reviewScroll = v.YOffset()
+}
+
+func (m model) modalScrollable() bool {
+	if !m.isOverlay() || m.screen == screenInstallChannel {
+		return false
+	}
+	_, lines := m.modalContent(m.overlayLines(), viewWidth(m.width))
+	return len(lines) > max(1, m.height-8)
+}
+
+func (m *model) moveOverlayScroll(delta int) {
+	v := m.modalViewport(max(1, m.height-8))
+	if delta < 0 {
+		v.ScrollUp(-delta)
+	} else {
+		v.ScrollDown(delta)
+	}
+	m.overlayScroll = v.YOffset()
+}
+
 func (m *model) moveChannel(delta int) {
 	if len(m.channels) == 0 {
 		m.channelSelected = 0
@@ -1039,6 +1347,9 @@ func (m *model) moveChannel(delta int) {
 	if m.channelSelected >= len(m.channels) {
 		m.channelSelected = len(m.channels) - 1
 	}
+	v := m.modalViewport(max(1, m.height-8))
+	v.EnsureVisible(3+m.channelSelected, 0, 1)
+	m.overlayScroll = v.YOffset()
 }
 
 func channelNames(value *app.Application) []string {
@@ -1068,6 +1379,7 @@ func (m model) activateSelected() (tea.Model, tea.Cmd) {
 	case m.detail.InstalledVersion == "":
 		m.clearFeedback()
 		m.busy = "Checking installation path"
+		m.requestGeneration++
 		cmd, cancel := m.pathCheckCmd(id)
 		m.opCancel = cancel
 		return m, cmd
@@ -1091,6 +1403,7 @@ func (m model) activateSelected() (tea.Model, tea.Cmd) {
 // startInstall begins the install operation directly after a PATH check found
 // no conflicts. It is called from the path-check completion handler.
 func (m model) startInstall(id string) (tea.Model, tea.Cmd) {
+	m.screen = screenDetails
 	m.busy = "Installing " + id
 	m.startOperation()
 	cmd, cancel := m.installCmd(id)
@@ -1106,6 +1419,7 @@ func (m model) startBatchInstall() (tea.Model, tea.Cmd) {
 	}
 	m.batchIDs = m.selectedIDsInOrder(m.available)
 	m.busy = "Resolving selected applications"
+	m.requestGeneration++
 	cmd, cancel := m.cancellableCmd(func(ctx context.Context) tea.Msg {
 		targets, err := service.ResolveInstallBatch(ctx, m.batchIDs)
 		return batchResolveMsg{targets: targets, err: err}
@@ -1142,13 +1456,14 @@ func (m model) pathCheckCmd(id string) (tea.Cmd, context.CancelFunc) {
 }
 
 func (m model) loadCmd() tea.Cmd {
+	generation := m.requestGeneration
 	return func() tea.Msg {
 		available, err := m.service.Search(m.ctx, m.query)
 		if err != nil {
-			return loadedMsg{err: err}
+			return loadedMsg{err: err, generation: generation}
 		}
 		installed, err := m.service.List(m.ctx)
-		return loadedMsg{available: available, installed: installed, err: err}
+		return loadedMsg{available: available, installed: installed, err: err, generation: generation}
 	}
 }
 
@@ -1185,9 +1500,13 @@ func (m model) versionsCmd(id string) (tea.Cmd, context.CancelFunc) {
 }
 
 func (m model) installCmd(id string) (tea.Cmd, context.CancelFunc) {
+	feedbackID := id
+	if m.detail != nil {
+		feedbackID = m.detail.ID
+	}
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
 		result, err := m.service.Install(ctx, id, sink)
-		return operationMsg{message: resultMessage("Installed", result)}, err
+		return operationMsg{message: resultMessage("Installed", result), appID: feedbackID}, err
 	})
 }
 
@@ -1195,7 +1514,7 @@ func (m model) batchInstallCmd(ids []string) (tea.Cmd, context.CancelFunc) {
 	service := m.service.(app.BatchService)
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
 		result, err := service.InstallBatch(ctx, ids, sink)
-		return operationMsg{message: batchMessage("Installed", result), move: true, next: screenAvailable}, err
+		return operationMsg{message: batchMessage("Installed", result), partial: len(result.Failed) > 0, move: true, next: screenAvailable}, err
 	})
 }
 
@@ -1213,14 +1532,14 @@ func (m model) installSelector(id string) string {
 func (m model) updateCmd(id string) (tea.Cmd, context.CancelFunc) {
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
 		result, err := m.service.Update(ctx, id, sink)
-		return operationMsg{message: resultMessage("Updated", result)}, err
+		return operationMsg{message: resultMessage("Updated", result), appID: id}, err
 	})
 }
 
 func (m model) rollbackCmd(id string) (tea.Cmd, context.CancelFunc) {
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
 		result, err := m.service.Rollback(ctx, id, sink)
-		return operationMsg{message: resultMessage("Rolled back", result), next: screenDetails, move: true}, err
+		return operationMsg{message: resultMessage("Rolled back", result), appID: id, next: screenDetails, move: true}, err
 	})
 }
 
@@ -1230,7 +1549,8 @@ func (m model) operationCmd(operation func(context.Context, app.ProgressSink) (o
 		base = context.Background()
 	}
 	opCtx, opCancel := context.WithCancel(base)
-	hub := &operationHub{wake: make(chan struct{}, 1), result: make(chan operationMsg, 1), ctx: opCtx}
+	generation := m.operationGeneration
+	hub := &operationHub{wake: make(chan struct{}, 1), result: make(chan operationMsg, 1), ctx: opCtx, generation: generation}
 	cmd := func() tea.Msg {
 		go func() {
 			sink := func(event app.Progress) {
@@ -1238,6 +1558,7 @@ func (m model) operationCmd(operation func(context.Context, app.ProgressSink) (o
 			}
 			result, err := operation(opCtx, sink)
 			result.err = err
+			result.generation = generation
 			hub.finish(result)
 		}()
 		return hub.next(opCtx)
@@ -1306,7 +1627,7 @@ func (h *operationHub) next(ctx context.Context) tea.Msg {
 			event := h.pending[0]
 			h.pending = h.pending[1:]
 			h.mu.Unlock()
-			return progressMsg{hub: h, event: event}
+			return progressMsg{hub: h, event: event, generation: h.generation}
 		}
 		if h.latest != nil {
 			if !h.lastEmit.IsZero() && time.Since(h.lastEmit) < 200*time.Millisecond {
@@ -1328,7 +1649,7 @@ func (h *operationHub) next(ctx context.Context) tea.Msg {
 						h.lastEmit = time.Now()
 						h.mu.Unlock()
 						h.result <- result
-						return progressMsg{hub: h, event: event}
+						return progressMsg{hub: h, event: event, generation: h.generation}
 					}
 					h.mu.Unlock()
 					return result
@@ -1340,7 +1661,7 @@ func (h *operationHub) next(ctx context.Context) tea.Msg {
 						default:
 						}
 					}
-					return operationMsg{err: ctx.Err()}
+					return operationMsg{err: ctx.Err(), generation: h.generation}
 				}
 				continue
 			}
@@ -1348,7 +1669,7 @@ func (h *operationHub) next(ctx context.Context) tea.Msg {
 			h.latest = nil
 			h.lastEmit = time.Now()
 			h.mu.Unlock()
-			return progressMsg{hub: h, event: event}
+			return progressMsg{hub: h, event: event, generation: h.generation}
 		}
 		h.mu.Unlock()
 		select {
@@ -1356,7 +1677,7 @@ func (h *operationHub) next(ctx context.Context) tea.Msg {
 			return result
 		case <-h.wake:
 		case <-ctx.Done():
-			return operationMsg{err: ctx.Err()}
+			return operationMsg{err: ctx.Err(), generation: h.generation}
 		}
 	}
 }
@@ -1368,7 +1689,7 @@ func (m model) uninstallCmd(id string) (tea.Cmd, context.CancelFunc) {
 		if next == screenVersions {
 			next = screenDetails
 		}
-		result := operationMsg{message: "Uninstalled " + id, next: next, move: true}
+		result := operationMsg{message: "Uninstalled " + id, appID: id, next: next, move: true}
 		var typed *app.UninstallConflictError
 		if errors.As(err, &typed) {
 			conflict := typed.Conflict
@@ -1392,7 +1713,7 @@ func (m model) removeUninstallConflictCmd(conflict app.UninstallConflict) (tea.C
 		if next == screenVersions {
 			next = screenDetails
 		}
-		result := operationMsg{message: "Uninstalled " + conflict.AppID, next: next, move: true}
+		result := operationMsg{message: "Uninstalled " + conflict.AppID, appID: conflict.AppID, next: next, move: true}
 		var typed *app.UninstallConflictError
 		if errors.As(err, &typed) {
 			nextConflict := typed.Conflict
@@ -1406,14 +1727,22 @@ func (m model) batchUninstallCmd(ids []string) (tea.Cmd, context.CancelFunc) {
 	service := m.service.(app.BatchService)
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
 		result, err := service.UninstallBatch(ctx, ids, sink)
-		return operationMsg{message: batchMessage("Uninstalled", result), move: true, next: screenInstalled}, err
+		return operationMsg{message: batchMessage("Uninstalled", result), partial: len(result.Failed) > 0, move: true, next: screenInstalled}, err
 	})
 }
 
 func batchMessage(verb string, result app.BatchResult) string {
-	message := fmt.Sprintf("%s: %d", verb, len(result.Completed))
+	message := fmt.Sprintf("%s %d applications", verb, len(result.Completed))
 	if len(result.Failed) > 0 {
-		message += fmt.Sprintf(" · Failed: %d", len(result.Failed))
+		message += fmt.Sprintf("; %d failed", len(result.Failed))
+		ids := make([]string, 0, len(result.Failed))
+		for id := range result.Failed {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		for _, id := range ids {
+			message += "\n" + id + ": " + result.Failed[id]
+		}
 	}
 	return message
 }
@@ -1528,8 +1857,18 @@ func (m *model) clampSelection() {
 	length := len(m.visibleApplications())
 	if length == 0 {
 		m.selected = 0
-	} else if m.selected >= length {
-		m.selected = length - 1
+	} else {
+		if m.cursorID != "" {
+			for index, value := range m.visibleApplications() {
+				if value.ID == m.cursorID {
+					m.selected = index
+					break
+				}
+			}
+		}
+		if m.selected >= length {
+			m.selected = length - 1
+		}
 	}
 	if m.selected >= 0 && m.selected < length {
 		m.cursorID = m.visibleApplications()[m.selected].ID
@@ -1553,43 +1892,82 @@ func addDetailFields(lines *[]string, value app.Application, width int, theme tu
 		if content == "" {
 			return
 		}
-		if viewWidth(width) < 40 {
-			*lines = append(*lines, label, fit(content, width))
-		} else {
-			*lines = append(*lines, fmt.Sprintf("%-14s %s", label, fit(content, max(1, width-15))))
+		if width < 35 {
+			*lines = append(*lines, theme.muted.Render(label))
+			*lines = append(*lines, wrappedLines(content, max(1, width))...)
+			return
+		}
+		chunks := wrappedLines(content, max(1, width-14))
+		for i, chunk := range chunks {
+			caption := ""
+			if i == 0 {
+				caption = label
+			}
+			*lines = append(*lines, lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(14).Render(theme.muted.Render(caption)), chunk))
 		}
 	}
-	field("Version", value.InstalledVersion)
-	field("Available", value.RegistryVersion)
-	field("Channel", value.InstalledChannel)
-	if value.Pinned {
-		field("State", "Pinned")
-	} else {
-		field("State", applicationStatus(value))
+	channel := value.InstalledChannel
+	if channel == "" {
+		channel = value.DefaultChannel
 	}
-	field("Categories", strings.Join(value.Categories, ", "))
-	if hasGameData(value) {
-		field("Requires", "Original game data")
+	if value.InstalledVersion != "" || value.RegistryVersion != "" || channel != "" {
+		*lines = append(*lines, theme.panel.Render("VERSION"))
+		field("Installed", value.InstalledVersion)
+		field("Available", value.RegistryVersion)
+		field("Channel", channel)
+	}
+	if len(value.Categories) > 0 || hasGameData(value) || value.ID != "" {
+		*lines = append(*lines, "", theme.panel.Render("PACKAGE"))
+		field("Categories", strings.Join(value.Categories, ", "))
+		if hasGameData(value) {
+			field("Requires", "Original game data")
+		}
+		field("ID", value.ID)
 	}
 	if value.Homepage != "" {
-		*lines = append(*lines, "", "Homepage", fit(value.Homepage, width))
-	}
-	if viewWidth(width) >= 60 && value.ID != "" {
-		*lines = append(*lines, "", theme.muted.Render("ID: "+value.ID))
+		*lines = append(*lines, "", theme.panel.Render("HOMEPAGE"))
+		*lines = append(*lines, wrappedLines(value.Homepage, max(1, width))...)
 	}
 }
 
-func versionHeading(width int) string {
+func wrappedLines(value string, width int) []string {
+	if value == "" {
+		return nil
+	}
+	return strings.Split(ansi.Hardwrap(ansi.Wrap(value, width, ""), width, false), "\n")
+}
+
+func versionHeadingColumns(width int, channel bool) string {
 	if viewWidth(width) < 40 {
 		return "VERSION"
 	}
-	return "VERSION" + strings.Repeat(" ", max(1, viewWidth(width)/2-7)) + "STATUS"
+	if channel && width >= 70 {
+		third := max(1, width/3)
+		return lipgloss.JoinHorizontal(lipgloss.Top,
+			lipgloss.NewStyle().Width(third).Render("VERSION"),
+			lipgloss.NewStyle().Width(third).Render("CHANNEL"),
+			lipgloss.NewStyle().Width(max(1, width-2*third)).Render("STATE"))
+	}
+	half := max(1, viewWidth(width)/2)
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(half).Render("VERSION"),
+		lipgloss.NewStyle().Width(half).Render("STATUS"))
 }
-func versionRow(value app.Version, width int) string {
+func versionRowColumns(value app.Version, width int, channel bool) string {
 	if viewWidth(width) < 40 {
 		return truncate(value.Version, width, "…")
 	}
-	return truncate(value.Version, max(1, width/2), "…") + strings.Repeat(" ", max(1, width/2-displaywidth.String(truncate(value.Version, max(1, width/2), "…")))) + truncate(value.Status, max(1, width/2-1), "…")
+	if channel && width >= 70 {
+		third := max(1, width/3)
+		return lipgloss.JoinHorizontal(lipgloss.Top,
+			lipgloss.NewStyle().Width(third).Render(truncate(value.Version, third, "…")),
+			lipgloss.NewStyle().Width(third).Render(truncate(value.Channel, third, "…")),
+			lipgloss.NewStyle().Width(max(1, width-2*third)).Render(truncate(value.Status, max(1, width-2*third), "…")))
+	}
+	half := max(1, viewWidth(width)/2)
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Width(half).Render(truncate(value.Version, half, "…")),
+		lipgloss.NewStyle().Width(half).Render(truncate(value.Status, half, "…")))
 }
 
 func installedLabel(value app.Application) string {
@@ -1677,6 +2055,9 @@ func truncate(value string, width int, tail string) string {
 }
 
 func (m model) progressLine() string {
+	if m.progress.Stage == "" && m.progress.Description == "" && m.progress.AppID == "" && m.progress.BytesDone == 0 && m.progress.BytesTotal == 0 {
+		return ""
+	}
 	stage := title(string(m.progress.Stage))
 	if m.progress.Description != "" {
 		stage = m.progress.Description
@@ -1687,6 +2068,8 @@ func (m model) progressLine() string {
 	line := stage
 	if m.progress.Item > 0 && m.progress.Total > 0 && m.progress.AppID != "" {
 		line = fmt.Sprintf("%s %d/%d · %s", stage, m.progress.Item, m.progress.Total, m.progress.AppID)
+	} else if m.progress.AppID != "" {
+		line = strings.TrimSpace(stage + " · " + m.progress.AppID)
 	}
 	if m.progress.BytesTotal > 0 {
 		done := m.progress.BytesDone
@@ -1729,6 +2112,8 @@ func (m *model) resetProgress() {
 // user navigates away from a completed operation's result.
 func (m *model) clearFeedback() {
 	m.status = ""
+	m.feedbackAppID = ""
+	m.feedbackPartial = false
 	m.err = nil
 }
 
@@ -1736,6 +2121,9 @@ func (m *model) clearFeedback() {
 // active operation begins, so a previous operation's success/error never
 // leaks into the next one.
 func (m *model) startOperation() {
+	m.operationGeneration++
+	m.requestGeneration++
+	m.overlayScroll = 0
 	m.clearFeedback()
 	m.resetProgress()
 }
