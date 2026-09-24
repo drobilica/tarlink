@@ -103,6 +103,9 @@ validation_image() {
 run_quick() {
 	phase_format_go
 	phase_go_tests ./...
+	phase_script 'Release asset state fixtures' ./tests/release_verify_test.sh
+	phase_script 'Release workflow contract' ./tests/release_workflow_test.sh
+	phase_script 'GitHub Actions pin audit' ./tests/actions_pin_test.sh
 }
 
 run_checks() {
@@ -116,6 +119,8 @@ run_checks() {
 	phase_go_tests ./...
 	phase_script 'Release notes contract' ./tests/release_notes_test.sh
 	phase_script 'Release workflow contract' ./tests/release_workflow_test.sh
+	phase_script 'Release asset state fixtures' ./tests/release_verify_test.sh
+	phase_script 'GitHub Actions pin audit' ./tests/actions_pin_test.sh
 	phase_script 'Validation script self-tests' ./tests/validate_test.sh
 	phase_script 'Installer tests' ./tests/install_test.sh
 	phase_script 'Uninstaller tests' ./tests/uninstall_test.sh
@@ -129,6 +134,8 @@ run_host_checks() {
 	phase_go_tests ./internal/checksum ./internal/manifest ./docs
 	phase_script 'Release notes contract' ./tests/release_notes_test.sh
 	phase_script 'Release workflow contract' ./tests/release_workflow_test.sh
+	phase_script 'Release asset state fixtures' ./tests/release_verify_test.sh
+	phase_script 'GitHub Actions pin audit' ./tests/actions_pin_test.sh
 	phase_script 'Validation script self-tests' ./tests/validate_test.sh
 }
 
