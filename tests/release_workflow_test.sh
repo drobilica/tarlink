@@ -4,8 +4,10 @@ set -euo pipefail
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 release_workflow=$script_dir/.github/workflows/release.yml
+recovery_workflow=$script_dir/.github/workflows/release-recovery.yml
 registry_commit=$script_dir/.github/registry-commit
 test -f "$release_workflow"
+test -f "$recovery_workflow"
 test ! -e "$registry_commit"
 
 grep -E '^  push:$' "$release_workflow" >/dev/null
@@ -76,6 +78,66 @@ if grep -F -- '--clobber' "$release_workflow" >/dev/null; then
 fi
 if grep -E 'gh release (upload|create).*(install\.sh|uninstall\.sh|\.tar\.(gz|xz))' "$release_workflow" >/dev/null; then
 	printf '%s\n' 'release workflow publishes a forbidden packaged or shell asset' >&2
+	exit 1
+fi
+
+grep -E '^  workflow_dispatch:$' "$recovery_workflow" >/dev/null
+grep -F 'release_tag:' "$recovery_workflow" >/dev/null
+grep -F 'expected_sha:' "$recovery_workflow" >/dev/null
+grep -F 'source_run_id:' "$recovery_workflow" >/dev/null
+grep -F 'ref: main' "$recovery_workflow" >/dev/null
+grep -F 'git ls-remote origin refs/heads/main' "$recovery_workflow" >/dev/null
+grep -F 'git ls-remote origin "refs/tags/$RELEASE_TAG"' "$recovery_workflow" >/dev/null
+grep -F 'gh api --header '\''Accept: application/octet-stream'\'' "$asset_url"' "$recovery_workflow" >/dev/null
+test "$(grep -Fc 'gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100"' "$recovery_workflow")" -eq 2
+if grep -F 'releases/tags/$RELEASE_TAG' "$recovery_workflow" >/dev/null; then
+	printf '%s\n' 'draft recovery must not use the public tag-release endpoint' >&2
+	exit 1
+fi
+grep -F 'sha256sum --strict --check checksums.txt' "$recovery_workflow" >/dev/null
+grep -F 'gh run download "$SOURCE_RUN_ID"' "$recovery_workflow" >/dev/null
+grep -F 'actions/runs/$SOURCE_RUN_ID/jobs' "$recovery_workflow" >/dev/null
+jobs_selector='[.[].jobs[] | select(.name == $name and .conclusion == "success")] | length >= 1'
+grep -F "$jobs_selector" "$recovery_workflow" >/dev/null
+jobs_fixture='[{"total_count":2,"jobs":[{"name":"Build amd64","conclusion":"success"},{"name":"Build arm64","conclusion":"failure"}]},{"total_count":2,"jobs":[{"name":"Build arm64","conclusion":"success"}]}]'
+printf '%s\n' "$jobs_fixture" | jq -e --arg name 'Build amd64' "$jobs_selector" >/dev/null
+printf '%s\n' "$jobs_fixture" | jq -e --arg name 'Build arm64' "$jobs_selector" >/dev/null
+if printf '%s\n' "$jobs_fixture" | jq -e --arg name 'Test tagged source' "$jobs_selector" >/dev/null; then
+	printf '%s\n' 'source-run job selector accepted a missing successful job' >&2
+	exit 1
+fi
+grep -F 'head_branch' "$recovery_workflow" >/dev/null
+grep -F 'cmp -- "source-assets/$name" "remote/$name"' "$recovery_workflow" >/dev/null
+grep -F 'ubuntu-24.04-arm' "$recovery_workflow" >/dev/null
+grep -F 'needs.prepare.outputs.registry_sha' "$recovery_workflow" >/dev/null
+grep -F 'release_artifacts_test.sh remote' "$recovery_workflow" >/dev/null
+grep -F './tests/install_test.sh' "$recovery_workflow" >/dev/null
+grep -F 'gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest' "$recovery_workflow" >/dev/null
+grep -F '[[ "$latest_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]' "$recovery_workflow" >/dev/null
+grep -F '[[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]' "$recovery_workflow" >/dev/null
+stable_tag_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+[[ v0.18.2 =~ $stable_tag_pattern ]]
+for release_test_tag in v01.2.3 v1.02.3 v1.2.03 v1.2.3-rc1; do
+	if [[ $release_test_tag =~ $stable_tag_pattern ]]; then
+		printf '%s\n' "recovery accepted noncanonical tag $release_test_tag" >&2
+		exit 1
+	fi
+done
+grep -F 'contents: read' "$recovery_workflow" >/dev/null
+grep -F 'contents: write' "$recovery_workflow" >/dev/null
+grep -F 'group: tarlink-release' "$recovery_workflow" >/dev/null
+recovery_prepare=$(awk '/^  prepare:$/ { in_job=1 } in_job && /^  validate:$/ { exit } in_job { print }' "$recovery_workflow")
+recovery_validate=$(awk '/^  validate:$/ { in_job=1 } in_job && /^  publish:$/ { exit } in_job { print }' "$recovery_workflow")
+recovery_publish=$(awk '/^  publish:$/ { in_job=1 } in_job { print }' "$recovery_workflow")
+printf '%s\n' "$recovery_prepare" | grep -F 'contents: write' >/dev/null
+printf '%s\n' "$recovery_validate" | grep -F 'contents: read' >/dev/null
+printf '%s\n' "$recovery_publish" | grep -F 'contents: write' >/dev/null
+if printf '%s\n%s\n' "$recovery_prepare" "$recovery_publish" | grep -E 'release_artifacts_test\.sh|tests/install_test\.sh|registry validate' >/dev/null; then
+	printf '%s\n' 'release-write jobs must not execute release binaries or installer tests' >&2
+	exit 1
+fi
+if grep -F 'gh release create' "$recovery_workflow" >/dev/null || grep -F 'gh release upload' "$recovery_workflow" >/dev/null; then
+	printf '%s\n' 'recovery workflow must not create or replace a release' >&2
 	exit 1
 fi
 
