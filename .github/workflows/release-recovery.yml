@@ -1,0 +1,255 @@
+name: Release recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Stable draft tag to recover (for example v0.18.2)
+        required: true
+        type: string
+      expected_sha:
+        description: Exact main commit the tag must resolve to
+        required: true
+        type: string
+      source_run_id:
+        description: Original tag workflow run containing the validated release-assets artifact
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tarlink-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Verify existing draft assets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      registry_sha: ${{ steps.registry_sha.outputs.sha }}
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Verify main and tag resolve to the requested commit
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "tag must be stable semver" >&2; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "expected SHA must be a full lowercase commit SHA" >&2; exit 1; }
+          main_sha=$(git ls-remote origin refs/heads/main | awk '{print $1}')
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]]
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$EXPECTED_SHA" FETCH_HEAD || { echo "requested commit is not on main" >&2; exit 1; }
+          tag_sha=$(git ls-remote origin "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}" | awk -v tag="refs/tags/$RELEASE_TAG" '$2 == tag "^{}" { print $1; found=1; exit } $2 == tag { direct=$1 } END { if (!found && direct != "") print direct }')
+          test "$tag_sha" = "$EXPECTED_SHA" || { echo "tag does not resolve to requested main commit" >&2; exit 1; }
+
+      - name: Verify original validated run provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          run_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")
+          test "$(jq -r .head_sha <<<"$run_json")" = "$EXPECTED_SHA"
+          test "$(jq -r .repository.full_name <<<"$run_json")" = "$GITHUB_REPOSITORY"
+          test "$(jq -r .event <<<"$run_json")" = push
+          test "$(jq -r .path <<<"$run_json")" = .github/workflows/release.yml
+          test "$(jq -r .head_branch <<<"$run_json")" = "$RELEASE_TAG"
+          jobs_json=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100")
+          for job_name in 'Build amd64' 'Build arm64' 'Test tagged source' 'Validate amd64 assets' 'Validate arm64 assets'; do
+            jq -e --arg name "$job_name" '[.[].jobs[] | select(.name == $name and .conclusion == "success")] | length >= 1' <<<"$jobs_json" >/dev/null
+          done
+          mkdir -p source-assets
+          gh run download "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --name release-assets --dir source-assets
+
+      - name: Download and verify the single existing draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          release_pages="$RUNNER_TEMP/release-pages.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$release_pages"
+          release_count=$(jq -r --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)] | length' "$release_pages")
+          test "$release_count" = 1 || { echo "expected exactly one draft release, found $release_count" >&2; exit 1; }
+          release_id=$(jq -er --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)][0].id' "$release_pages")
+          release_json="$RUNNER_TEMP/release.json"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" >"$release_json"
+          test "$(jq -r .draft "$release_json")" = true
+          test "$(jq -r .tag_name "$release_json")" = "$RELEASE_TAG"
+          expected=$(printf '%s\n' checksums.txt tarlink-linux-amd64 tarlink-linux-arm64 | LC_ALL=C sort)
+          actual=$(jq -r '.assets[].name' "$release_json" | LC_ALL=C sort)
+          test "$actual" = "$expected"
+          mkdir -p remote
+          while IFS=$'\t' read -r name asset_url; do
+            test -n "$asset_url"
+            gh api --header 'Accept: application/octet-stream' "$asset_url" >"remote/$name"
+          done < <(jq -r '.assets[] | [.name, .url] | @tsv' "$release_json")
+          (cd remote && sha256sum --strict --check checksums.txt)
+          chmod 0755 remote/tarlink-linux-amd64 remote/tarlink-linux-arm64
+
+      - name: Compare draft bytes with original validated artifacts
+        shell: bash
+        run: |
+          for name in checksums.txt tarlink-linux-amd64 tarlink-linux-arm64; do
+            cmp -- "source-assets/$name" "remote/$name"
+          done
+
+      - name: Upload verified draft assets for architecture checks
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: recovery-assets
+          path: remote
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Resolve official registry main once
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: drobilica/tarlink-registry
+          ref: main
+          path: registry
+          fetch-depth: 1
+
+      - name: Record registry commit
+        id: registry_sha
+        shell: bash
+        run: echo "sha=$(git -C registry rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  validate:
+    name: Validate recovered ${{ matrix.arch }} assets
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            machine: x86_64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            machine: aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.expected_sha }}
+          fetch-depth: 1
+      - name: Download verified draft assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: recovery-assets
+          path: remote
+      - name: Restore executable modes
+        run: chmod 0755 remote/tarlink-linux-amd64 remote/tarlink-linux-arm64
+      - name: Check out official registry snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: drobilica/tarlink-registry
+          ref: ${{ needs.prepare.outputs.registry_sha }}
+          path: registry
+          fetch-depth: 1
+      - name: Run exact asset and registry validation
+        env:
+          RELEASE_VERSION: ${{ inputs.release_tag }}
+        run: |
+          version="${RELEASE_VERSION#v}"
+          ./tests/release_artifacts_test.sh remote "$version" "${{ matrix.arch }}"
+          "remote/tarlink-linux-${{ matrix.arch }}" registry validate "$PWD/registry"
+      - name: Run installer and uninstaller validation
+        env:
+          RELEASE_VERSION: ${{ inputs.release_tag }}
+          HOME: ${{ runner.temp }}/tarlink-recovery-home-${{ matrix.arch }}
+          XDG_CONFIG_HOME: ${{ runner.temp }}/tarlink-recovery-home-${{ matrix.arch }}/config
+          XDG_DATA_HOME: ${{ runner.temp }}/tarlink-recovery-home-${{ matrix.arch }}/data
+          XDG_STATE_HOME: ${{ runner.temp }}/tarlink-recovery-home-${{ matrix.arch }}/state
+          XDG_CACHE_HOME: ${{ runner.temp }}/tarlink-recovery-home-${{ matrix.arch }}/cache
+        run: |
+          mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME"
+          TARLINK_TEST_ASSET_DIR="$PWD/remote" TARLINK_TEST_RELEASE_VERSION="${RELEASE_VERSION#v}" TARLINK_TEST_ARCH="${{ matrix.arch }}" FAKE_UNAME_M="${{ matrix.machine }}" ./tests/install_test.sh
+
+  publish:
+    name: Publish verified draft
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download bridge-verified draft assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: recovery-assets
+          path: expected-assets
+      - name: Final remote draft and tag verification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          tag_sha=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}" | awk -v tag="refs/tags/$RELEASE_TAG" '$2 == tag "^{}" { print $1; found=1; exit } $2 == tag { direct=$1 } END { if (!found && direct != "") print direct }')
+          test "$tag_sha" = "$EXPECTED_SHA"
+          release_pages="$RUNNER_TEMP/release-pages.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" >"$release_pages"
+          release_count=$(jq -r --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)] | length' "$release_pages")
+          test "$release_count" = 1 || { echo "expected exactly one draft release, found $release_count" >&2; exit 1; }
+          release_id=$(jq -er --arg tag "$RELEASE_TAG" '[.[][] | select(.draft == true and .tag_name == $tag)][0].id' "$release_pages")
+          release_json=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id")
+          test "$(jq -r .draft <<<"$release_json")" = true
+          test "$(jq -r .tag_name <<<"$release_json")" = "$RELEASE_TAG"
+          expected=$(printf '%s\n' checksums.txt tarlink-linux-amd64 tarlink-linux-arm64 | LC_ALL=C sort)
+          actual=$(jq -r '.assets[].name' <<<"$release_json" | LC_ALL=C sort)
+          test "$actual" = "$expected"
+          mkdir -p remote
+          while IFS=$'\t' read -r name asset_url; do
+            gh api --header 'Accept: application/octet-stream' "$asset_url" >"remote/$name"
+          done < <(jq -r '.assets[] | [.name, .url] | @tsv' <<<"$release_json")
+          for name in checksums.txt tarlink-linux-amd64 tarlink-linux-arm64; do
+            cmp -- "expected-assets/$name" "remote/$name"
+          done
+          latest_tag=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases --json isLatest,tagName --limit 1000 --jq '
+            if length == 0 then ""
+            elif ([.[] | select(.isLatest == true)] | length) == 1 then
+              ([.[] | select(.isLatest == true) | .tagName][0])
+            else
+              error("expected exactly one GitHub Latest release")
+            end
+          ')
+          if [[ -n "$latest_tag" ]]; then
+            [[ "$latest_tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "current latest tag is not stable semver" >&2; exit 1; }
+            latest_major=${BASH_REMATCH[1]}; latest_minor=${BASH_REMATCH[2]}; latest_patch=${BASH_REMATCH[3]}
+            [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "candidate tag is not stable semver" >&2; exit 1; }
+            candidate_major=${BASH_REMATCH[1]}; candidate_minor=${BASH_REMATCH[2]}; candidate_patch=${BASH_REMATCH[3]}
+            if (( candidate_major < latest_major || (candidate_major == latest_major && candidate_minor < latest_minor) || (candidate_major == latest_major && candidate_minor == latest_minor && candidate_patch < latest_patch) )); then
+              echo "candidate release is older than current latest" >&2
+              exit 1
+            fi
+          fi
+      - name: Publish draft as latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
