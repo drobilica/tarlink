@@ -121,11 +121,72 @@ func TestUpdateNoticeIncludesSelfUpdateCommand(t *testing.T) {
 	}
 
 	view := m.View().Content
-	if !strings.Contains(view, "TarLink update available: 0.15.3 → 0.15.4") {
+	if !strings.Contains(view, "TarLink update available") {
 		t.Fatalf("update notice missing: %q", view)
 	}
-	if !strings.Contains(view, "Run: tarlink self-update") {
-		t.Fatalf("update notice missing self-update command: %q", view)
+	if strings.Contains(view, "Run: tarlink self-update") {
+		t.Fatalf("update notice adds a command above content: %q", view)
+	}
+	if !strings.Contains(m.helpOverlayLines()[1], "Upgrade") {
+		t.Fatalf("self-update action missing from Help")
+	}
+}
+
+func TestDetailsUseLeftAlignedWorkspaceAndBreadcrumb(t *testing.T) {
+	m := model{screen: screenDetails, returnTo: screenInstalled, detail: &app.Application{
+		ID: "blender", Name: "Blender", Summary: "3D creation suite", InstalledVersion: "5.2.0", RegistryVersion: "5.2.1", UpdateAvailable: true,
+	}, width: 80, height: 24, theme: newTheme(false)}
+	view := m.View().Content
+	if strings.Contains(view, "╭") || !strings.Contains(view, "Installed › Blender") || !strings.Contains(view, "VERSION") {
+		t.Fatalf("details shell=%q", view)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(view, "\n"), "\n") {
+		if strings.Contains(line, "Blender") && strings.HasPrefix(ansi.Strip(line), " ") {
+			return
+		}
+	}
+	t.Fatalf("details content was not left aligned: %q", view)
+}
+
+func TestCompactTableDropsChannelWithoutDroppingVersionIdentity(t *testing.T) {
+	m := model{screen: screenUpdates, width: 60, height: 20}
+	m.initComponents()
+	m.configureApplicationTable([]app.Application{{ID: "one", Name: "One", InstalledVersion: "1.0", RegistryVersion: "2.0", DefaultChannel: "stable"}}, 56, 12)
+	view := m.applicationTable.View()
+	if strings.Contains(view, "CHANNEL") || !strings.Contains(view, "INSTALLED") || !strings.Contains(view, "AVAILABLE") {
+		t.Fatalf("compact table columns=%q", view)
+	}
+}
+
+func TestHelpIsDiscoverableAndModalUsesSingleFooter(t *testing.T) {
+	m := model{screen: screenUninstall, detail: &app.Application{Name: "Blender"}, width: 80, height: 24, theme: newTheme(false)}
+	view := m.View().Content
+	if !strings.Contains(view, "? Help") {
+		t.Fatalf("help is not discoverable: %q", view)
+	}
+	if strings.Count(view, "Enter Confirm") != 1 {
+		t.Fatalf("modal command surface duplicated: %q", view)
+	}
+}
+
+func TestListStatesDistinguishLoadingAndEmptyResults(t *testing.T) {
+	loading := model{screen: screenAvailable, loading: true, width: 80, height: 24, theme: newTheme(false)}
+	if !strings.Contains(loading.View().Content, "Loading applications") {
+		t.Fatal("loading state missing")
+	}
+	empty := model{screen: screenUpdates, dataLoaded: true, width: 80, height: 24, theme: newTheme(false)}
+	if !strings.Contains(empty.View().Content, "No updates available") {
+		t.Fatal("empty updates state missing")
+	}
+}
+
+func TestReviewScrollKeepsDetailsReachable(t *testing.T) {
+	m := model{screen: screenDetails, detail: &app.Application{Name: "Blender", ID: "blender", Summary: "Suite", InstalledVersion: "1.0", RegistryVersion: "2.0", Categories: []string{"graphics"}, Homepage: "https://example.test"}, width: 80, height: 10, theme: newTheme(false)}
+	before := strings.Join(m.reviewLines(), "\n")
+	m.moveReviewScroll(2)
+	after := strings.Join(m.reviewLines()[m.reviewScroll:], "\n")
+	if before == after || !strings.Contains(after, "VERSION") {
+		t.Fatalf("review scroll did not move: before=%q after=%q", before, after)
 	}
 }
 
@@ -285,7 +346,7 @@ func TestConfirmationOverlayResizePreservesStateAndCentering(t *testing.T) {
 			}
 		}
 		if top < 0 || bottom <= top {
-			t.Fatalf("width %d missing modal frame", width)
+			t.Fatalf("width %d missing modal frame: %q", width, view)
 		}
 		plainTop := ansi.Strip(lines[top])
 		leftByte := strings.Index(plainTop, "╭")
@@ -426,7 +487,7 @@ func TestTableUsesCharmTableScrollingAndIgnoresMouse(t *testing.T) {
 }
 
 func TestProgressViewUsesCurrentEvent(t *testing.T) {
-	m := model{width: 80, color: false, theme: newTheme(false), progressBar: newProgress(false), progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 50, BytesTotal: 100}}
+	m := model{width: 80, color: false, theme: newTheme(false), opCancel: func() {}, progressBar: newProgress(false), progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 50, BytesTotal: 100}}
 	if got := m.progressLine(); !strings.Contains(got, "Downloading") || !strings.Contains(got, "50%") {
 		t.Fatalf("progress=%q", got)
 	}

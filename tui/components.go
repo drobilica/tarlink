@@ -25,7 +25,7 @@ func newTheme(color bool) tuiTheme {
 	styles.warning = lipgloss.NewStyle().Foreground(lipgloss.Color("33"))
 	styles.danger = lipgloss.NewStyle().Foreground(lipgloss.Color("31"))
 	styles.muted = lipgloss.NewStyle().Foreground(lipgloss.Color("90"))
-	styles.selected = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Bold(true)
+	styles.selected = lipgloss.NewStyle().Reverse(true).Bold(true)
 	styles.panel = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("36"))
 	styles.control = lipgloss.NewStyle().Foreground(lipgloss.Color("90"))
 	styles.controlSelected = lipgloss.NewStyle().Foreground(lipgloss.Color("36")).Bold(true)
@@ -49,6 +49,7 @@ const (
 	actionUp contextualActionID = iota
 	actionDown
 	actionFilter
+	actionToggle
 	actionEnter
 	actionSearch
 	actionInstalled
@@ -60,6 +61,7 @@ const (
 	actionRemoveConflict
 	actionCancel
 	actionQuit
+	actionHelp
 )
 
 type contextualAction struct {
@@ -93,6 +95,14 @@ func newKeyMap() tuiKeyMap {
 // the footer and accepted by the keyboard. Busy and search states are
 // intentionally exclusive so background operations cannot receive shortcuts.
 func (m model) contextualActionPolicy() []contextualAction {
+	actions := m.contextualActions()
+	if m.busy == "" && !m.searching {
+		actions = append(actions, contextualAction{id: actionHelp, binding: newKeyMap().Help, label: "? Help"})
+	}
+	return actions
+}
+
+func (m model) contextualActions() []contextualAction {
 	b := newKeyMap()
 	action := func(id contextualActionID, binding keypkg.Binding, label string) contextualAction {
 		return contextualAction{id: id, binding: binding, label: label}
@@ -118,31 +128,60 @@ func (m model) contextualActionPolicy() []contextualAction {
 		} else if m.screen == screenUninstallConflictConfirm {
 			label = "Enter Remove file"
 		}
-		return []contextualAction{action(actionEnter, b.Enter, label), action(actionCancel, b.Cancel, "Esc Cancel"), action(actionQuit, b.Quit, "q Quit")}
+		actions := []contextualAction{action(actionEnter, b.Enter, label), action(actionCancel, b.Cancel, "Esc Cancel"), action(actionQuit, b.Quit, "q Quit")}
+		if m.modalScrollable() {
+			actions = append([]contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate")}, actions...)
+		}
+		return actions
 	}
 	if m.screen == screenInstallChannel {
 		move := keypkg.NewBinding(keypkg.WithKeys("up", "down"))
 		return []contextualAction{action(actionUp, move, "↑/↓ Choose"), action(actionEnter, b.Enter, "Enter Select"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
 	}
 	if m.screen == screenDetails {
-		actions := []contextualAction{action(actionEnter, b.Enter, "Enter Apply")}
+		enterLabel := "Enter Apply"
+		if len(m.selectedIDs) > 0 {
+			if m.returnTo == screenAvailable {
+				enterLabel = "Enter Install selected"
+			}
+			if m.returnTo == screenInstalled {
+				enterLabel = "Enter Uninstall selected"
+			}
+		} else if m.detail != nil {
+			switch {
+			case m.detail.InstalledVersion == "":
+				enterLabel = "Enter Install"
+			case m.detail.Pinned:
+				enterLabel = "Enter Pinned status"
+			case m.detail.UpdateAvailable:
+				enterLabel = "Enter Update"
+			default:
+				enterLabel = "Enter Check status"
+			}
+		}
+		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, enterLabel)}
 		if m.detail != nil && m.detail.InstalledVersion != "" {
 			actions = append(actions, action(actionVersions, b.Versions, "v Versions"), action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"))
 		}
 		return append(actions, action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit"))
 	}
 	if m.screen == screenVersions {
-		return []contextualAction{action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
+		return []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
 	}
 	if m.isListScreen() {
-		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, "Enter Review")}
-		if len(m.selectedIDs) > 0 && m.screen == screenAvailable {
-			toggle := keypkg.NewBinding(keypkg.WithKeys(" "))
-			actions = append(actions, action(actionFilter, toggle, "Space Toggle"))
-		} else if len(m.selectedIDs) > 0 && m.screen == screenInstalled {
-			toggle := keypkg.NewBinding(keypkg.WithKeys(" "))
-			actions = append(actions, action(actionFilter, toggle, "Space Toggle"))
-		} else if m.screen == screenAvailable {
+		enterLabel := "Enter Details"
+		if len(m.selectedIDs) > 0 {
+			enterLabel = "Enter Review"
+		}
+		actions := make([]contextualAction, 0)
+		if len(m.visibleApplications()) > 0 {
+			actions = append(actions, action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, enterLabel))
+		}
+		if len(m.visibleApplications()) > 0 && (m.screen == screenAvailable || m.screen == screenInstalled) {
+			toggle := keypkg.NewBinding(keypkg.WithKeys("space"), keypkg.WithHelp("Space", "Select"))
+			actions = append(actions, action(actionToggle, toggle, "Space Toggle"))
+		}
+		if m.screen == screenAvailable {
 			filter := keypkg.NewBinding(keypkg.WithKeys("left", "right"))
 			actions = append(actions, action(actionFilter, filter, "←/→ Filter"), action(actionSearch, b.Search, "/ Search"), action(actionInstalled, b.Installed, "i Installed"), action(actionUpdates, b.Updates, "u Updates"))
 		} else if m.screen == screenInstalled {
@@ -192,6 +231,19 @@ func (m model) helpView() string {
 		helper = newHelp(m.color)
 	}
 	bindings := m.actionBindings()
+	// Short help gives the primary action and help discovery first. The full
+	// reference retains every eligible binding in the same policy order.
+	if len(bindings) > 0 {
+		prioritized := make([]keypkg.Binding, 0, len(bindings))
+		for _, want := range []string{"↑↓", "Enter", "Space", "?", "Esc", "/", "q"} {
+			for _, binding := range bindings {
+				if binding.Help().Key == want {
+					prioritized = append(prioritized, binding)
+				}
+			}
+		}
+		bindings = prioritized
+	}
 	helper.SetWidth(max(1, viewWidth(m.width)))
 	return helper.ShortHelpView(bindings)
 }
@@ -213,6 +265,8 @@ func (m model) actionBindings() []keypkg.Binding {
 		binding.SetHelp(binding.Help().Key, strings.TrimPrefix(action.label, binding.Help().Key+" "))
 		bindings = append(bindings, binding)
 	}
+	// Help is always a discoverable shell action, including while a modal is
+	// active. The keyboard handler uses the same binding for input dispatch.
 	return bindings
 }
 
