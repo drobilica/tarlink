@@ -71,6 +71,37 @@ func TestAcquireNoCreateOpensReadOnly(t *testing.T) {
 	}
 }
 
+func TestAcquireNoCreateSharedExcludesWriters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lock")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := AcquireNoCreateWithTimeout(context.Background(), path, 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Release()
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := AcquireWithTimeout(ctx, path, 50*time.Millisecond); !errors.Is(err, ErrConflict) {
+		t.Fatalf("writer acquired while reader held: %v", err)
+	}
+	if err := reader.Release(); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := AcquireWithTimeout(context.Background(), path, 20*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Release()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel2()
+	if _, err := AcquireNoCreateWithTimeout(ctx2, path, 50*time.Millisecond); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reader acquired while writer held: %v", err)
+	}
+}
+
 func TestDirectoryLockSharesIdentityAcrossAcquisitions(t *testing.T) {
 	directory := t.TempDir()
 	first, err := AcquireDirectoryWithTimeout(context.Background(), directory, 100*time.Millisecond)
