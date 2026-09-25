@@ -46,7 +46,7 @@ func TestSyncAggregatesFetchFailures(t *testing.T) {
 	}
 	first := strings.Repeat("a", 64)
 	second := strings.Repeat("b", 64)
-	err := Sync(context.Background(), root, []Object{{Algorithm: "sha256", Digest: first, URL: "one"}, {Algorithm: "sha256", Digest: second, URL: "two"}}, func(_ context.Context, url, _, _, _ string) error { return errors.New(url + " failed") })
+	err := Sync(context.Background(), root, []Object{{Algorithm: "sha256", Digest: first, URLs: []string{"one"}}, {Algorithm: "sha256", Digest: second, URLs: []string{"two"}}}, func(_ context.Context, url, _, _, _ string) error { return errors.New(url + " failed") })
 	if err == nil || !strings.Contains(err.Error(), "one") || !strings.Contains(err.Error(), "two") {
 		t.Fatalf("aggregate error=%v", err)
 	}
@@ -268,7 +268,7 @@ func TestRequiredIncludesResolvedRemoteDesktopIcon(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(objects) != 2 || objects[1].Digest != iconDigest || objects[1].URL != "https://example.test/icon.png" {
+	if len(objects) != 2 || objects[1].Digest != iconDigest || len(objects[1].URLs) != 1 || objects[1].URLs[0] != "https://example.test/icon.png" {
 		t.Fatalf("required objects = %#v", objects)
 	}
 }

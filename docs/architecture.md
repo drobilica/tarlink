@@ -58,9 +58,24 @@ only `repository.json`, `v1/sha256/`, `v1/sha512/`, and digest-named regular
 objects. `Open` and `Verify` reject symlinks, extra public entries, malformed
 or oversized descriptors, and invalid object names. During atomic sync they
 also allow only TarLink's `.sync.lock`, `.object-stage-*`, and `.descriptor-*`
-transients. `Required` includes each resolved platform's exact digest-pinned
-remote desktop icon, so repository sync acquires icons through the same source
-ordering and digest verification as application and runtime artifacts.
+transients. The repository workflow is one command,
+`tarlink repository sync /repository`, with `--app`, `--platform`,
+`--all-retained`, `--dry-run`, and `--json` forms for narrowing, planning, and
+machine output; `status` and `verify` inspect without mutating. Every run uses
+one validated registry snapshot and reports its revision and fetch time. The
+selection unit is application by channel by platform, and the desired closure
+per selected release is the application artifact, its exact required runtime
+artifact, and the app-wide digest-bearing remote desktop icon; icons bundled
+inside archives stay inside their app artifact and are not repository objects,
+and there are no per-version icon variants. Protection is derived from the
+complete snapshot rather than stored, so narrowed syncs preserve out-of-scope
+and unattributed objects and report them instead of removing them. The retained
+`releases` list is an explicit set: releases are never inferred or sorted and
+version identifiers are opaque, so no per-channel release-count bound (such as
+keeping the latest five releases per application, channel, and platform) is
+implemented. The default selection and `--all-retained` therefore both select
+the complete eligible retained set, and introducing a count bound requires a
+deliberate history-ordering schema decision.
 
 Normal registry-dependent commands bootstrap a missing official-registry cache automatically. Valid official-registry caches remain local-only for 24 hours according to their explicit checked-at metadata. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache without advancing checked-at. `refresh` always fetches and validates the current official registry, activates it before returning, and prints the successful UTC checked-at value. Local operations such as rollback and uninstall do not require networking. The CLI `list` command enumerates the available platform catalog and annotates installed state; the TUI's installed list remains a separate view.
 
