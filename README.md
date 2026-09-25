@@ -57,10 +57,15 @@ reconciles a local repository against the validated registry, with `--app`,
 `--platform`, `--all-retained`, `--dry-run`, and `--json` forms for narrowing,
 planning, and machine output. Application, runtime, and
 remote-icon bytes remain governed by the HTTPS sources and exact digests
-declared by the official registry. Narrowed syncs preserve out-of-scope and
-unattributed objects and report them instead of removing them; default and
-`--all-retained` selections both cover the complete eligible retained set
-because the release-count bound is pending a history-ordering schema decision.
+declared by the official registry. Sync is additive-only: it acquires missing
+objects, repairs corrupt required objects, and retains all valid artifacts —
+including objects absent from the current registry and objects outside a
+narrowed selection — so repository storage may grow over time. The repository
+is an artifact mirror: hosting bytes does not authorize changing official
+metadata or installing releases absent from the validated registry snapshot.
+Default and `--all-retained` selections both cover the complete eligible
+retained set because the release-count bound is pending a history-ordering
+schema decision.
 
 ## Why TarLink?
 

@@ -155,24 +155,25 @@ Repository dry-runs read the already validated local registry generation and do
 not refresh it; without such a generation they report the missing state instead
 of silently downloading one.
 
-`tarlink repository sync` reconciles the destination against one validated
-registry snapshot: it acquires missing objects and repairs corrupt required
-objects before removing anything, then deletes only structurally recognized
-regular object files that fall outside the selected closure. Deletion keeps no
-ownership database; protection is derived from the complete snapshot, so a
-sync narrowed by `--app` or `--platform` removes only objects positively
-attributable to the selected scope and referenced nowhere else, while
-out-of-scope and unattributed objects are preserved and reported. Only an
-unrestricted sync reconciles recognized orphans globally. Removal reopens each
-path without following links, requires a regular single-link file whose
-identity is rechecked immediately before unlink, then flushes the object
-directory; unknown entries, symlinks, malformed names, or any unsafe condition
-abort cleanup entirely. Any planning, acquisition, verification, write, or
-cancellation failure before cleanup deletes nothing, and a failure during
-cleanup stops at once with the exact removed and remaining objects reported, so
-the next run converges. Objects are acquired before anything is deleted, which
-needs temporary free space; required bytes are unknown before acquisition
-because manifests carry no sizes, while available bytes are reported when
-known. Status, verify, and dry-run never mutate persistent content and snapshot
-under the same writer lock with a bounded wait, reporting a lock conflict
-instead of a state result while a writer is active.
+`tarlink repository sync` is additive-only against one validated registry
+snapshot: it acquires missing objects and repairs corrupt required objects,
+and it retains every valid stored artifact — including objects absent from the
+current registry and objects outside a `--app`/`--platform` selection — so
+repository storage may grow over time. Nothing is ever deleted by sync; safe
+temporary-file recovery removes only `.object-stage-*` staging scratch, never
+valid artifacts. Unknown entries, symlinks, malformed names, or any other
+unsafe condition abort the run before any mutation. Any planning, acquisition,
+verification, write, or cancellation failure leaves all pre-existing valid
+objects byte-identical, and the failure report carries the truthful partial
+counters with `removed=0`, so the next run converges. Acquisition needs
+temporary free space; required bytes are unknown before acquisition because
+manifests carry no sizes, while available bytes are reported when known.
+The repository is an artifact mirror, not an authority: hosting bytes does not
+authorize changing official metadata or installing releases absent from the
+validated registry snapshot. There is no second catalog, and mirror operators
+need no signing keys, schedulers, or extra setup. Status reports extra valid
+objects as retained — never unhealthy and never awaiting deletion — and
+corrupt extras are listed, never hidden, without affecting the required-set
+result. Status, verify, and dry-run never mutate persistent content and
+snapshot under the same writer lock with a bounded wait, reporting a lock
+conflict instead of a state result while a writer is active.

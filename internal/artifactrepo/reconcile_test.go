@@ -158,10 +158,10 @@ func statusByDigest(statuses []Status) map[string]Status {
 	return result
 }
 
-func removalByDigest(removals []Removal) map[string]Removal {
-	result := map[string]Removal{}
-	for _, removal := range removals {
-		result[removal.Algorithm+":"+removal.Digest] = removal
+func retainedByDigest(objects []RetainedObject) map[string]RetainedObject {
+	result := map[string]RetainedObject{}
+	for _, object := range objects {
+		result[object.Algorithm+":"+object.Digest] = object
 	}
 	return result
 }
@@ -209,9 +209,6 @@ func TestBuildPlanDefaultSelectsAllAppsAndPlatforms(t *testing.T) {
 			}
 		}
 	}
-	if plan.Narrowed {
-		t.Fatal("default selection is marked narrowed")
-	}
 	if len(plan.Unsupported) != 0 {
 		t.Fatalf("unsupported=%v", plan.Unsupported)
 	}
@@ -240,9 +237,6 @@ func TestBuildPlanNarrowsByAppAndPlatform(t *testing.T) {
 				t.Fatalf("desired=%v want %v", got, want)
 			}
 		}
-	}
-	if !plan.Narrowed {
-		t.Fatal("narrowed selection is not marked narrowed")
 	}
 	byDigest := map[string]Object{}
 	for _, object := range plan.Desired {
@@ -501,6 +495,19 @@ func TestSecondRunIsNoop(t *testing.T) {
 	root := t.TempDir()
 	firstFetch := &recordingFetch{contents: contents.byURL}
 	populateRepo(t, context.Background(), root, plan, firstFetch.fetch)
+	before := map[string]string{}
+	for _, object := range plan.Desired {
+		before[object.Algorithm+":"+object.Digest] = readRepoObject(t, root, object.Algorithm, object.Digest)
+	}
+	descriptor := filepath.Join(root, "repository.json")
+	beforeDescriptor, err := os.ReadFile(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeInfo, err := os.Lstat(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
 	secondFetch := &recordingFetch{contents: contents.byURL}
 	result, err := Reconcile(context.Background(), root, plan, secondFetch.fetch)
 	if err != nil {
@@ -512,8 +519,30 @@ func TestSecondRunIsNoop(t *testing.T) {
 	if result.Unchanged != result.Required {
 		t.Fatalf("result=%+v", result)
 	}
+	if result.Retained != 0 || len(result.RetainedObjects) != 0 {
+		t.Fatalf("result=%+v", result)
+	}
 	if len(secondFetch.calls) != 0 {
 		t.Fatalf("fetch calls=%v", secondFetch.calls)
+	}
+	for _, object := range plan.Desired {
+		if got := readRepoObject(t, root, object.Algorithm, object.Digest); got != before[object.Algorithm+":"+object.Digest] {
+			t.Fatalf("object %s:%s mutated by second run", object.Algorithm, object.Digest)
+		}
+	}
+	afterDescriptor, err := os.ReadFile(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterDescriptor) != string(beforeDescriptor) {
+		t.Fatalf("repository.json rewritten: %q", afterDescriptor)
+	}
+	afterInfo, err := os.Lstat(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !afterInfo.ModTime().Equal(beforeInfo.ModTime()) {
+		t.Fatal("repository.json metadata rewritten by second run")
 	}
 }
 
@@ -537,13 +566,24 @@ func TestNarrowedAppSyncPreservesOtherApp(t *testing.T) {
 		if !repoObjectExists(root, "sha256", key) {
 			t.Fatalf("object %s was removed", key)
 		}
+		if got := readRepoObject(t, root, "sha256", key); key == orphan && got != "orphan bytes" {
+			t.Fatalf("orphan object=%q", got)
+		}
 	}
-	removals := removalByDigest(result.Removals)
-	if removals["sha256:"+contents.digests["beta-amd64-v1"]].Outcome != OutcomePreservedProtected {
-		t.Fatalf("removals=%v", result.Removals)
+	retained := retainedByDigest(result.RetainedObjects)
+	if retained["sha256:"+contents.digests["beta-amd64-v1"]].State != StateRetained {
+		t.Fatalf("retained=%v", result.RetainedObjects)
 	}
-	if removals["sha256:"+orphan].Outcome != OutcomePreservedUnattributed {
-		t.Fatalf("removals=%v", result.Removals)
+	if retained["sha256:"+orphan].State != StateRetained {
+		t.Fatalf("retained=%v", result.RetainedObjects)
+	}
+	if result.Retained != len(result.RetainedObjects) {
+		t.Fatalf("result=%+v", result)
+	}
+	for _, status := range result.Statuses {
+		if status.State != StateUnchanged {
+			t.Fatalf("statuses=%v", result.Statuses)
+		}
 	}
 }
 
@@ -566,9 +606,15 @@ func TestNarrowedPlatformSyncPreservesOtherArch(t *testing.T) {
 			t.Fatalf("object %s was removed", key)
 		}
 	}
+	retained := retainedByDigest(result.RetainedObjects)
+	for _, key := range []string{contents.digests["alpha-arm64-v1"], contents.digests["gamma-arm64-v1"]} {
+		if retained["sha256:"+key].State != StateRetained {
+			t.Fatalf("retained=%v", result.RetainedObjects)
+		}
+	}
 }
 
-func TestSharedDigestSurvivesNarrowedCleanup(t *testing.T) {
+func TestSharedDigestSurvivesNarrowedSync(t *testing.T) {
 	contents := fixtureContents()
 	catalog := fixtureCatalog(contents)
 	full := mustBuildPlan(t, catalog, Selection{})
@@ -581,7 +627,7 @@ func TestSharedDigestSurvivesNarrowedCleanup(t *testing.T) {
 	}
 	shared := contents.digests["alpha-amd64-v2"]
 	if !repoObjectExists(root, "sha256", shared) {
-		t.Fatal("shared digest was removed by narrowed cleanup")
+		t.Fatal("shared digest was removed by narrowed sync")
 	}
 	if got := readRepoObject(t, root, "sha256", shared); got != contents.byName["alpha-amd64-v2"] {
 		t.Fatalf("shared object=%q", got)
@@ -589,7 +635,7 @@ func TestSharedDigestSurvivesNarrowedCleanup(t *testing.T) {
 	_ = result
 }
 
-func TestOrphanRemovedOnlyByUnrestrictedSync(t *testing.T) {
+func TestUnrestrictedSyncPreservesOrphan(t *testing.T) {
 	contents := fixtureContents()
 	catalog := fixtureCatalog(contents)
 	full := mustBuildPlan(t, catalog, Selection{})
@@ -597,6 +643,10 @@ func TestOrphanRemovedOnlyByUnrestrictedSync(t *testing.T) {
 	populateRepo(t, context.Background(), root, full, (&recordingFetch{contents: contents.byURL}).fetch)
 	orphan := contentDigest("orphan bytes")
 	writeRepoObject(t, root, "sha256", orphan, "orphan bytes")
+	before := map[string]string{}
+	for _, object := range full.Desired {
+		before[object.Algorithm+":"+object.Digest] = readRepoObject(t, root, object.Algorithm, object.Digest)
+	}
 	narrowed := mustBuildPlan(t, catalog, Selection{App: "alpha"})
 	narrowedResult, err := Reconcile(context.Background(), root, narrowed, (&recordingFetch{contents: contents.byURL}).fetch)
 	if err != nil {
@@ -616,19 +666,34 @@ func TestOrphanRemovedOnlyByUnrestrictedSync(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Removed != 1 {
+	if result.Removed != 0 {
 		t.Fatalf("result=%+v", result)
 	}
-	if repoObjectExists(root, "sha256", orphan) {
-		t.Fatal("unrestricted sync left the orphan behind")
+	if !repoObjectExists(root, "sha256", orphan) {
+		t.Fatal("unrestricted sync removed the orphan")
 	}
-	removals := removalByDigest(result.Removals)
-	if removals["sha256:"+orphan].Outcome != OutcomeRemoved {
-		t.Fatalf("removals=%v", result.Removals)
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
+	}
+	for _, object := range full.Desired {
+		if got := readRepoObject(t, root, object.Algorithm, object.Digest); got != before[object.Algorithm+":"+object.Digest] {
+			t.Fatalf("desired object %s was mutated", object.Digest)
+		}
+	}
+	retained := retainedByDigest(result.RetainedObjects)
+	entry, ok := retained["sha256:"+orphan]
+	if !ok || entry.State != StateRetained {
+		t.Fatalf("retained=%v", result.RetainedObjects)
+	}
+	if entry.Size != int64(len("orphan bytes")) {
+		t.Fatalf("retained=%v", result.RetainedObjects)
+	}
+	if result.Retained != 1 {
+		t.Fatalf("result=%+v", result)
 	}
 }
 
-func TestUnsafeEntriesAbortCleanup(t *testing.T) {
+func TestUnsafeEntriesAbortSync(t *testing.T) {
 	contents := fixtureContents()
 	catalog := fixtureCatalog(contents)
 	full := mustBuildPlan(t, catalog, Selection{})
@@ -649,7 +714,10 @@ func TestUnsafeEntriesAbortCleanup(t *testing.T) {
 		t.Fatal("symlinked entry was accepted")
 	}
 	if !repoObjectExists(root, "sha256", orphan) {
-		t.Fatal("cleanup ran despite unsafe entry")
+		t.Fatal("orphan was touched despite unsafe entry")
+	}
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
 	}
 	if len(fetch.calls) != 0 {
 		t.Fatalf("fetch calls=%v", fetch.calls)
@@ -663,12 +731,12 @@ func TestUnsafeEntriesAbortCleanup(t *testing.T) {
 	if _, err := Reconcile(context.Background(), root, full, fetch.fetch); err == nil {
 		t.Fatal("unexpected entry was accepted")
 	}
-	if !repoObjectExists(root, "sha256", orphan) {
-		t.Fatal("cleanup ran despite unexpected entry")
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
 	}
 }
 
-func TestNoCleanupAfterAcquisitionFailure(t *testing.T) {
+func TestAcquisitionFailurePreservesValidObjects(t *testing.T) {
 	contents := fixtureContents()
 	plan := mustBuildPlan(t, fixtureCatalog(contents), Selection{App: "alpha", Platform: "linux-amd64"})
 	root := t.TempDir()
@@ -677,6 +745,8 @@ func TestNoCleanupAfterAcquisitionFailure(t *testing.T) {
 	}
 	orphan := contentDigest("orphan bytes")
 	writeRepoObject(t, root, "sha256", orphan, "orphan bytes")
+	validDesired := contents.digests["alpha-amd64-v2"]
+	writeRepoObject(t, root, "sha256", validDesired, contents.byName["alpha-amd64-v2"])
 	fetch := &recordingFetch{contents: contents.byURL, fail: map[string]error{fixtureURL("alpha-amd64-v1"): errors.New("source unavailable")}}
 	result, err := Reconcile(context.Background(), root, plan, fetch.fetch)
 	if err == nil {
@@ -685,15 +755,43 @@ func TestNoCleanupAfterAcquisitionFailure(t *testing.T) {
 	if result.Removed != 0 {
 		t.Fatalf("result=%+v", result)
 	}
-	if !repoObjectExists(root, "sha256", orphan) {
-		t.Fatal("cleanup ran after acquisition failure")
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
+	}
+	if got := readRepoObject(t, root, "sha256", validDesired); got != contents.byName["alpha-amd64-v2"] {
+		t.Fatalf("pre-existing valid object mutated: %q", got)
 	}
 	if result.Missing == 0 {
 		t.Fatalf("result=%+v", result)
 	}
 }
 
-func TestNoCleanupAfterBadDigest(t *testing.T) {
+func TestFailedRepairLeavesCorruptObjectUnchanged(t *testing.T) {
+	contents := fixtureContents()
+	plan := mustBuildPlan(t, fixtureCatalog(contents), Selection{App: "gamma"})
+	root := t.TempDir()
+	if err := Init(root); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := contents.digests["gamma-arm64-v1"]
+	writeRepoObject(t, root, "sha256", corrupt, "tampered bytes")
+	fetch := &recordingFetch{contents: map[string]string{fixtureURL("gamma-arm64-v1"): "wrong bytes"}}
+	result, err := Reconcile(context.Background(), root, plan, fetch.fetch)
+	if err == nil {
+		t.Fatal("expected repair failure")
+	}
+	if result.Removed != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := readRepoObject(t, root, "sha256", corrupt); got != "tampered bytes" {
+		t.Fatalf("corrupt object mutated by failed repair: %q", got)
+	}
+	if result.Corrupt != 1 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestWrongBytesAreNeverPublished(t *testing.T) {
 	contents := fixtureContents()
 	plan := mustBuildPlan(t, fixtureCatalog(contents), Selection{App: "gamma"})
 	root := t.TempDir()
@@ -710,15 +808,15 @@ func TestNoCleanupAfterBadDigest(t *testing.T) {
 	if result.Removed != 0 {
 		t.Fatalf("result=%+v", result)
 	}
-	if !repoObjectExists(root, "sha256", orphan) {
-		t.Fatal("cleanup ran after digest failure")
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
 	}
 	if repoObjectExists(root, "sha256", contents.digests["gamma-arm64-v1"]) {
 		t.Fatal("bad bytes were published")
 	}
 }
 
-func TestNoCleanupAfterDestinationWriteFailure(t *testing.T) {
+func TestDestinationWriteFailurePreservesValidObjects(t *testing.T) {
 	contents := fixtureContents()
 	plan := mustBuildPlan(t, fixtureCatalog(contents), Selection{App: "gamma"})
 	root := t.TempDir()
@@ -738,12 +836,12 @@ func TestNoCleanupAfterDestinationWriteFailure(t *testing.T) {
 	if result.Removed != 0 {
 		t.Fatalf("result=%+v", result)
 	}
-	if !repoObjectExists(root, "sha256", orphan) {
-		t.Fatal("cleanup ran after destination write failure")
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
 	}
 }
 
-func TestNoCleanupAfterPreCleanupCancellation(t *testing.T) {
+func TestCancellationPreservesValidObjects(t *testing.T) {
 	contents := fixtureContents()
 	plan := mustBuildPlan(t, fixtureCatalog(contents), Selection{App: "gamma"})
 	root := t.TempDir()
@@ -761,51 +859,44 @@ func TestNoCleanupAfterPreCleanupCancellation(t *testing.T) {
 	if result.Removed != 0 {
 		t.Fatalf("result=%+v", result)
 	}
-	if !repoObjectExists(root, "sha256", orphan) {
-		t.Fatal("cleanup ran after cancellation")
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
 	}
 }
 
-func TestPartialCleanupFailureReportsAndRerunConverges(t *testing.T) {
+func TestFailedSyncRerunConverges(t *testing.T) {
 	contents := fixtureContents()
 	catalog := fixtureCatalog(contents)
 	full := mustBuildPlan(t, catalog, Selection{})
 	root := t.TempDir()
 	populateRepo(t, context.Background(), root, full, (&recordingFetch{contents: contents.byURL}).fetch)
-	orphanOne := contentDigest("orphan one")
-	orphanTwo := contentDigest("orphan two")
-	writeRepoObject(t, root, "sha256", orphanOne, "orphan one")
-	writeRepoObject(t, root, "sha256", orphanTwo, "orphan two")
-	first, second := orphanOne, orphanTwo
-	if first > second {
-		first, second = second, first
-	}
+	orphan := contentDigest("orphan bytes")
+	writeRepoObject(t, root, "sha256", orphan, "orphan bytes")
 	missing := contents.digests["gamma-arm64-v1"]
 	if err := os.Remove(filepath.Join(root, "v1", "sha256", missing)); err != nil {
 		t.Fatal(err)
 	}
-	fetch := &recordingFetch{contents: contents.byURL}
-	fetch.onCall = func(string) {
-		_ = os.Remove(filepath.Join(root, "v1", "sha256", second))
-	}
-	result, err := Reconcile(context.Background(), root, full, fetch.fetch)
+	failing := &recordingFetch{contents: contents.byURL, fail: map[string]error{fixtureURL("gamma-arm64-v1"): errors.New("source unavailable")}}
+	failed, err := Reconcile(context.Background(), root, full, failing.fetch)
 	if err == nil {
-		t.Fatal("expected partial cleanup failure")
+		t.Fatal("expected acquisition failure")
 	}
-	if result.Removed != 1 {
-		t.Fatalf("result=%+v", result)
+	if failed.Removed != 0 {
+		t.Fatalf("failed result=%+v", failed)
 	}
-	if repoObjectExists(root, "sha256", first) {
-		t.Fatal("first orphan was not removed")
+	if failed.Missing == 0 {
+		t.Fatalf("failed result=%+v", failed)
+	}
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
 	}
 	for _, object := range full.Desired {
+		if object.Digest == missing {
+			continue
+		}
 		if !repoObjectExists(root, object.Algorithm, object.Digest) {
 			t.Fatalf("desired object %s was touched", object.Digest)
 		}
-	}
-	removals := removalByDigest(result.Removals)
-	if removals["sha256:"+second].Outcome != OutcomeFailed {
-		t.Fatalf("removals=%v", result.Removals)
 	}
 	rerun, err := Reconcile(context.Background(), root, full, (&recordingFetch{contents: contents.byURL}).fetch)
 	if err != nil {
@@ -814,10 +905,16 @@ func TestPartialCleanupFailureReportsAndRerunConverges(t *testing.T) {
 	if rerun.Removed != 0 || rerun.Missing != 0 || rerun.Corrupt != 0 {
 		t.Fatalf("rerun result=%+v", rerun)
 	}
+	if rerun.Downloaded != 1 {
+		t.Fatalf("rerun result=%+v", rerun)
+	}
 	for _, object := range full.Desired {
 		if !repoObjectExists(root, object.Algorithm, object.Digest) {
 			t.Fatalf("desired object %s missing after rerun", object.Digest)
 		}
+	}
+	if got := readRepoObject(t, root, "sha256", orphan); got != "orphan bytes" {
+		t.Fatalf("orphan object=%q", got)
 	}
 }
 
@@ -848,15 +945,15 @@ func TestInspectReadAbsentStaysAbsent(t *testing.T) {
 	contents := fixtureContents()
 	plan := mustBuildPlan(t, fixtureCatalog(contents), Selection{App: "gamma"})
 	root := filepath.Join(t.TempDir(), "absent")
-	statuses, eligible, preserved, err := InspectRead(context.Background(), root, plan)
+	statuses, retained, err := InspectRead(context.Background(), root, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(statuses) != 1 || statuses[0].State != StateMissing {
 		t.Fatalf("statuses=%v", statuses)
 	}
-	if len(eligible) != 0 || len(preserved) != 0 {
-		t.Fatalf("eligible=%v preserved=%v", eligible, preserved)
+	if len(retained) != 0 {
+		t.Fatalf("retained=%v", retained)
 	}
 	if _, err := os.Lstat(root); !os.IsNotExist(err) {
 		t.Fatalf("absent path was created: %v", err)
@@ -867,12 +964,15 @@ func TestInspectReadEmptyDirStaysEmpty(t *testing.T) {
 	contents := fixtureContents()
 	plan := mustBuildPlan(t, fixtureCatalog(contents), Selection{App: "gamma"})
 	root := t.TempDir()
-	statuses, _, _, err := InspectRead(context.Background(), root, plan)
+	statuses, retained, err := InspectRead(context.Background(), root, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(statuses) != 1 || statuses[0].State != StateMissing {
 		t.Fatalf("statuses=%v", statuses)
+	}
+	if len(retained) != 0 {
+		t.Fatalf("retained=%v", retained)
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil || len(entries) != 0 {
@@ -891,7 +991,7 @@ func TestInspectReadNeverCreatesLockFile(t *testing.T) {
 	if err := os.Remove(lock); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := InspectRead(context.Background(), root, plan); err == nil {
+	if _, _, err := InspectRead(context.Background(), root, plan); err == nil {
 		t.Fatal("expected lock error for legacy repository")
 	}
 	if _, err := os.Lstat(lock); !os.IsNotExist(err) {
@@ -910,7 +1010,7 @@ func TestInspectReadLeavesRepositoryUntouched(t *testing.T) {
 	for _, object := range plan.Desired {
 		before[object.Digest] = readRepoObject(t, root, object.Algorithm, object.Digest)
 	}
-	statuses, eligible, preserved, err := InspectRead(context.Background(), root, plan)
+	statuses, retained, err := InspectRead(context.Background(), root, plan)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -928,8 +1028,54 @@ func TestInspectReadLeavesRepositoryUntouched(t *testing.T) {
 			t.Fatalf("statuses=%v", statuses)
 		}
 	}
-	if len(eligible) != 1 || len(preserved) != 0 {
-		t.Fatalf("eligible=%v preserved=%v", eligible, preserved)
+	if len(retained) != 1 {
+		t.Fatalf("retained=%v", retained)
+	}
+	if retained[0].Algorithm != "sha256" || retained[0].Digest != orphan || retained[0].State != StateRetained {
+		t.Fatalf("retained=%v", retained)
+	}
+	if retained[0].Size != int64(len("orphan bytes")) {
+		t.Fatalf("retained=%v", retained)
+	}
+}
+
+func TestInspectReadReportsCorruptExtrasWithoutRequiredCounters(t *testing.T) {
+	contents := fixtureContents()
+	plan := mustBuildPlan(t, fixtureCatalog(contents), Selection{App: "gamma"})
+	root := t.TempDir()
+	populateRepo(t, context.Background(), root, plan, (&recordingFetch{contents: contents.byURL}).fetch)
+	validExtra := contentDigest("valid extra")
+	writeRepoObject(t, root, "sha256", validExtra, "valid extra")
+	corruptExtra := contentDigest("corrupt extra expected")
+	writeRepoObject(t, root, "sha256", corruptExtra, "corrupt extra actual")
+	statuses, retained, err := InspectRead(context.Background(), root, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requiredMissing, requiredCorrupt int
+	for _, status := range statuses {
+		switch status.State {
+		case StateMissing:
+			requiredMissing++
+		case StateCorrupt:
+			requiredCorrupt++
+		case StateUnchanged:
+		default:
+			t.Fatalf("statuses=%v", statuses)
+		}
+	}
+	if requiredMissing != 0 || requiredCorrupt != 0 {
+		t.Fatalf("statuses=%v", statuses)
+	}
+	byDigest := retainedByDigest(retained)
+	if byDigest["sha256:"+validExtra].State != StateRetained {
+		t.Fatalf("retained=%v", retained)
+	}
+	if byDigest["sha256:"+corruptExtra].State != StateCorrupt {
+		t.Fatalf("retained=%v", retained)
+	}
+	if len(retained) != 2 {
+		t.Fatalf("retained=%v", retained)
 	}
 }
 

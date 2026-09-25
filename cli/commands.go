@@ -255,27 +255,11 @@ func (r Runner) repositoryInitCommand() *cobra.Command {
 	configureCommand(command, usage)
 	return command
 }
-func countRemovalOutcome(removals []artifactrepo.Removal, outcome string) int {
-	count := 0
-	for _, removal := range removals {
-		if removal.Outcome == outcome {
-			count++
-		}
-	}
-	return count
-}
-
-func (r Runner) printRepositoryRetention(report app.RepositoryReport) error {
-	if report.Excess+report.Preserved == 0 && len(report.Unsupported) == 0 {
+func (r Runner) printRepositoryUnsupported(report app.RepositoryReport) error {
+	if len(report.Unsupported) == 0 {
 		return nil
 	}
-	line := fmt.Sprintf("excess=%d preserved=%d (protected=%d unattributed=%d)", report.Excess, report.Preserved,
-		countRemovalOutcome(report.Removals, artifactrepo.OutcomePreservedProtected),
-		countRemovalOutcome(report.Removals, artifactrepo.OutcomePreservedUnattributed))
-	if len(report.Unsupported) > 0 {
-		line += " unsupported=" + strings.Join(report.Unsupported, ",")
-	}
-	_, err := fmt.Fprintln(r.Stdout, line)
+	_, err := fmt.Fprintln(r.Stdout, "unsupported="+strings.Join(report.Unsupported, ","))
 	return err
 }
 
@@ -330,11 +314,11 @@ func (r Runner) repositorySyncCommand() *cobra.Command {
 		}
 		if report.Revision != "" {
 			scope, scopePlatform := repositoryScopeLabel(selection)
-			if _, printErr := fmt.Fprintf(r.Stdout, "revision %s: scope=%s platform=%s retention=%s required=%d downloaded=%d repaired=%d removed=%d unchanged=%d\n", report.Revision, scope, scopePlatform, report.Retention, report.Required, report.Downloaded, report.Repaired, report.Removed, report.Unchanged); err == nil {
+			if _, printErr := fmt.Fprintf(r.Stdout, "revision %s scope=%s platform=%s retention=%s: required=%d downloaded=%d repaired=%d unchanged=%d removed=0 retained=%d\n", report.Revision, scope, scopePlatform, report.Retention, report.Required, report.Downloaded, report.Repaired, report.Unchanged, report.Retained); err == nil {
 				err = printErr
 			}
-			if retentionErr := r.printRepositoryRetention(report); err == nil {
-				err = retentionErr
+			if unsupportedErr := r.printRepositoryUnsupported(report); err == nil {
+				err = unsupportedErr
 			}
 		}
 		return err
@@ -370,11 +354,11 @@ func (r Runner) repositoryStatusCommand() *cobra.Command {
 		}
 		if report.Revision != "" {
 			scope, scopePlatform := repositoryScopeLabel(selection)
-			if _, printErr := fmt.Fprintf(r.Stdout, "revision %s: scope=%s platform=%s retention=%s required=%d unchanged=%d missing=%d corrupt=%d excess=%d preserved=%d\n", report.Revision, scope, scopePlatform, report.Retention, report.Required, report.Unchanged, report.Missing, report.Corrupt, report.Excess, report.Preserved); err == nil {
+			if _, printErr := fmt.Fprintf(r.Stdout, "revision %s scope=%s platform=%s retention=%s: required=%d unchanged=%d missing=%d corrupt=%d retained=%d\n", report.Revision, scope, scopePlatform, report.Retention, report.Required, report.Unchanged, report.Missing, report.Corrupt, report.Retained); err == nil {
 				err = printErr
 			}
-			if retentionErr := r.printRepositoryRetention(report); err == nil {
-				err = retentionErr
+			if unsupportedErr := r.printRepositoryUnsupported(report); err == nil {
+				err = unsupportedErr
 			}
 		}
 		return err

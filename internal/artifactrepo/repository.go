@@ -63,18 +63,13 @@ func Required(catalog *registry.Catalog, selection Selection) ([]Object, error) 
 }
 
 type Plan struct {
-	Selection      Selection
-	Desired        []Object
-	Complete       []Object
-	Protection     map[string]map[string]struct{}
-	SelectedScopes map[string]struct{}
-	Unsupported    []string
-	Narrowed       bool
+	Selection   Selection
+	Desired     []Object
+	Complete    []Object
+	Unsupported []string
 }
 
 func objectKey(algorithm, digest string) string { return algorithm + ":" + digest }
-
-func scopeKey(app, platform string) string { return app + "\x00" + platform }
 
 func BuildPlan(catalog *registry.Catalog, selection Selection) (*Plan, error) {
 	if catalog == nil || catalog.Revision == "" {
@@ -105,11 +100,9 @@ func BuildPlan(catalog *registry.Catalog, selection Selection) (*Plan, error) {
 	completeIndex := map[string]int{}
 	var desired []Object
 	var complete []Object
-	protection := map[string]map[string]struct{}{}
-	selectedScopes := map[string]struct{}{}
 	urlToKey := map[string]string{}
 	digestToAlgorithm := map[string]string{}
-	recordComplete := func(algorithm, digest, url, scope, id, version string) error {
+	recordComplete := func(algorithm, digest, url, id, version string) error {
 		if algorithm == "" {
 			algorithm = "sha256"
 		}
@@ -125,10 +118,6 @@ func BuildPlan(catalog *registry.Catalog, selection Selection) (*Plan, error) {
 			return fmt.Errorf("conflicting repository metadata for digest %q", digest)
 		}
 		digestToAlgorithm[digest] = algorithm
-		if protection[key] == nil {
-			protection[key] = map[string]struct{}{}
-		}
-		protection[key][scope] = struct{}{}
 		if index, ok := completeIndex[key]; ok {
 			known := false
 			for _, existing := range complete[index].URLs {
@@ -190,14 +179,12 @@ func BuildPlan(catalog *registry.Catalog, selection Selection) (*Plan, error) {
 			if item == nil {
 				return nil, fmt.Errorf("application %q platform %q is unavailable", id, platformKey)
 			}
-			scope := scopeKey(id, platformKey)
 			inScope := (selection.App == "" || selection.App == id) && (selection.Platform == "" || selection.Platform == platformKey)
 			if inScope {
 				matched = true
-				selectedScopes[scope] = struct{}{}
 			}
 			for _, release := range item.ReleaseHistory.Releases {
-				if err := recordComplete(release.Verification.Algorithm, release.Verification.Digest, release.URL, scope, id, release.Version); err != nil {
+				if err := recordComplete(release.Verification.Algorithm, release.Verification.Digest, release.URL, id, release.Version); err != nil {
 					return nil, err
 				}
 				if inScope {
@@ -207,7 +194,7 @@ func BuildPlan(catalog *registry.Catalog, selection Selection) (*Plan, error) {
 				}
 				if release.Runtime != nil {
 					runtime := release.Runtime
-					if err := recordComplete(runtime.Artifact.Verification.Algorithm, runtime.Artifact.Verification.Digest, runtime.Artifact.URL, scope, id, release.Version); err != nil {
+					if err := recordComplete(runtime.Artifact.Verification.Algorithm, runtime.Artifact.Verification.Digest, runtime.Artifact.URL, id, release.Version); err != nil {
 						return nil, err
 					}
 					if inScope {
@@ -218,7 +205,7 @@ func BuildPlan(catalog *registry.Catalog, selection Selection) (*Plan, error) {
 				}
 			}
 			if item.Desktop.Icon.Remote() {
-				if err := recordComplete("sha256", item.Desktop.Icon.SHA256, item.Desktop.Icon.URL, scope, id, "desktop icon"); err != nil {
+				if err := recordComplete("sha256", item.Desktop.Icon.SHA256, item.Desktop.Icon.URL, id, "desktop icon"); err != nil {
 					return nil, fmt.Errorf("%s %s desktop icon: %w", id, platformKey, err)
 				}
 				if inScope {
@@ -257,7 +244,7 @@ func BuildPlan(catalog *registry.Catalog, selection Selection) (*Plan, error) {
 			desired[i].URLs = append([]string(nil), urls...)
 		}
 	}
-	return &Plan{Selection: selection, Desired: desired, Complete: complete, Protection: protection, SelectedScopes: selectedScopes, Unsupported: unsupported, Narrowed: selection.App != "" || selection.Platform != ""}, nil
+	return &Plan{Selection: selection, Desired: desired, Complete: complete, Unsupported: unsupported}, nil
 }
 
 func (s Selection) Validate() error {

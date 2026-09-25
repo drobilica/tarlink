@@ -90,9 +90,9 @@ its `/tmp` runtime directory is writable; Kubernetes deployments should mount
 an `emptyDir` at `/tmp` and keep the repository document root separate. Offline
 installation and recovery are not implemented. Any future offline mode must use
 a validated local registry snapshot and disable registry refresh and every
-network repository source. A bounded repository does not guarantee that every
-historical lock can be replayed offline once objects are removed; the existing
-approved fallbacks still apply.
+network repository source. A repository mirror alone does not guarantee that
+every historical lock can be replayed offline; the existing approved
+fallbacks still apply.
 
 Repository reconciliation is driven by
 `tarlink repository sync PATH [--app ID] [--platform PLATFORM] [--all-retained] [--dry-run] [--json]`,
@@ -102,19 +102,27 @@ With no selector the commands cover all registered applications and all their
 declared platforms; `--app` and `--platform` narrow and compose with each
 other and with `--all-retained`, which selects the same complete eligible
 retained set as the default because the release-count bound is pending a
-history-ordering schema decision. Human sync output reports
-`required/downloaded/repaired/removed/unchanged` and status output reports
-`required/unchanged/missing/corrupt/excess/preserved`, both with the registry
+history-ordering schema decision. Sync is additive-only: it acquires missing
+objects and repairs corrupt required objects, and it retains all valid
+artifacts — including objects absent from the current registry and objects
+outside the selected scope — so storage may grow over time and nothing is
+ever deleted. The repository is an artifact mirror: hosting bytes does not
+authorize changing official metadata or installing releases absent from the
+validated registry snapshot, and mirror operators need no signing keys,
+schedulers, or extra setup. Human sync output reports
+`required/downloaded/repaired/unchanged/removed/retained` (with `removed`
+always 0) and status output reports
+`required/unchanged/missing/corrupt/retained`, both with the registry
 revision, scope, and retention policy; `--json` emits exactly one JSON document
-on stdout with diagnostics on stderr, including the sorted object and removal
-lists and, for dry runs, a separate acquisition plan whose completed-work
-counters stay zero. Exit codes reuse the existing mapping: success, a healthy
-inspection, and successful dry-run planning exit 0, and eligible excess alone
-is not an error; `status` reports corrupt objects with 6 and missing-only
-objects with 8 (corrupt wins when both are present); `verify` reports
-corruption with 6 and an absent repository with 8; invalid selectors, lock
-conflicts, network, download, and other operational failures keep their
-existing codes. Sync acquires before deleting, so the destination needs
-temporary free space beyond the retained set; manifests carry no sizes, so
-required bytes are unknown before acquisition and only available bytes are
-reported when known.
+on stdout with diagnostics on stderr, including the sorted object and retained
+lists and, for dry runs, a separate acquisition/repair plan whose
+completed-work counters stay zero. Exit codes reuse the existing mapping:
+success, a healthy inspection, and successful dry-run planning exit 0, and
+retained extras alone are never an error; `status` reports corrupt required
+objects with 6 and missing-only objects with 8 (corrupt wins when both are
+present); `verify` audits every stored object and reports corruption with 6
+and an absent repository with 8; invalid selectors, lock conflicts, network,
+download, and other operational failures keep their existing codes.
+Acquisition needs temporary free space beyond the retained set; manifests
+carry no sizes, so required bytes are unknown before acquisition and only
+available bytes are reported when known.
