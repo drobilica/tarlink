@@ -39,41 +39,131 @@ type Descriptor struct {
 	Version int    `json:"version"`
 }
 type Object struct {
-	Algorithm string
-	Digest    string
-	Size      int64
-	URL       string
+	Algorithm string   `json:"algorithm"`
+	Digest    string   `json:"digest"`
+	Size      int64    `json:"size"`
+	URLs      []string `json:"urls"`
 }
 type Fetch func(context.Context, string, string, string, string) error
 
 var ErrDestinationWrite = errors.New("repository destination write failed")
 
 type Selection struct {
-	App         string
-	Platform    string
-	AllRetained bool
+	App         string `json:"app"`
+	Platform    string `json:"platform"`
+	AllRetained bool   `json:"all_retained"`
 }
 
 func Required(catalog *registry.Catalog, selection Selection) ([]Object, error) {
+	plan, err := BuildPlan(catalog, selection)
+	if err != nil {
+		return nil, err
+	}
+	return plan.Desired, nil
+}
+
+type Plan struct {
+	Selection      Selection
+	Desired        []Object
+	Complete       []Object
+	Protection     map[string]map[string]struct{}
+	SelectedScopes map[string]struct{}
+	Unsupported    []string
+	Narrowed       bool
+}
+
+func objectKey(algorithm, digest string) string { return algorithm + ":" + digest }
+
+func scopeKey(app, platform string) string { return app + "\x00" + platform }
+
+func BuildPlan(catalog *registry.Catalog, selection Selection) (*Plan, error) {
 	if catalog == nil || catalog.Revision == "" {
 		return nil, errors.New("validated registry revision is required")
 	}
-	if (selection.App == "" && !selection.AllRetained) || (selection.App != "" && selection.AllRetained) {
-		return nil, errors.New("select exactly one of an app or all-retained")
+	if err := selection.Validate(); err != nil {
+		return nil, err
 	}
-	var objects []Object
-	seen := map[string]bool{}
-	add := func(algorithm, digest, url string) error {
+	if selection.App != "" {
+		if _, ok := catalog.Variants[selection.App]; !ok {
+			return nil, fmt.Errorf("unknown application %q", selection.App)
+		}
+		if selection.Platform != "" {
+			platforms := catalog.Variants[selection.App]
+			found := false
+			for platform := range platforms {
+				if platform.OS+"-"+platform.Arch == selection.Platform {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, fmt.Errorf("application %q has no %s artifact", selection.App, selection.Platform)
+			}
+		}
+	}
+	desiredIndex := map[string]int{}
+	completeIndex := map[string]int{}
+	var desired []Object
+	var complete []Object
+	protection := map[string]map[string]struct{}{}
+	selectedScopes := map[string]struct{}{}
+	urlToKey := map[string]string{}
+	digestToAlgorithm := map[string]string{}
+	recordComplete := func(algorithm, digest, url, scope, id, version string) error {
+		if algorithm == "" {
+			algorithm = "sha256"
+		}
+		if _, err := objectPath("/", algorithm, digest); err != nil {
+			return fmt.Errorf("%s %s: %w", id, version, err)
+		}
+		key := objectKey(algorithm, digest)
+		if previous, ok := urlToKey[url]; ok && previous != key {
+			return fmt.Errorf("conflicting repository metadata for %q", url)
+		}
+		urlToKey[url] = key
+		if previous, ok := digestToAlgorithm[digest]; ok && previous != algorithm {
+			return fmt.Errorf("conflicting repository metadata for digest %q", digest)
+		}
+		digestToAlgorithm[digest] = algorithm
+		if protection[key] == nil {
+			protection[key] = map[string]struct{}{}
+		}
+		protection[key][scope] = struct{}{}
+		if index, ok := completeIndex[key]; ok {
+			known := false
+			for _, existing := range complete[index].URLs {
+				if existing == url {
+					known = true
+					break
+				}
+			}
+			if !known {
+				complete[index].URLs = append(complete[index].URLs, url)
+			}
+		} else {
+			completeIndex[key] = len(complete)
+			complete = append(complete, Object{Algorithm: algorithm, Digest: digest, URLs: []string{url}})
+		}
+		return nil
+	}
+	recordDesired := func(algorithm, digest, url string) error {
 		if algorithm == "" {
 			algorithm = "sha256"
 		}
 		if _, err := objectPath("/", algorithm, digest); err != nil {
 			return err
 		}
-		key := algorithm + ":" + digest
-		if !seen[key] {
-			seen[key] = true
-			objects = append(objects, Object{Algorithm: algorithm, Digest: digest, URL: url})
+		key := objectKey(algorithm, digest)
+		if index, ok := desiredIndex[key]; ok {
+			for _, existing := range desired[index].URLs {
+				if existing == url {
+					return nil
+				}
+			}
+			desired[index].URLs = append(desired[index].URLs, url)
+		} else {
+			desiredIndex[key] = len(desired)
+			desired = append(desired, Object{Algorithm: algorithm, Digest: digest, URLs: []string{url}})
 		}
 		return nil
 	}
@@ -82,47 +172,92 @@ func Required(catalog *registry.Catalog, selection Selection) ([]Object, error) 
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	var unsupported []string
 	for _, id := range ids {
 		platforms := catalog.Variants[id]
-		if !selection.AllRetained && id != selection.App {
-			continue
-		}
 		platformKeys := make([]string, 0, len(platforms))
 		for platform := range platforms {
 			platformKeys = append(platformKeys, platform.OS+"-"+platform.Arch)
 		}
 		sort.Strings(platformKeys)
+		matched := false
 		for _, platformKey := range platformKeys {
 			platform, ok := manifest.ParsePlatformKey(platformKey)
 			if !ok {
 				return nil, fmt.Errorf("unsupported platform %q", platformKey)
 			}
 			item := platforms[platform]
-			if selection.Platform != "" && selection.Platform != platformKey {
-				continue
+			if item == nil {
+				return nil, fmt.Errorf("application %q platform %q is unavailable", id, platformKey)
+			}
+			scope := scopeKey(id, platformKey)
+			inScope := (selection.App == "" || selection.App == id) && (selection.Platform == "" || selection.Platform == platformKey)
+			if inScope {
+				matched = true
+				selectedScopes[scope] = struct{}{}
 			}
 			for _, release := range item.ReleaseHistory.Releases {
-				if err := add(release.Verification.Algorithm, release.Verification.Digest, release.URL); err != nil {
-					return nil, fmt.Errorf("%s %s: %w", id, release.Version, err)
+				if err := recordComplete(release.Verification.Algorithm, release.Verification.Digest, release.URL, scope, id, release.Version); err != nil {
+					return nil, err
+				}
+				if inScope {
+					if err := recordDesired(release.Verification.Algorithm, release.Verification.Digest, release.URL); err != nil {
+						return nil, fmt.Errorf("%s %s: %w", id, release.Version, err)
+					}
 				}
 				if release.Runtime != nil {
 					runtime := release.Runtime
-					if err := add(runtime.Artifact.Verification.Algorithm, runtime.Artifact.Verification.Digest, runtime.Artifact.URL); err != nil {
+					if err := recordComplete(runtime.Artifact.Verification.Algorithm, runtime.Artifact.Verification.Digest, runtime.Artifact.URL, scope, id, release.Version); err != nil {
 						return nil, err
+					}
+					if inScope {
+						if err := recordDesired(runtime.Artifact.Verification.Algorithm, runtime.Artifact.Verification.Digest, runtime.Artifact.URL); err != nil {
+							return nil, err
+						}
 					}
 				}
 			}
 			if item.Desktop.Icon.Remote() {
-				if err := add("sha256", item.Desktop.Icon.SHA256, item.Desktop.Icon.URL); err != nil {
+				if err := recordComplete("sha256", item.Desktop.Icon.SHA256, item.Desktop.Icon.URL, scope, id, "desktop icon"); err != nil {
 					return nil, fmt.Errorf("%s %s desktop icon: %w", id, platformKey, err)
+				}
+				if inScope {
+					if err := recordDesired("sha256", item.Desktop.Icon.SHA256, item.Desktop.Icon.URL); err != nil {
+						return nil, fmt.Errorf("%s %s desktop icon: %w", id, platformKey, err)
+					}
 				}
 			}
 		}
+		if selection.App == "" && selection.Platform != "" && !matched {
+			unsupported = append(unsupported, id)
+		}
 	}
-	if len(objects) == 0 {
+	if len(desired) == 0 {
 		return nil, errors.New("selection matched no retained releases")
 	}
-	return objects, nil
+	sort.Slice(desired, func(i, j int) bool {
+		if desired[i].Algorithm != desired[j].Algorithm {
+			return desired[i].Algorithm < desired[j].Algorithm
+		}
+		return desired[i].Digest < desired[j].Digest
+	})
+	sort.Slice(complete, func(i, j int) bool {
+		if complete[i].Algorithm != complete[j].Algorithm {
+			return complete[i].Algorithm < complete[j].Algorithm
+		}
+		return complete[i].Digest < complete[j].Digest
+	})
+	sort.Strings(unsupported)
+	completeURLs := make(map[string][]string, len(complete))
+	for _, object := range complete {
+		completeURLs[objectKey(object.Algorithm, object.Digest)] = object.URLs
+	}
+	for i := range desired {
+		if urls, ok := completeURLs[objectKey(desired[i].Algorithm, desired[i].Digest)]; ok {
+			desired[i].URLs = append([]string(nil), urls...)
+		}
+	}
+	return &Plan{Selection: selection, Desired: desired, Complete: complete, Protection: protection, SelectedScopes: selectedScopes, Unsupported: unsupported, Narrowed: selection.App != "" || selection.Platform != ""}, nil
 }
 
 func (s Selection) Validate() error {
@@ -153,6 +288,9 @@ func Init(root string) error {
 	if descriptorInfo, statErr := os.Lstat(filepath.Join(root, "repository.json")); statErr == nil {
 		if !descriptorInfo.Mode().IsRegular() || descriptorInfo.Mode()&os.ModeSymlink != 0 {
 			return errors.New("repository descriptor is not a regular file")
+		}
+		if err := ensureSyncLock(root); err != nil {
+			return err
 		}
 		return Open(root)
 	} else if !os.IsNotExist(statErr) {
@@ -190,7 +328,31 @@ func Init(root string) error {
 	if err := atomicWrite(filepath.Join(root, "repository.json"), data, 0644); err != nil {
 		return err
 	}
+	if err := ensureSyncLock(root); err != nil {
+		return err
+	}
 	return Open(root)
+}
+
+func ensureSyncLock(root string) error {
+	if err := filesystem.CheckOwnedDirectory(root); err != nil {
+		return fmt.Errorf("repository root: %w", err)
+	}
+	path := filepath.Join(root, ".sync.lock")
+	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_CREAT|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	if err != nil {
+		return err
+	}
+	var info syscall.Stat_t
+	if err := syscall.Fstat(fd, &info); err != nil {
+		_ = syscall.Close(fd)
+		return err
+	}
+	_ = syscall.Close(fd)
+	if info.Mode&syscall.S_IFMT != syscall.S_IFREG {
+		return errors.New("repository lock path is not a regular file")
+	}
+	return nil
 }
 
 func Open(root string) error {
@@ -612,12 +774,29 @@ func Sync(ctx context.Context, root string, objects []Object, fetch Fetch) error
 	}
 	var failures []error
 	for _, object := range objects {
-		if err := Add(ctx, root, object.Algorithm, object.Digest, fetch, object.URL); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrDestinationWrite) {
-				return err
-			}
-			failures = append(failures, fmt.Errorf("%s:%s: %w", object.Algorithm, object.Digest, err))
+		if len(object.URLs) == 0 {
+			failures = append(failures, fmt.Errorf("%s:%s: acquisition failed", object.Algorithm, object.Digest))
 			continue
+		}
+		acquired := false
+		var lastErr error
+		for _, url := range object.URLs {
+			if err := Add(ctx, root, object.Algorithm, object.Digest, fetch, url); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrDestinationWrite) {
+					return err
+				}
+				lastErr = err
+				continue
+			}
+			acquired = true
+			break
+		}
+		if !acquired {
+			if lastErr != nil {
+				failures = append(failures, fmt.Errorf("%s:%s: %w", object.Algorithm, object.Digest, lastErr))
+			} else {
+				failures = append(failures, fmt.Errorf("%s:%s: acquisition failed", object.Algorithm, object.Digest))
+			}
 		}
 	}
 	return errors.Join(failures...)

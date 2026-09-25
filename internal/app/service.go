@@ -106,10 +106,36 @@ func (core *Core) RemoveRepositorySource(value string) error {
 	return err
 }
 
+const repositoryRetention = "all-retained"
+
+type RepositoryPlan struct {
+	Acquire []artifactrepo.Status  `json:"acquire"`
+	Repair  []artifactrepo.Status  `json:"repair"`
+	Remove  []artifactrepo.Removal `json:"remove"`
+}
+
 type RepositoryReport struct {
-	Revision                            string
-	Required, Present, Missing, Corrupt int
-	Objects                             []artifactrepo.Object
+	Operation      string                 `json:"operation"`
+	Revision       string                 `json:"revision"`
+	FetchedAt      time.Time              `json:"fetched_at"`
+	Path           string                 `json:"path"`
+	Selection      artifactrepo.Selection `json:"selection"`
+	Retention      string                 `json:"retention"`
+	DryRun         bool                   `json:"dry_run"`
+	Required       int                    `json:"required"`
+	Downloaded     int                    `json:"downloaded"`
+	Repaired       int                    `json:"repaired"`
+	Unchanged      int                    `json:"unchanged"`
+	Removed        int                    `json:"removed"`
+	Missing        int                    `json:"missing"`
+	Corrupt        int                    `json:"corrupt"`
+	Excess         int                    `json:"excess"`
+	Preserved      int                    `json:"preserved"`
+	Objects        []artifactrepo.Status  `json:"objects"`
+	Removals       []artifactrepo.Removal `json:"removals"`
+	Plan           *RepositoryPlan        `json:"plan,omitempty"`
+	Unsupported    []string               `json:"unsupported,omitempty"`
+	AvailableBytes int64                  `json:"available_bytes,omitempty"`
 }
 
 func (core *Core) RepositoryInit(path string) error {
@@ -119,89 +145,193 @@ func (core *Core) RepositoryInit(path string) error {
 	}
 	return artifactrepo.Init(absolute)
 }
-func (core *Core) RepositoryVerify(ctx context.Context, path string) ([]artifactrepo.Object, error) {
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
+
+func classifyPlanError(operation string, err error) error {
+	if err == nil {
+		return nil
 	}
-	return artifactrepo.VerifyContext(ctx, absolute)
-}
-func (core *Core) RepositoryStatus(ctx context.Context, path string, selection artifactrepo.Selection) (RepositoryReport, error) {
-	catalog, err := registry.Open(filepath.Join(core.layout.Cache, "registry"))
-	if err != nil {
-		return RepositoryReport{}, err
+	var typed *Error
+	if errors.As(err, &typed) {
+		return err
 	}
-	return core.repositoryReport(ctx, catalog, path, selection)
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "unknown application"),
+		strings.Contains(message, "has no "),
+		strings.Contains(message, "unsupported platform"),
+		strings.Contains(message, "selection matched no retained releases"):
+		return &Error{Code: CodeInvalidArguments, Op: operation, Err: err}
+	default:
+		return &Error{Code: CodeRegistry, Op: operation, Err: err}
+	}
 }
 
-func (core *Core) repositoryReport(ctx context.Context, catalog *registry.Catalog, path string, selection artifactrepo.Selection) (RepositoryReport, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	path, err := filepath.Abs(path)
-	if err != nil {
-		return RepositoryReport{}, err
-	}
-	if err := selection.Validate(); err != nil {
-		return RepositoryReport{}, err
-	}
-	objects, err := artifactrepo.Required(catalog, selection)
-	if err != nil {
-		return RepositoryReport{}, err
-	}
-	if err := artifactrepo.Open(path); err != nil {
-		return RepositoryReport{}, err
-	}
-	report := RepositoryReport{Revision: catalog.Revision, Required: len(objects), Objects: objects}
-	for _, object := range objects {
-		if err := ctx.Err(); err != nil {
-			return RepositoryReport{}, err
-		}
-		target := filepath.Join(path, "v1", object.Algorithm, object.Digest)
-		if _, statErr := os.Lstat(target); os.IsNotExist(statErr) {
-			report.Missing++
-			continue
-		} else if statErr != nil {
-			return RepositoryReport{}, statErr
-		}
-		if _, verifyErr := artifactrepo.VerifyObjectContext(ctx, path, object); verifyErr == nil {
-			report.Present++
-		} else if errors.Is(verifyErr, context.Canceled) || errors.Is(verifyErr, context.DeadlineExceeded) {
-			return RepositoryReport{}, verifyErr
-		} else {
-			report.Corrupt++
-		}
-	}
-	return report, nil
-}
-func (core *Core) RepositorySync(ctx context.Context, path string, selection artifactrepo.Selection, dryRun bool) (RepositoryReport, error) {
-	var catalog *registry.Catalog
-	var err error
-	if dryRun {
-		catalog, err = registry.Open(filepath.Join(core.layout.Cache, "registry"))
-	} else {
-		catalog, err = core.catalog(ctx, nil)
-	}
-	if err != nil {
-		return RepositoryReport{}, err
-	}
-	report, err := core.repositoryReport(ctx, catalog, path, selection)
-	if err != nil || dryRun {
-		return report, err
-	}
-	objects := report.Objects
-	err = artifactrepo.Sync(ctx, path, objects, func(ctx context.Context, url, algorithm, digest, destination string) error {
+func repositoryFetch(core *Core) artifactrepo.Fetch {
+	return func(ctx context.Context, url, algorithm, digest, destination string) error {
 		_, err := core.installer.Client.FetchArtifact(ctx, download.ArtifactRequest{URL: url, Algorithm: algorithm, Digest: digest, Destination: destination})
 		if errors.Is(err, download.ErrDestinationWrite) {
 			return fmt.Errorf("%w: %v", artifactrepo.ErrDestinationWrite, err)
 		}
 		return err
-	})
-	final, statusErr := core.repositoryReport(ctx, catalog, path, selection)
-	if statusErr != nil {
-		return report, errors.Join(err, statusErr)
 	}
-	return final, err
+}
+
+func (core *Core) RepositoryVerify(ctx context.Context, path string) (RepositoryReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return RepositoryReport{}, err
+	}
+	report := RepositoryReport{Operation: "verify", Path: absolute, Retention: repositoryRetention}
+	if _, statErr := os.Lstat(absolute); os.IsNotExist(statErr) {
+		return report, &Error{Code: CodeNotFound, Op: "verify repository", Err: statErr}
+	}
+	healthy, corrupt, verifyErr := artifactrepo.VerifyAllCollect(ctx, absolute)
+	if verifyErr != nil {
+		return report, classify("verify repository", verifyErr)
+	}
+	report.Objects = append(append([]artifactrepo.Status{}, healthy...), corrupt...)
+	report.Required = len(report.Objects)
+	report.Unchanged = len(healthy)
+	report.Corrupt = len(corrupt)
+	if len(corrupt) != 0 {
+		return report, &Error{Code: CodeChecksum, Op: "verify repository", Err: errors.New("repository objects failed digest verification")}
+	}
+	return report, nil
+}
+
+func (core *Core) RepositoryStatus(ctx context.Context, path string, selection artifactrepo.Selection) (RepositoryReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	catalog, err := registry.Open(filepath.Join(core.layout.Cache, "registry"))
+	if err != nil {
+		return RepositoryReport{}, classify("open validated registry", err)
+	}
+	plan, err := artifactrepo.BuildPlan(catalog, selection)
+	if err != nil {
+		return RepositoryReport{Operation: "status", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt, Path: path, Selection: selection, Retention: repositoryRetention}, classifyPlanError("status repository", err)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return RepositoryReport{}, err
+	}
+	statuses, eligible, preserved, inspectErr := artifactrepo.InspectRead(ctx, absolute, plan)
+	if inspectErr != nil {
+		return RepositoryReport{Operation: "status", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt, Path: absolute, Selection: selection, Retention: repositoryRetention, Unsupported: plan.Unsupported}, classify("status repository", inspectErr)
+	}
+	removals := make([]artifactrepo.Removal, 0, len(eligible)+len(preserved))
+	for _, object := range eligible {
+		removals = append(removals, artifactrepo.Removal{Algorithm: object.Algorithm, Digest: object.Digest, Size: object.Size, Outcome: artifactrepo.OutcomeEligible})
+	}
+	removals = append(removals, preserved...)
+	sort.Slice(removals, func(i, j int) bool {
+		if removals[i].Algorithm != removals[j].Algorithm {
+			return removals[i].Algorithm < removals[j].Algorithm
+		}
+		return removals[i].Digest < removals[j].Digest
+	})
+	report := RepositoryReport{
+		Operation: "status", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt,
+		Path: absolute, Selection: selection, Retention: repositoryRetention,
+		Required: len(statuses), Objects: statuses, Removals: removals, Unsupported: plan.Unsupported,
+	}
+	for _, status := range statuses {
+		switch status.State {
+		case artifactrepo.StateUnchanged:
+			report.Unchanged++
+		case artifactrepo.StateMissing:
+			report.Missing++
+		case artifactrepo.StateCorrupt:
+			report.Corrupt++
+		}
+	}
+	report.Excess = len(eligible)
+	report.Preserved = len(preserved)
+	if report.Corrupt != 0 {
+		return report, &Error{Code: CodeChecksum, Op: "status repository", Err: errors.New("repository objects failed digest verification")}
+	}
+	if report.Missing != 0 {
+		return report, &Error{Code: CodeNotFound, Op: "status repository", Err: errors.New("repository objects are missing")}
+	}
+	return report, nil
+}
+
+func (core *Core) RepositorySync(ctx context.Context, path string, selection artifactrepo.Selection, dryRun bool) (RepositoryReport, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if dryRun {
+		catalog, err := registry.Open(filepath.Join(core.layout.Cache, "registry"))
+		if err != nil {
+			return RepositoryReport{}, classify("open validated registry", err)
+		}
+		plan, err := artifactrepo.BuildPlan(catalog, selection)
+		if err != nil {
+			return RepositoryReport{Operation: "sync", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt, Path: path, Selection: selection, Retention: repositoryRetention, DryRun: true}, classifyPlanError("sync repository", err)
+		}
+		absolute, err := filepath.Abs(path)
+		if err != nil {
+			return RepositoryReport{}, err
+		}
+		statuses, eligible, preserved, inspectErr := artifactrepo.InspectRead(ctx, absolute, plan)
+		if inspectErr != nil {
+			return RepositoryReport{Operation: "sync", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt, Path: absolute, Selection: selection, Retention: repositoryRetention, DryRun: true, Unsupported: plan.Unsupported}, classify("sync repository", inspectErr)
+		}
+		report := RepositoryReport{
+			Operation: "sync", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt,
+			Path: absolute, Selection: selection, Retention: repositoryRetention, DryRun: true,
+			Required: len(statuses), Objects: statuses, Removals: preserved, Unsupported: plan.Unsupported,
+		}
+		planned := &RepositoryPlan{}
+		for _, status := range statuses {
+			switch status.State {
+			case artifactrepo.StateUnchanged:
+				report.Unchanged++
+			case artifactrepo.StateMissing:
+				report.Missing++
+				planned.Acquire = append(planned.Acquire, status)
+			case artifactrepo.StateCorrupt:
+				report.Corrupt++
+				planned.Repair = append(planned.Repair, status)
+			}
+		}
+		for _, object := range eligible {
+			planned.Remove = append(planned.Remove, artifactrepo.Removal{Algorithm: object.Algorithm, Digest: object.Digest})
+		}
+		report.Plan = planned
+		report.Excess = len(eligible)
+		report.Preserved = len(preserved)
+		return report, nil
+	}
+	catalog, err := core.catalog(ctx, nil)
+	if err != nil {
+		return RepositoryReport{}, err
+	}
+	plan, err := artifactrepo.BuildPlan(catalog, selection)
+	if err != nil {
+		return RepositoryReport{Operation: "sync", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt, Path: path, Selection: selection, Retention: repositoryRetention}, classifyPlanError("sync repository", err)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return RepositoryReport{}, err
+	}
+	result, syncErr := artifactrepo.Reconcile(ctx, absolute, plan, repositoryFetch(core))
+	report := RepositoryReport{
+		Operation: "sync", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt,
+		Path: absolute, Selection: selection, Retention: repositoryRetention,
+		Required: result.Required, Downloaded: result.Downloaded, Repaired: result.Repaired,
+		Unchanged: result.Unchanged, Removed: result.Removed, Missing: result.Missing,
+		Corrupt: result.Corrupt, Excess: result.Excess, Preserved: result.Preserved,
+		Objects: result.Statuses, Removals: result.Removals, Unsupported: plan.Unsupported,
+		AvailableBytes: result.AvailableBytes,
+	}
+	if syncErr != nil {
+		return report, classify("sync repository", syncErr)
+	}
+	return report, nil
 }
 
 func (core *Core) CheckTarLinkVersion(ctx context.Context) (TarLinkVersion, error) {

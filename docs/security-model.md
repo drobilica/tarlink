@@ -146,10 +146,33 @@ Static repositories are untrusted content stores, never registry authorities.
 TarLink accepts only the exact descriptor format/version, rejects unsafe
 filesystem entries, reads opened regular files into private same-filesystem
 temporary files, verifies the requested digest, and atomically publishes the
-object. A corrupt object can be repaired only by verified replacement; valid
-objects and unrelated files are not removed. Repository sources are attempted
+object. A corrupt required object can be repaired only by verified replacement;
+a missing or corrupt desired object is never repaired from the destination
+repository's own bytes. Repository sources are attempted
 in configured order after local cache verification, and failures are visible
 without weakening HTTPS, cancellation, size, or digest checks.
 Repository dry-runs read the already validated local registry generation and do
 not refresh it; without such a generation they report the missing state instead
 of silently downloading one.
+
+`tarlink repository sync` reconciles the destination against one validated
+registry snapshot: it acquires missing objects and repairs corrupt required
+objects before removing anything, then deletes only structurally recognized
+regular object files that fall outside the selected closure. Deletion keeps no
+ownership database; protection is derived from the complete snapshot, so a
+sync narrowed by `--app` or `--platform` removes only objects positively
+attributable to the selected scope and referenced nowhere else, while
+out-of-scope and unattributed objects are preserved and reported. Only an
+unrestricted sync reconciles recognized orphans globally. Removal reopens each
+path without following links, requires a regular single-link file whose
+identity is rechecked immediately before unlink, then flushes the object
+directory; unknown entries, symlinks, malformed names, or any unsafe condition
+abort cleanup entirely. Any planning, acquisition, verification, write, or
+cancellation failure before cleanup deletes nothing, and a failure during
+cleanup stops at once with the exact removed and remaining objects reported, so
+the next run converges. Objects are acquired before anything is deleted, which
+needs temporary free space; required bytes are unknown before acquisition
+because manifests carry no sizes, while available bytes are reported when
+known. Status, verify, and dry-run never mutate persistent content and snapshot
+under the same writer lock with a bounded wait, reporting a lock conflict
+instead of a state result while a writer is active.

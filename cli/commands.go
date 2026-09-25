@@ -12,7 +12,6 @@ import (
 
 	"github.com/drobilica/tarlink/internal/app"
 	"github.com/drobilica/tarlink/internal/artifactrepo"
-	"github.com/drobilica/tarlink/internal/manifest"
 	"github.com/drobilica/tarlink/internal/research"
 	"github.com/drobilica/tarlink/internal/version"
 	"github.com/spf13/cobra"
@@ -223,9 +222,21 @@ func (r Runner) repositoryCommand() *cobra.Command {
 
 type repositoryOperations interface {
 	RepositoryInit(string) error
-	RepositoryVerify(context.Context, string) ([]artifactrepo.Object, error)
+	RepositoryVerify(context.Context, string) (app.RepositoryReport, error)
 	RepositorySync(context.Context, string, artifactrepo.Selection, bool) (app.RepositoryReport, error)
 	RepositoryStatus(context.Context, string, artifactrepo.Selection) (app.RepositoryReport, error)
+}
+
+func repositoryScopeLabel(selection artifactrepo.Selection) (string, string) {
+	scope := selection.App
+	if scope == "" {
+		scope = "all"
+	}
+	platform := selection.Platform
+	if platform == "" {
+		platform = "all"
+	}
+	return scope, platform
 }
 
 func (r Runner) repositoryInitCommand() *cobra.Command {
@@ -244,8 +255,33 @@ func (r Runner) repositoryInitCommand() *cobra.Command {
 	configureCommand(command, usage)
 	return command
 }
+func countRemovalOutcome(removals []artifactrepo.Removal, outcome string) int {
+	count := 0
+	for _, removal := range removals {
+		if removal.Outcome == outcome {
+			count++
+		}
+	}
+	return count
+}
+
+func (r Runner) printRepositoryRetention(report app.RepositoryReport) error {
+	if report.Excess+report.Preserved == 0 && len(report.Unsupported) == 0 {
+		return nil
+	}
+	line := fmt.Sprintf("excess=%d preserved=%d (protected=%d unattributed=%d)", report.Excess, report.Preserved,
+		countRemovalOutcome(report.Removals, artifactrepo.OutcomePreservedProtected),
+		countRemovalOutcome(report.Removals, artifactrepo.OutcomePreservedUnattributed))
+	if len(report.Unsupported) > 0 {
+		line += " unsupported=" + strings.Join(report.Unsupported, ",")
+	}
+	_, err := fmt.Fprintln(r.Stdout, line)
+	return err
+}
+
 func (r Runner) repositoryVerifyCommand() *cobra.Command {
-	usage := "usage: tarlink repository verify PATH"
+	var jsonOutput bool
+	usage := "usage: tarlink repository verify PATH [--json]"
 	command := &cobra.Command{Use: "verify PATH", Args: exactArgs(1, usage), RunE: func(cmd *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
@@ -255,30 +291,27 @@ func (r Runner) repositoryVerifyCommand() *cobra.Command {
 		if !ok {
 			return errors.New("repository management is unavailable")
 		}
-		objects, err := ops.RepositoryVerify(cmd.Context(), args[0])
+		report, err := ops.RepositoryVerify(cmd.Context(), args[0])
+		if jsonOutput {
+			if jsonErr := writeJSON(r.Stdout, report); jsonErr != nil && err == nil {
+				err = jsonErr
+			}
+			return err
+		}
 		if err == nil {
-			_, err = fmt.Fprintf(r.Stdout, "Verified %d objects. Registry approval is not implied.\n", len(objects))
+			_, err = fmt.Fprintf(r.Stdout, "Verified %d objects. Registry approval is not implied.\n", len(report.Objects))
 		}
 		return err
 	}}
+	command.Flags().BoolVar(&jsonOutput, "json", false, "write JSON")
 	configureCommand(command, usage)
 	return command
 }
 func (r Runner) repositorySyncCommand() *cobra.Command {
 	var appID, platform string
-	var all, dry bool
-	usage := "usage: tarlink repository sync PATH [--app ID] [--platform PLATFORM] [--all-retained] [--dry-run]"
-	command := &cobra.Command{Use: "sync PATH", Args: exactArgs(1, usage), PreRunE: func(_ *cobra.Command, _ []string) error {
-		if (appID == "" && !all) || (appID != "" && all) {
-			return invalidCommand(usage)
-		}
-		if appID != "" && platform != "" {
-			if _, ok := manifest.ParsePlatformKey(platform); !ok {
-				return invalidCommand(usage)
-			}
-		}
-		return nil
-	}, RunE: func(ctx *cobra.Command, args []string) error {
+	var all, dry, jsonOutput bool
+	usage := "usage: tarlink repository sync PATH [--app ID] [--platform PLATFORM] [--all-retained] [--dry-run] [--json]"
+	command := &cobra.Command{Use: "sync PATH", Args: exactArgs(1, usage), RunE: func(ctx *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -287,31 +320,38 @@ func (r Runner) repositorySyncCommand() *cobra.Command {
 		if !ok {
 			return errors.New("repository management is unavailable")
 		}
-		report, err := ops.RepositorySync(ctx.Context(), args[0], artifactrepo.Selection{App: appID, Platform: platform, AllRetained: all}, dry)
+		selection := artifactrepo.Selection{App: appID, Platform: platform, AllRetained: all}
+		report, err := ops.RepositorySync(ctx.Context(), args[0], selection, dry)
+		if jsonOutput {
+			if jsonErr := writeJSON(r.Stdout, report); jsonErr != nil && err == nil {
+				err = jsonErr
+			}
+			return err
+		}
 		if report.Revision != "" {
-			if _, printErr := fmt.Fprintf(r.Stdout, "revision %s: required=%d present=%d missing=%d corrupt=%d\n", report.Revision, report.Required, report.Present, report.Missing, report.Corrupt); err == nil {
+			scope, scopePlatform := repositoryScopeLabel(selection)
+			if _, printErr := fmt.Fprintf(r.Stdout, "revision %s: scope=%s platform=%s retention=%s required=%d downloaded=%d repaired=%d removed=%d unchanged=%d\n", report.Revision, scope, scopePlatform, report.Retention, report.Required, report.Downloaded, report.Repaired, report.Removed, report.Unchanged); err == nil {
 				err = printErr
+			}
+			if retentionErr := r.printRepositoryRetention(report); err == nil {
+				err = retentionErr
 			}
 		}
 		return err
 	}}
 	command.Flags().StringVar(&appID, "app", "", "exact application ID")
 	command.Flags().StringVar(&platform, "platform", "", "linux-amd64 or linux-arm64")
-	command.Flags().BoolVar(&all, "all-retained", false, "include all retained releases")
+	command.Flags().BoolVar(&all, "all-retained", false, "include all retained releases (release-count bound pending history ordering)")
 	command.Flags().BoolVar(&dry, "dry-run", false, "report without downloading or mutating")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "write JSON")
 	configureCommand(command, usage)
 	return command
 }
 func (r Runner) repositoryStatusCommand() *cobra.Command {
 	var appID, platform string
-	var all bool
-	usage := "usage: tarlink repository status PATH [--app ID] [--platform PLATFORM] [--all-retained]"
-	command := &cobra.Command{Use: "status PATH", Args: exactArgs(1, usage), PreRunE: func(_ *cobra.Command, _ []string) error {
-		if (appID == "" && !all) || (appID != "" && all) {
-			return invalidCommand(usage)
-		}
-		return nil
-	}, RunE: func(cmd *cobra.Command, args []string) error {
+	var all, jsonOutput bool
+	usage := "usage: tarlink repository status PATH [--app ID] [--platform PLATFORM] [--all-retained] [--json]"
+	command := &cobra.Command{Use: "status PATH", Args: exactArgs(1, usage), RunE: func(cmd *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -320,15 +360,29 @@ func (r Runner) repositoryStatusCommand() *cobra.Command {
 		if !ok {
 			return errors.New("repository management is unavailable")
 		}
-		report, err := ops.RepositoryStatus(cmd.Context(), args[0], artifactrepo.Selection{App: appID, Platform: platform, AllRetained: all})
-		if err == nil {
-			_, err = fmt.Fprintf(r.Stdout, "revision %s: required=%d present=%d missing=%d corrupt=%d\n", report.Revision, report.Required, report.Present, report.Missing, report.Corrupt)
+		selection := artifactrepo.Selection{App: appID, Platform: platform, AllRetained: all}
+		report, err := ops.RepositoryStatus(cmd.Context(), args[0], selection)
+		if jsonOutput {
+			if jsonErr := writeJSON(r.Stdout, report); jsonErr != nil && err == nil {
+				err = jsonErr
+			}
+			return err
+		}
+		if report.Revision != "" {
+			scope, scopePlatform := repositoryScopeLabel(selection)
+			if _, printErr := fmt.Fprintf(r.Stdout, "revision %s: scope=%s platform=%s retention=%s required=%d unchanged=%d missing=%d corrupt=%d excess=%d preserved=%d\n", report.Revision, scope, scopePlatform, report.Retention, report.Required, report.Unchanged, report.Missing, report.Corrupt, report.Excess, report.Preserved); err == nil {
+				err = printErr
+			}
+			if retentionErr := r.printRepositoryRetention(report); err == nil {
+				err = retentionErr
+			}
 		}
 		return err
 	}}
 	command.Flags().StringVar(&appID, "app", "", "exact application ID")
 	command.Flags().StringVar(&platform, "platform", "", "linux-amd64 or linux-arm64")
-	command.Flags().BoolVar(&all, "all-retained", false, "include all retained releases")
+	command.Flags().BoolVar(&all, "all-retained", false, "include all retained releases (release-count bound pending history ordering)")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "write JSON")
 	configureCommand(command, usage)
 	return command
 }

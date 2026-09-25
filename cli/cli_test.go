@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/drobilica/tarlink/internal/app"
+	"github.com/drobilica/tarlink/internal/artifactrepo"
 	"github.com/drobilica/tarlink/internal/freshness"
 	"github.com/drobilica/tarlink/internal/research"
 	"github.com/drobilica/tarlink/internal/version"
@@ -195,10 +196,15 @@ func TestRepositorySelectionFlags(t *testing.T) {
 		{name: "sync all", args: []string{"repository", "sync", "/tmp/repository", "--all-retained", "--dry-run"}},
 		{name: "status app", args: []string{"repository", "status", "/tmp/repository", "--app", "magic-sushi"}},
 		{name: "status all", args: []string{"repository", "status", "/tmp/repository", "--all-retained"}},
-		{name: "sync neither", args: []string{"repository", "sync", "/tmp/repository", "--dry-run"}, wantUsage: true},
-		{name: "sync both", args: []string{"repository", "sync", "/tmp/repository", "--app", "magic-sushi", "--all-retained", "--dry-run"}, wantUsage: true},
-		{name: "status neither", args: []string{"repository", "status", "/tmp/repository"}, wantUsage: true},
-		{name: "status both", args: []string{"repository", "status", "/tmp/repository", "--app", "magic-sushi", "--all-retained"}, wantUsage: true},
+		{name: "sync neither", args: []string{"repository", "sync", "/tmp/repository", "--dry-run"}},
+		{name: "sync both", args: []string{"repository", "sync", "/tmp/repository", "--app", "magic-sushi", "--all-retained", "--dry-run"}},
+		{name: "status neither", args: []string{"repository", "status", "/tmp/repository"}},
+		{name: "status both", args: []string{"repository", "status", "/tmp/repository", "--app", "magic-sushi", "--all-retained"}},
+		{name: "sync no selector", args: []string{"repository", "sync", "/tmp/repository"}},
+		{name: "status no selector", args: []string{"repository", "status", "/tmp/repository"}},
+		{name: "sync missing path", args: []string{"repository", "sync"}, wantUsage: true},
+		{name: "status missing path", args: []string{"repository", "status"}, wantUsage: true},
+		{name: "sync unknown flag", args: []string{"repository", "sync", "/tmp/repository", "--bogus"}, wantUsage: true},
 	}
 
 	for _, test := range tests {
@@ -215,6 +221,175 @@ func TestRepositorySelectionFlags(t *testing.T) {
 				t.Fatal("command unexpectedly succeeded without a configured service")
 			}
 		})
+	}
+}
+
+type repositoryStubService struct {
+	fakeService
+	syncReport         app.RepositoryReport
+	syncErr            error
+	statusReport       app.RepositoryReport
+	statusErr          error
+	verifyReport       app.RepositoryReport
+	verifyErr          error
+	gotSyncSelection   artifactrepo.Selection
+	gotSyncDryRun      bool
+	gotStatusSelection artifactrepo.Selection
+}
+
+func (s *repositoryStubService) RepositoryInit(string) error { return nil }
+func (s *repositoryStubService) RepositoryVerify(context.Context, string) (app.RepositoryReport, error) {
+	return s.verifyReport, s.verifyErr
+}
+func (s *repositoryStubService) RepositorySync(_ context.Context, _ string, selection artifactrepo.Selection, dryRun bool) (app.RepositoryReport, error) {
+	s.gotSyncSelection = selection
+	s.gotSyncDryRun = dryRun
+	return s.syncReport, s.syncErr
+}
+func (s *repositoryStubService) RepositoryStatus(_ context.Context, _ string, selection artifactrepo.Selection) (app.RepositoryReport, error) {
+	s.gotStatusSelection = selection
+	return s.statusReport, s.statusErr
+}
+
+func decodeSingleJSONDocument(t *testing.T, data []byte) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		t.Fatalf("stdout is not a JSON document: %v (%q)", err, data)
+	}
+	if decoder.More() {
+		t.Fatalf("stdout contains more than one JSON document: %q", data)
+	}
+	return document
+}
+
+func TestRepositorySyncFlagsCompose(t *testing.T) {
+	service := &repositoryStubService{syncReport: app.RepositoryReport{Revision: "rev", Retention: "all-retained"}}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"repository", "sync", "/tmp/repository", "--app", "demo", "--platform", "linux-amd64", "--all-retained", "--dry-run"})
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+	if service.gotSyncSelection != (artifactrepo.Selection{App: "demo", Platform: "linux-amd64", AllRetained: true}) || !service.gotSyncDryRun {
+		t.Fatalf("selection=%+v dry=%v", service.gotSyncSelection, service.gotSyncDryRun)
+	}
+}
+
+func TestRepositorySyncJSONEmitsSingleDocument(t *testing.T) {
+	report := app.RepositoryReport{
+		Operation: "sync", Revision: "rev", Path: "/tmp/repository",
+		Selection: artifactrepo.Selection{App: "demo", Platform: "linux-amd64", AllRetained: true},
+		Retention: "all-retained", Required: 2, Downloaded: 1, Unchanged: 1,
+		Objects: []artifactrepo.Status{
+			{Algorithm: "sha256", Digest: strings.Repeat("a", 64), Size: 3, URLs: []string{"https://example.test/a"}, State: artifactrepo.StateDownloaded},
+			{Algorithm: "sha256", Digest: strings.Repeat("b", 64), Size: 5, URLs: []string{"https://example.test/b"}, State: artifactrepo.StateUnchanged},
+		},
+		Removals: []artifactrepo.Removal{{Algorithm: "sha256", Digest: strings.Repeat("c", 64), Size: 7, Outcome: artifactrepo.OutcomePreservedProtected}},
+		Excess:   0, Preserved: 1,
+	}
+	service := &repositoryStubService{syncReport: report}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"repository", "sync", "/tmp/repository", "--json"})
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+	document := decodeSingleJSONDocument(t, out.Bytes())
+	if document["operation"] != "sync" || document["revision"] != "rev" {
+		t.Fatalf("document=%v", document)
+	}
+	selection, ok := document["selection"].(map[string]any)
+	if !ok || selection["app"] != "demo" || selection["all_retained"] != true {
+		t.Fatalf("selection=%v", document["selection"])
+	}
+	objects, ok := document["objects"].([]any)
+	if !ok || len(objects) != 2 {
+		t.Fatalf("objects=%v", document["objects"])
+	}
+}
+
+func TestRepositorySyncJSONOnFailureDescribesPartialWork(t *testing.T) {
+	report := app.RepositoryReport{Operation: "sync", Revision: "rev", Retention: "all-retained", Required: 2, Downloaded: 1, Missing: 1}
+	service := &repositoryStubService{syncReport: report, syncErr: &app.Error{Code: app.CodeNetwork, Op: "sync repository", Err: errors.New("network download failed")}}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"repository", "sync", "/tmp/repository", "--json"})
+	if code != exitNetwork {
+		t.Fatalf("code=%d want %d stderr=%q", code, exitNetwork, errOut.String())
+	}
+	document := decodeSingleJSONDocument(t, out.Bytes())
+	if document["downloaded"] != float64(1) || document["missing"] != float64(1) {
+		t.Fatalf("document=%v", document)
+	}
+	if errOut.Len() == 0 {
+		t.Fatal("error text missing from stderr")
+	}
+}
+
+func TestRepositoryStatusExitCodes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		report app.RepositoryReport
+		err    error
+		code   int
+	}{
+		{name: "healthy with excess", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 1, Unchanged: 1, Excess: 2}, code: 0},
+		{name: "corrupt", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 2, Unchanged: 1, Corrupt: 1}, err: &app.Error{Code: app.CodeChecksum, Op: "status repository", Err: errors.New("repository objects failed digest verification")}, code: exitChecksum},
+		{name: "corrupt wins over missing", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 2, Missing: 1, Corrupt: 1}, err: &app.Error{Code: app.CodeChecksum, Op: "status repository", Err: errors.New("repository objects failed digest verification")}, code: exitChecksum},
+		{name: "missing only", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 1, Missing: 1}, err: &app.Error{Code: app.CodeNotFound, Op: "status repository", Err: errors.New("repository objects are missing")}, code: exitNotFound},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &repositoryStubService{statusReport: test.report, statusErr: test.err}
+			var out, errOut bytes.Buffer
+			code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"repository", "status", "/tmp/repository"})
+			if code != test.code {
+				t.Fatalf("code=%d want %d stdout=%q stderr=%q", code, test.code, out.String(), errOut.String())
+			}
+			if !strings.Contains(out.String(), "retention=all-retained") {
+				t.Fatalf("human output=%q", out.String())
+			}
+		})
+	}
+}
+
+func TestRepositoryStatusHumanDistinguishesPreserved(t *testing.T) {
+	report := app.RepositoryReport{
+		Revision: "rev", Retention: "all-retained", Required: 1, Unchanged: 1, Excess: 1, Preserved: 2,
+		Removals: []artifactrepo.Removal{
+			{Algorithm: "sha256", Digest: strings.Repeat("c", 64), Outcome: artifactrepo.OutcomePreservedProtected},
+			{Algorithm: "sha256", Digest: strings.Repeat("d", 64), Outcome: artifactrepo.OutcomePreservedUnattributed},
+		},
+		Unsupported: []string{"legacy"},
+	}
+	service := &repositoryStubService{statusReport: report}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"repository", "status", "/tmp/repository"})
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+	output := out.String()
+	for _, want := range []string{"scope=all", "platform=all", "excess=1 preserved=2", "protected=1 unattributed=1", "unsupported=legacy"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q in %q", want, output)
+		}
+	}
+}
+
+func TestRepositoryVerifyExitCodes(t *testing.T) {
+	corrupt := app.RepositoryReport{Operation: "verify", Path: "/tmp/repository", Retention: "all-retained", Required: 2, Unchanged: 1, Corrupt: 1}
+	service := &repositoryStubService{
+		verifyReport: corrupt,
+		verifyErr:    &app.Error{Code: app.CodeChecksum, Op: "verify repository", Err: errors.New("repository objects failed digest verification")},
+	}
+	var out, errOut bytes.Buffer
+	if code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"repository", "verify", "/tmp/repository", "--json"}); code != exitChecksum {
+		t.Fatalf("corrupt code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	decodeSingleJSONDocument(t, out.Bytes())
+	absent := &repositoryStubService{verifyErr: &app.Error{Code: app.CodeNotFound, Op: "verify repository", Err: errors.New("no such file or directory")}}
+	out.Reset()
+	errOut.Reset()
+	if code := (Runner{Service: absent, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"repository", "verify", "/tmp/missing"}); code != exitNotFound {
+		t.Fatalf("absent code=%d", code)
 	}
 }
 

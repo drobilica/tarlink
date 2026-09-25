@@ -52,9 +52,15 @@ The latest stable release is `v0.18.2`. It refreshes the interactive TUI's
 navigation, application details, version history, progress, and contextual help.
 It also includes static artifact repositories: the `tarlink repository` commands and
 `$XDG_CONFIG_HOME/tarlink/repositories.json` sources described in the technical
-documentation are available in the release. Application, runtime, and
+documentation are available in the release. `tarlink repository sync /repository`
+reconciles a local repository against the validated registry, with `--app`,
+`--platform`, `--all-retained`, `--dry-run`, and `--json` forms for narrowing,
+planning, and machine output. Application, runtime, and
 remote-icon bytes remain governed by the HTTPS sources and exact digests
-declared by the official registry.
+declared by the official registry. Narrowed syncs preserve out-of-scope and
+unattributed objects and report them instead of removing them; default and
+`--all-retained` selections both cover the complete eligible retained set
+because the release-count bound is pending a history-ordering schema decision.
 
 ## Why TarLink?
 
