@@ -95,7 +95,7 @@ func AcquireNoCreateWithTimeout(ctx context.Context, path string, timeout time.D
 	if err := filesystem.CheckOwnedDirectory(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
-	fd, err := syscall.Open(path, syscall.O_RDWR|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0600)
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
