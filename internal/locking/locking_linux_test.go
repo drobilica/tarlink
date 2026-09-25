@@ -46,6 +46,31 @@ func TestRejectsSymlinkLockPath(t *testing.T) {
 	}
 }
 
+func TestAcquireNoCreateOpensReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the file permission check this test relies on")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lock")
+	if err := os.WriteFile(path, nil, 0444); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireNoCreateWithTimeout(context.Background(), path, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("read-only lock file rejected: %v", err)
+	}
+	if err := lock.Release(); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing.lock")
+	if _, err := AcquireNoCreateWithTimeout(context.Background(), missing, 20*time.Millisecond); err == nil {
+		t.Fatal("missing lock file was created")
+	}
+	if _, err := os.Lstat(missing); !os.IsNotExist(err) {
+		t.Fatalf("missing lock file appeared: %v", err)
+	}
+}
+
 func TestDirectoryLockSharesIdentityAcrossAcquisitions(t *testing.T) {
 	directory := t.TempDir()
 	first, err := AcquireDirectoryWithTimeout(context.Background(), directory, 100*time.Millisecond)
