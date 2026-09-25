@@ -116,7 +116,14 @@ always 0) and status output reports
 revision, scope, and retention policy; `--json` emits exactly one JSON document
 on stdout with diagnostics on stderr, including the sorted object and retained
 lists and, for dry runs, a separate acquisition/repair plan whose
-completed-work counters stay zero. Exit codes reuse the existing mapping:
+completed-work counters stay zero. The additive-only sync JSON contract no
+longer includes the deletion-era `excess`, `preserved`, or `removals` fields,
+nor `plan.remove`; its plan contains only `acquire` and `repair`. The
+`retained` count and `retained_objects` list describe stored objects outside
+the desired set (including their validity state), not planned deletions or a
+replacement deletion plan. The `removed` counter remains present and is always
+zero for sync. Scripts consuming the earlier fields must be updated for this
+output change. Exit codes reuse the existing mapping:
 success, a healthy inspection, and successful dry-run planning exit 0, and
 retained extras alone are never an error; `status` reports corrupt required
 objects with 6 and missing-only objects with 8 (corrupt wins when both are
