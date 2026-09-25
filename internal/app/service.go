@@ -109,33 +109,31 @@ func (core *Core) RemoveRepositorySource(value string) error {
 const repositoryRetention = "all-retained"
 
 type RepositoryPlan struct {
-	Acquire []artifactrepo.Status  `json:"acquire"`
-	Repair  []artifactrepo.Status  `json:"repair"`
-	Remove  []artifactrepo.Removal `json:"remove"`
+	Acquire []artifactrepo.Status `json:"acquire"`
+	Repair  []artifactrepo.Status `json:"repair"`
 }
 
 type RepositoryReport struct {
-	Operation      string                 `json:"operation"`
-	Revision       string                 `json:"revision"`
-	FetchedAt      time.Time              `json:"fetched_at"`
-	Path           string                 `json:"path"`
-	Selection      artifactrepo.Selection `json:"selection"`
-	Retention      string                 `json:"retention"`
-	DryRun         bool                   `json:"dry_run"`
-	Required       int                    `json:"required"`
-	Downloaded     int                    `json:"downloaded"`
-	Repaired       int                    `json:"repaired"`
-	Unchanged      int                    `json:"unchanged"`
-	Removed        int                    `json:"removed"`
-	Missing        int                    `json:"missing"`
-	Corrupt        int                    `json:"corrupt"`
-	Excess         int                    `json:"excess"`
-	Preserved      int                    `json:"preserved"`
-	Objects        []artifactrepo.Status  `json:"objects"`
-	Removals       []artifactrepo.Removal `json:"removals"`
-	Plan           *RepositoryPlan        `json:"plan,omitempty"`
-	Unsupported    []string               `json:"unsupported,omitempty"`
-	AvailableBytes int64                  `json:"available_bytes,omitempty"`
+	Operation       string                        `json:"operation"`
+	Revision        string                        `json:"revision"`
+	FetchedAt       time.Time                     `json:"fetched_at"`
+	Path            string                        `json:"path"`
+	Selection       artifactrepo.Selection        `json:"selection"`
+	Retention       string                        `json:"retention"`
+	DryRun          bool                          `json:"dry_run"`
+	Required        int                           `json:"required"`
+	Downloaded      int                           `json:"downloaded"`
+	Repaired        int                           `json:"repaired"`
+	Unchanged       int                           `json:"unchanged"`
+	Removed         int                           `json:"removed"`
+	Missing         int                           `json:"missing"`
+	Corrupt         int                           `json:"corrupt"`
+	Retained        int                           `json:"retained"`
+	Objects         []artifactrepo.Status         `json:"objects"`
+	RetainedObjects []artifactrepo.RetainedObject `json:"retained_objects"`
+	Plan            *RepositoryPlan               `json:"plan,omitempty"`
+	Unsupported     []string                      `json:"unsupported,omitempty"`
+	AvailableBytes  int64                         `json:"available_bytes,omitempty"`
 }
 
 func (core *Core) RepositoryInit(path string) error {
@@ -218,25 +216,14 @@ func (core *Core) RepositoryStatus(ctx context.Context, path string, selection a
 	if err != nil {
 		return RepositoryReport{}, err
 	}
-	statuses, eligible, preserved, inspectErr := artifactrepo.InspectRead(ctx, absolute, plan)
+	statuses, retained, inspectErr := artifactrepo.InspectRead(ctx, absolute, plan)
 	if inspectErr != nil {
 		return RepositoryReport{Operation: "status", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt, Path: absolute, Selection: selection, Retention: repositoryRetention, Unsupported: plan.Unsupported}, classify("status repository", inspectErr)
 	}
-	removals := make([]artifactrepo.Removal, 0, len(eligible)+len(preserved))
-	for _, object := range eligible {
-		removals = append(removals, artifactrepo.Removal{Algorithm: object.Algorithm, Digest: object.Digest, Size: object.Size, Outcome: artifactrepo.OutcomeEligible})
-	}
-	removals = append(removals, preserved...)
-	sort.Slice(removals, func(i, j int) bool {
-		if removals[i].Algorithm != removals[j].Algorithm {
-			return removals[i].Algorithm < removals[j].Algorithm
-		}
-		return removals[i].Digest < removals[j].Digest
-	})
 	report := RepositoryReport{
 		Operation: "status", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt,
 		Path: absolute, Selection: selection, Retention: repositoryRetention,
-		Required: len(statuses), Objects: statuses, Removals: removals, Unsupported: plan.Unsupported,
+		Required: len(statuses), Objects: statuses, RetainedObjects: retained, Unsupported: plan.Unsupported,
 	}
 	for _, status := range statuses {
 		switch status.State {
@@ -248,8 +235,11 @@ func (core *Core) RepositoryStatus(ctx context.Context, path string, selection a
 			report.Corrupt++
 		}
 	}
-	report.Excess = len(eligible)
-	report.Preserved = len(preserved)
+	for _, extra := range retained {
+		if extra.State == artifactrepo.StateRetained {
+			report.Retained++
+		}
+	}
 	if report.Corrupt != 0 {
 		return report, &Error{Code: CodeChecksum, Op: "status repository", Err: errors.New("repository objects failed digest verification")}
 	}
@@ -276,14 +266,14 @@ func (core *Core) RepositorySync(ctx context.Context, path string, selection art
 		if err != nil {
 			return RepositoryReport{}, err
 		}
-		statuses, eligible, preserved, inspectErr := artifactrepo.InspectRead(ctx, absolute, plan)
+		statuses, retained, inspectErr := artifactrepo.InspectRead(ctx, absolute, plan)
 		if inspectErr != nil {
 			return RepositoryReport{Operation: "sync", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt, Path: absolute, Selection: selection, Retention: repositoryRetention, DryRun: true, Unsupported: plan.Unsupported}, classify("sync repository", inspectErr)
 		}
 		report := RepositoryReport{
 			Operation: "sync", Revision: catalog.Revision, FetchedAt: catalog.FetchedAt,
 			Path: absolute, Selection: selection, Retention: repositoryRetention, DryRun: true,
-			Required: len(statuses), Objects: statuses, Removals: preserved, Unsupported: plan.Unsupported,
+			Required: len(statuses), Objects: statuses, RetainedObjects: retained, Unsupported: plan.Unsupported,
 		}
 		planned := &RepositoryPlan{}
 		for _, status := range statuses {
@@ -298,12 +288,12 @@ func (core *Core) RepositorySync(ctx context.Context, path string, selection art
 				planned.Repair = append(planned.Repair, status)
 			}
 		}
-		for _, object := range eligible {
-			planned.Remove = append(planned.Remove, artifactrepo.Removal{Algorithm: object.Algorithm, Digest: object.Digest})
+		for _, extra := range retained {
+			if extra.State == artifactrepo.StateRetained {
+				report.Retained++
+			}
 		}
 		report.Plan = planned
-		report.Excess = len(eligible)
-		report.Preserved = len(preserved)
 		return report, nil
 	}
 	catalog, err := core.catalog(ctx, nil)
@@ -324,8 +314,8 @@ func (core *Core) RepositorySync(ctx context.Context, path string, selection art
 		Path: absolute, Selection: selection, Retention: repositoryRetention,
 		Required: result.Required, Downloaded: result.Downloaded, Repaired: result.Repaired,
 		Unchanged: result.Unchanged, Removed: result.Removed, Missing: result.Missing,
-		Corrupt: result.Corrupt, Excess: result.Excess, Preserved: result.Preserved,
-		Objects: result.Statuses, Removals: result.Removals, Unsupported: plan.Unsupported,
+		Corrupt: result.Corrupt, Retained: result.Retained,
+		Objects: result.Statuses, RetainedObjects: result.RetainedObjects, Unsupported: plan.Unsupported,
 		AvailableBytes: result.AvailableBytes,
 	}
 	if syncErr != nil {

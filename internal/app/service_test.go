@@ -214,6 +214,9 @@ func TestRepositoryDryRunPlansWithoutMutating(t *testing.T) {
 	if len(report.Plan.Acquire) != report.Required || report.Required == 0 {
 		t.Fatalf("report = %+v", report)
 	}
+	if len(report.Plan.Repair) != 0 {
+		t.Fatalf("report = %+v", report)
+	}
 	if report.Downloaded != 0 || report.Repaired != 0 || report.Removed != 0 {
 		t.Fatalf("completed counters are nonzero: %+v", report)
 	}
@@ -244,6 +247,9 @@ func TestRepositorySyncFailureKeepsPartialReport(t *testing.T) {
 	if report.Downloaded != 1 || report.Missing != 1 {
 		t.Fatalf("report = %+v", report)
 	}
+	if report.Removed != 0 {
+		t.Fatalf("report = %+v", report)
+	}
 	if report.Revision == "" {
 		t.Fatal("revision is not visible on failure")
 	}
@@ -265,6 +271,19 @@ func TestRepositorySyncSecondRunIsIdempotent(t *testing.T) {
 	if first.Downloaded != first.Required || first.Required == 0 {
 		t.Fatalf("first report = %+v", first)
 	}
+	bravoDigest := repositoryServiceDigest(artifacts["bravo"])
+	if got := repositoryServiceObject(t, repo, bravoDigest); got != string(artifacts["bravo"]) {
+		t.Fatalf("bravo object = %q", got)
+	}
+	descriptor := filepath.Join(repo, "repository.json")
+	beforeDescriptor, err := os.ReadFile(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeInfo, err := os.Lstat(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
 	second, err := core.RepositorySync(context.Background(), repo, artifactrepo.Selection{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -275,9 +294,26 @@ func TestRepositorySyncSecondRunIsIdempotent(t *testing.T) {
 	if second.Unchanged != second.Required {
 		t.Fatalf("second report = %+v", second)
 	}
+	if got := repositoryServiceObject(t, repo, bravoDigest); got != string(artifacts["bravo"]) {
+		t.Fatalf("bravo object = %q", got)
+	}
+	afterDescriptor, err := os.ReadFile(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterDescriptor) != string(beforeDescriptor) {
+		t.Fatalf("repository.json rewritten: %q", afterDescriptor)
+	}
+	afterInfo, err := os.Lstat(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !afterInfo.ModTime().Equal(beforeInfo.ModTime()) {
+		t.Fatal("repository.json metadata rewritten by idempotent sync")
+	}
 }
 
-func TestRepositorySyncOrphanNarrowedPreservedUnrestrictedRemoved(t *testing.T) {
+func TestRepositorySyncPreservesOrphanEverywhere(t *testing.T) {
 	artifacts := map[string][]byte{"bravo": []byte("bravo artifact bytes")}
 	core, _ := repositoryServiceCore(t, repositoryServiceArchive(t, artifacts), artifacts)
 	repositoryServiceBootstrap(t, core)
@@ -293,20 +329,62 @@ func TestRepositorySyncOrphanNarrowedPreservedUnrestrictedRemoved(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if narrowed.Removed != 0 || narrowed.Preserved == 0 {
+	if narrowed.Removed != 0 {
 		t.Fatalf("narrowed report = %+v", narrowed)
 	}
-	if _, err := os.Stat(filepath.Join(repo, "v1", "sha256", orphanDigest)); err != nil {
-		t.Fatalf("narrowed sync removed the orphan: %v", err)
+	if narrowed.Retained != 1 {
+		t.Fatalf("narrowed report = %+v", narrowed)
+	}
+	if len(narrowed.RetainedObjects) != 1 || narrowed.RetainedObjects[0].Digest != orphanDigest || narrowed.RetainedObjects[0].State != artifactrepo.StateRetained {
+		t.Fatalf("narrowed report = %+v", narrowed)
+	}
+	if got := repositoryServiceObject(t, repo, orphanDigest); got != "orphan bytes" {
+		t.Fatalf("orphan object = %q", got)
 	}
 	unrestricted, err := core.RepositorySync(context.Background(), repo, artifactrepo.Selection{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if unrestricted.Removed != 1 {
+	if unrestricted.Removed != 0 {
 		t.Fatalf("unrestricted report = %+v", unrestricted)
 	}
-	if _, err := os.Lstat(filepath.Join(repo, "v1", "sha256", orphanDigest)); !os.IsNotExist(err) {
-		t.Fatal("unrestricted sync kept the orphan")
+	if unrestricted.Retained != 1 {
+		t.Fatalf("unrestricted report = %+v", unrestricted)
+	}
+	if len(unrestricted.RetainedObjects) != 1 || unrestricted.RetainedObjects[0].Digest != orphanDigest || unrestricted.RetainedObjects[0].State != artifactrepo.StateRetained {
+		t.Fatalf("unrestricted report = %+v", unrestricted)
+	}
+	if got := repositoryServiceObject(t, repo, orphanDigest); got != "orphan bytes" {
+		t.Fatalf("orphan object = %q", got)
+	}
+}
+
+func TestRepositoryStatusRetainedExtrasAreHealthy(t *testing.T) {
+	artifacts := map[string][]byte{"bravo": []byte("bravo artifact bytes")}
+	core, _ := repositoryServiceCore(t, repositoryServiceArchive(t, artifacts), artifacts)
+	repositoryServiceBootstrap(t, core)
+	repo := filepath.Join(t.TempDir(), "repository")
+	if _, err := core.RepositorySync(context.Background(), repo, artifactrepo.Selection{}, false); err != nil {
+		t.Fatal(err)
+	}
+	orphanDigest := repositoryServiceDigest([]byte("orphan bytes"))
+	if err := os.WriteFile(filepath.Join(repo, "v1", "sha256", orphanDigest), []byte("orphan bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := core.RepositoryStatus(context.Background(), repo, artifactrepo.Selection{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Missing != 0 || report.Corrupt != 0 {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.Unchanged != report.Required {
+		t.Fatalf("report = %+v", report)
+	}
+	if report.Retained != 1 {
+		t.Fatalf("report = %+v", report)
+	}
+	if len(report.RetainedObjects) != 1 || report.RetainedObjects[0].Digest != orphanDigest || report.RetainedObjects[0].State != artifactrepo.StateRetained {
+		t.Fatalf("report = %+v", report)
 	}
 }

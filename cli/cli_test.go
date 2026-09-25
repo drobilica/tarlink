@@ -280,13 +280,12 @@ func TestRepositorySyncJSONEmitsSingleDocument(t *testing.T) {
 	report := app.RepositoryReport{
 		Operation: "sync", Revision: "rev", Path: "/tmp/repository",
 		Selection: artifactrepo.Selection{App: "demo", Platform: "linux-amd64", AllRetained: true},
-		Retention: "all-retained", Required: 2, Downloaded: 1, Unchanged: 1,
+		Retention: "all-retained", Required: 2, Downloaded: 1, Unchanged: 1, Removed: 0, Retained: 1,
 		Objects: []artifactrepo.Status{
 			{Algorithm: "sha256", Digest: strings.Repeat("a", 64), Size: 3, URLs: []string{"https://example.test/a"}, State: artifactrepo.StateDownloaded},
 			{Algorithm: "sha256", Digest: strings.Repeat("b", 64), Size: 5, URLs: []string{"https://example.test/b"}, State: artifactrepo.StateUnchanged},
 		},
-		Removals: []artifactrepo.Removal{{Algorithm: "sha256", Digest: strings.Repeat("c", 64), Size: 7, Outcome: artifactrepo.OutcomePreservedProtected}},
-		Excess:   0, Preserved: 1,
+		RetainedObjects: []artifactrepo.RetainedObject{{Algorithm: "sha256", Digest: strings.Repeat("c", 64), Size: 7, State: artifactrepo.StateRetained}},
 	}
 	service := &repositoryStubService{syncReport: report}
 	var out, errOut bytes.Buffer
@@ -306,6 +305,21 @@ func TestRepositorySyncJSONEmitsSingleDocument(t *testing.T) {
 	if !ok || len(objects) != 2 {
 		t.Fatalf("objects=%v", document["objects"])
 	}
+	retained, ok := document["retained_objects"].([]any)
+	if !ok || len(retained) != 1 {
+		t.Fatalf("retained_objects=%v", document["retained_objects"])
+	}
+	if document["retained"] != float64(1) || document["removed"] != float64(0) {
+		t.Fatalf("document=%v", document)
+	}
+	for _, absent := range []string{"excess", "preserved", "removals"} {
+		if _, ok := document[absent]; ok {
+			t.Fatalf("document still contains %q: %v", absent, document)
+		}
+	}
+	if plan, ok := document["plan"]; ok && plan != nil {
+		t.Fatalf("non-dry-run document contains plan: %v", document)
+	}
 }
 
 func TestRepositorySyncJSONOnFailureDescribesPartialWork(t *testing.T) {
@@ -320,6 +334,9 @@ func TestRepositorySyncJSONOnFailureDescribesPartialWork(t *testing.T) {
 	if document["downloaded"] != float64(1) || document["missing"] != float64(1) {
 		t.Fatalf("document=%v", document)
 	}
+	if document["removed"] != float64(0) {
+		t.Fatalf("document=%v", document)
+	}
 	if errOut.Len() == 0 {
 		t.Fatal("error text missing from stderr")
 	}
@@ -332,7 +349,7 @@ func TestRepositoryStatusExitCodes(t *testing.T) {
 		err    error
 		code   int
 	}{
-		{name: "healthy with excess", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 1, Unchanged: 1, Excess: 2}, code: 0},
+		{name: "healthy with retained", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 1, Unchanged: 1, Retained: 2}, code: 0},
 		{name: "corrupt", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 2, Unchanged: 1, Corrupt: 1}, err: &app.Error{Code: app.CodeChecksum, Op: "status repository", Err: errors.New("repository objects failed digest verification")}, code: exitChecksum},
 		{name: "corrupt wins over missing", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 2, Missing: 1, Corrupt: 1}, err: &app.Error{Code: app.CodeChecksum, Op: "status repository", Err: errors.New("repository objects failed digest verification")}, code: exitChecksum},
 		{name: "missing only", report: app.RepositoryReport{Revision: "rev", Retention: "all-retained", Required: 1, Missing: 1}, err: &app.Error{Code: app.CodeNotFound, Op: "status repository", Err: errors.New("repository objects are missing")}, code: exitNotFound},
@@ -351,12 +368,12 @@ func TestRepositoryStatusExitCodes(t *testing.T) {
 	}
 }
 
-func TestRepositoryStatusHumanDistinguishesPreserved(t *testing.T) {
+func TestRepositoryStatusHumanReportsRetained(t *testing.T) {
 	report := app.RepositoryReport{
-		Revision: "rev", Retention: "all-retained", Required: 1, Unchanged: 1, Excess: 1, Preserved: 2,
-		Removals: []artifactrepo.Removal{
-			{Algorithm: "sha256", Digest: strings.Repeat("c", 64), Outcome: artifactrepo.OutcomePreservedProtected},
-			{Algorithm: "sha256", Digest: strings.Repeat("d", 64), Outcome: artifactrepo.OutcomePreservedUnattributed},
+		Revision: "rev", Retention: "all-retained", Required: 1, Unchanged: 1, Retained: 2,
+		RetainedObjects: []artifactrepo.RetainedObject{
+			{Algorithm: "sha256", Digest: strings.Repeat("c", 64), State: artifactrepo.StateRetained},
+			{Algorithm: "sha256", Digest: strings.Repeat("d", 64), State: artifactrepo.StateCorrupt},
 		},
 		Unsupported: []string{"legacy"},
 	}
@@ -367,7 +384,26 @@ func TestRepositoryStatusHumanDistinguishesPreserved(t *testing.T) {
 		t.Fatalf("code=%d stderr=%q", code, errOut.String())
 	}
 	output := out.String()
-	for _, want := range []string{"scope=all", "platform=all", "excess=1 preserved=2", "protected=1 unattributed=1", "unsupported=legacy"} {
+	for _, want := range []string{"scope=all", "platform=all", "retained=2", "unsupported=legacy"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("missing %q in %q", want, output)
+		}
+	}
+}
+
+func TestRepositorySyncHumanReportsRetained(t *testing.T) {
+	report := app.RepositoryReport{
+		Operation: "sync", Revision: "rev", Retention: "all-retained",
+		Required: 2, Downloaded: 1, Unchanged: 1, Removed: 0, Retained: 3,
+	}
+	service := &repositoryStubService{syncReport: report}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"repository", "sync", "/tmp/repository"})
+	if code != 0 {
+		t.Fatalf("code=%d stderr=%q", code, errOut.String())
+	}
+	output := out.String()
+	for _, want := range []string{"scope=all", "platform=all", "retention=all-retained:", "required=2 downloaded=1 repaired=0 unchanged=1 removed=0 retained=3"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("missing %q in %q", want, output)
 		}

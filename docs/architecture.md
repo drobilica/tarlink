@@ -67,9 +67,14 @@ selection unit is application by channel by platform, and the desired closure
 per selected release is the application artifact, its exact required runtime
 artifact, and the app-wide digest-bearing remote desktop icon; icons bundled
 inside archives stay inside their app artifact and are not repository objects,
-and there are no per-version icon variants. Protection is derived from the
-complete snapshot rather than stored, so narrowed syncs preserve out-of-scope
-and unattributed objects and report them instead of removing them. The retained
+and there are no per-version icon variants. Sync is additive-only: it acquires
+missing objects and repairs corrupt required objects, and it retains every
+valid stored artifact — including objects absent from the current registry and
+objects outside a narrowed `--app`/`--platform` selection — so repository
+storage may grow over time and nothing is ever deleted. The repository is a
+byte-only artifact mirror, never a second catalog: hosting bytes does not
+authorize changing official metadata or installing releases absent from the
+validated registry snapshot. The retained
 `releases` list is an explicit set: releases are never inferred or sorted and
 version identifiers are opaque, so no per-channel release-count bound (such as
 keeping the latest five releases per application, channel, and platform) is
