@@ -64,7 +64,7 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry validate <path>
   tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]
   tarlink registry freshness <app> [--json]
-  tarlink registry inspect <owner/repo | release-asset-url | manifest.yaml | directory> [--json] [--refresh]
+  tarlink registry inspect <owner/repo | release-asset-url | https-artifact-url | manifest.yaml | directory> [--json] [--refresh]
   tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]
   tarlink registry candidates [--changed] [--json] [--markdown]
   tarlink registry blockers [--capability <capability>] [--json]
@@ -981,14 +981,15 @@ func (r Runner) registryFreshnessCommand() *cobra.Command {
 }
 
 func (r Runner) registryInspectCommand() *cobra.Command {
-	usage := "usage: tarlink registry inspect <owner/repo | release-asset-url | manifest.yaml | directory> [--json] [--refresh]"
+	usage := "usage: tarlink registry inspect <owner/repo | release-asset-url | https-artifact-url | manifest.yaml | directory> [--json] [--refresh]"
 	var jsonOutput, refresh bool
 	var release, asset string
 	command := &cobra.Command{Use: "inspect <target>", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
 		target := args[0]
 		_, directErr := research.ParseReleaseAssetURL(target)
+		_, artifactErr := app.ParseRegistryHTTPSArtifactURL(target)
 		_, localErr := os.Lstat(target)
-		if directErr == nil || localErr == nil {
+		if directErr == nil || artifactErr == nil || localErr == nil {
 			if release != "" || asset != "" {
 				return invalidCommand(usage)
 			}

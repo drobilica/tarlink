@@ -370,6 +370,32 @@ func (r Runner) printRegistryInspection(value app.RegistryInspectionResult) erro
 		}
 		return nil
 	}
+	if value.Artifact != nil {
+		return r.printArtifactInspection(value)
+	}
+	return nil
+}
+
+func (r Runner) printArtifactInspection(value app.RegistryInspectionResult) error {
+	inspection := value.Artifact
+	if _, err := fmt.Fprintf(r.Stdout, "Artifact URL         ✓ %s\nArtifact size         ✓ %d\nSHA-256               ✓ %s\nSHA-512               ✓ %s\nArtifact type         %s\n\n", value.ArtifactURL, value.ArtifactSize, checkValue(inspection.ComputedDigests["sha256"]), checkValue(inspection.ComputedDigests["sha512"]), checkValue(inspection.ArtifactType)); err != nil {
+		return err
+	}
+	for _, executable := range inspection.Executables {
+		if _, err := fmt.Fprintf(r.Stdout, "✓ executable %s\n", executable); err != nil {
+			return err
+		}
+	}
+	for _, icon := range inspection.Icons {
+		if _, err := fmt.Fprintf(r.Stdout, "✓ icon %s\n", icon); err != nil {
+			return err
+		}
+	}
+	for _, blocker := range inspection.Blockers {
+		if _, err := fmt.Fprintf(r.Stdout, "✗ blocker %s\n", blocker); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

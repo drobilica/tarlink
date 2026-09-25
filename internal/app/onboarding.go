@@ -9,20 +9,23 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"unicode"
 
 	"github.com/drobilica/tarlink/internal/archive"
+	"github.com/drobilica/tarlink/internal/download"
 	"github.com/drobilica/tarlink/internal/manifest"
 	"github.com/drobilica/tarlink/internal/research"
 	"go.yaml.in/yaml/v3"
 )
 
-// RegistryInspectOptions selects one local manifest, a bounded local tree, or
-// an exact GitHub release-asset URL. It is advisory: registry validate remains
-// the authoritative structural validation command.
+// RegistryInspectOptions selects one local manifest, a bounded local tree, an
+// exact GitHub release-asset URL, or an exact HTTPS artifact URL. It is
+// advisory: registry validate remains the authoritative structural validation
+// command.
 type RegistryInspectOptions struct {
 	Target  string
 	Refresh bool
@@ -70,11 +73,14 @@ type RegistryRequiredInput struct {
 }
 
 type RegistryInspectionResult struct {
-	Status    string                       `json:"status"`
-	Candidate *RegistryCandidate           `json:"candidate,omitempty"`
-	Required  []RegistryRequiredInput      `json:"required,omitempty"`
-	Manifest  *RegistryManifestInspection  `json:"manifest,omitempty"`
-	Directory *RegistryDirectoryInspection `json:"directory,omitempty"`
+	Status       string                       `json:"status"`
+	Candidate    *RegistryCandidate           `json:"candidate,omitempty"`
+	Required     []RegistryRequiredInput      `json:"required,omitempty"`
+	Manifest     *RegistryManifestInspection  `json:"manifest,omitempty"`
+	Directory    *RegistryDirectoryInspection `json:"directory,omitempty"`
+	Artifact     *research.Inspection         `json:"artifact,omitempty"`
+	ArtifactURL  string                       `json:"artifact_url,omitempty"`
+	ArtifactSize int64                        `json:"artifact_size,omitempty"`
 }
 
 type RegistryAddOptions struct {
@@ -118,8 +124,14 @@ func (m *Maintainer) InspectRegistry(ctx context.Context, options RegistryInspec
 		}
 		return RegistryInspectionResult{Status: status, Candidate: &candidate, Required: required}, nil
 	}
+	if artifactURL, err := ParseRegistryHTTPSArtifactURL(options.Target); err == nil {
+		return m.inspectHTTPSArtifact(ctx, artifactURL)
+	}
 	info, err := os.Lstat(options.Target)
 	if err != nil {
+		if isRegistryURLLike(options.Target) {
+			return RegistryInspectionResult{}, invalidRegistryInspectionTarget(options.Target)
+		}
 		return RegistryInspectionResult{}, err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
@@ -134,7 +146,7 @@ func (m *Maintainer) InspectRegistry(ctx context.Context, options RegistryInspec
 		return RegistryInspectionResult{Status: status, Manifest: &value}, nil
 	}
 	if !info.IsDir() {
-		return RegistryInspectionResult{}, errors.New("inspection target must be a GitHub release asset, manifest, or directory")
+		return RegistryInspectionResult{}, errors.New("inspection target must be a GitHub release asset, HTTPS artifact URL, manifest, or directory")
 	}
 	directory, err := inspectDirectory(options.Target)
 	if err != nil {
@@ -145,6 +157,84 @@ func (m *Maintainer) InspectRegistry(ctx context.Context, options RegistryInspec
 		status = "invalid"
 	}
 	return RegistryInspectionResult{Status: status, Directory: &directory}, nil
+}
+
+// ParseRegistryHTTPSArtifactURL accepts one exact absolute HTTPS artifact URL:
+// scheme https, non-empty host, no explicit port, no userinfo, no query, no
+// fragment, and a non-empty absolute path naming the artifact. GitHub
+// release-asset URLs keep their verified-GitHub-metadata behavior and never
+// parse here; local paths never parse here. The returned string is the trimmed
+// canonical input.
+func ParseRegistryHTTPSArtifactURL(raw string) (string, error) {
+	original := strings.TrimSpace(raw)
+	u, err := url.Parse(original)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Port() != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(original, "#") || u.Opaque != "" {
+		return "", invalidRegistryInspectionTarget(raw)
+	}
+	if !strings.HasPrefix(u.EscapedPath(), "/") || strings.HasSuffix(u.EscapedPath(), "/") {
+		return "", invalidRegistryInspectionTarget(raw)
+	}
+	name := path.Base(u.Path)
+	if name == "" || name == "." || name == "/" || strings.ContainsAny(name, "\\\x00\r\n") {
+		return "", invalidRegistryInspectionTarget(raw)
+	}
+	if _, err := research.ParseReleaseAssetURL(original); err == nil {
+		return "", invalidRegistryInspectionTarget(raw)
+	}
+	return original, nil
+}
+
+// isRegistryURLLike reports whether a target looks like a URL rather than a
+// local path, so malformed URLs are rejected as invalid inspection targets
+// before any network access instead of falling through to repository lookup.
+func isRegistryURLLike(raw string) bool {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "//") || strings.Contains(trimmed, "://") {
+		return true
+	}
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+	return u.Scheme != "" || u.Host != ""
+}
+
+func invalidRegistryInspectionTarget(raw string) error {
+	return &Error{Code: CodeInvalidArguments, Op: "registry inspect", Err: fmt.Errorf("invalid inspection target %q: want an exact https://host/absolute/path/artifact URL, a GitHub release asset URL, a manifest, or a directory", raw)}
+}
+
+// inspectHTTPSArtifact downloads the exact artifact bytes through the bounded
+// HTTPS-only client and analyzes them with the existing static inspector. It
+// never executes, mounts, or otherwise activates the artifact; the result is
+// advisory evidence, exactly like the other inspect forms.
+func (m *Maintainer) inspectHTTPSArtifact(ctx context.Context, artifactURL string) (RegistryInspectionResult, error) {
+	parsed, err := url.Parse(artifactURL)
+	if err != nil {
+		return RegistryInspectionResult{}, invalidRegistryInspectionTarget(artifactURL)
+	}
+	name := path.Base(parsed.Path)
+	format := archive.Format("")
+	if strings.HasSuffix(strings.ToLower(name), ".appimage") {
+		format = "appimage"
+	}
+	dir, err := os.MkdirTemp("", "tarlink-registry-inspect-")
+	if err != nil {
+		return RegistryInspectionResult{}, classify("registry inspect", err)
+	}
+	defer os.RemoveAll(dir)
+	client := download.NewClient()
+	if m.client != nil && m.client.HTTP != nil {
+		client.HTTP = m.client.HTTP
+	}
+	fetched, err := client.FetchFile(ctx, download.FileRequest{URL: artifactURL, Destination: filepath.Join(dir, "artifact"), MaxBytes: download.DefaultMaxArtifactBytes})
+	if err != nil {
+		return RegistryInspectionResult{}, classify("registry inspect", err)
+	}
+	inspection, err := research.Inspect(ctx, research.Artifact{Path: fetched.Path, Temporary: true, Size: fetched.Bytes}, format, research.TargetArchitecture(name))
+	if err != nil {
+		return RegistryInspectionResult{}, classify("registry inspect", err)
+	}
+	return RegistryInspectionResult{Status: "ready", Artifact: &inspection, ArtifactURL: artifactURL, ArtifactSize: fetched.Bytes}, nil
 }
 
 func (m *Maintainer) AddRegistry(ctx context.Context, options RegistryAddOptions) (RegistryAddResult, error) {
