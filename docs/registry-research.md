@@ -34,6 +34,7 @@ repository stores a maintained cross-repository commit or tag pin.
 ```text
 tarlink registry inspect OWNER/REPO [--release TAG] [--asset NAME] [--json] [--refresh]
 tarlink registry inspect https://github.com/OWNER/REPO/releases/download/TAG/ASSET
+tarlink registry inspect https://host/absolute/path/artifact.ext [--json] [--refresh]
 tarlink registry inspect apps/example/manifest.yaml
 tarlink registry inspect ../tarlink-registry --json
 tarlink registry add https://github.com/OWNER/REPO/releases/download/TAG/ASSET
@@ -50,6 +51,14 @@ owner, repository, release tag, and asset name are present in GitHub metadata.
 The locally calculated SHA-256 is the generated manifest digest. GitHub's
 supported digest, when supplied, is compared as corroborating evidence;
 absence is not a blocker.
+
+An exact non-GitHub HTTPS artifact URL (absolute `https://host/path/artifact`
+with no credentials, query, or fragment) downloads the exact bytes through the
+same HTTPS-only, timeout- and size-bounded client, calculates SHA-256 and
+SHA-512 from those bytes, and inspects the archive/AppImage structure
+statically without executing anything. It performs no GitHub-metadata
+verification, and it does not replace `registry validate`/`registry check`,
+which remain the approval boundary.
 
 `registry inspect` derives the expected target architecture from artifact
 evidence only: the asset name's platform markers, cross-checked against the
