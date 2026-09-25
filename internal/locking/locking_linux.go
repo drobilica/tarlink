@@ -74,7 +74,7 @@ func AcquireWithTimeout(ctx context.Context, path string, timeout time.Duration)
 		_ = f.Close()
 		return nil, errors.New("lock path is not a regular file")
 	}
-	return acquireOpened(ctx, f, timeout)
+	return acquireOpened(ctx, f, timeout, false)
 }
 
 func AcquireNoCreateWithTimeout(ctx context.Context, path string, timeout time.Duration) (*Lock, error) {
@@ -113,7 +113,7 @@ func AcquireNoCreateWithTimeout(ctx context.Context, path string, timeout time.D
 		_ = f.Close()
 		return nil, errors.New("lock path is not a regular file")
 	}
-	return acquireOpened(ctx, f, timeout)
+	return acquireOpened(ctx, f, timeout, true)
 }
 
 // AcquireExistingWithTimeout acquires a lock file below an existing, owned
@@ -155,7 +155,7 @@ func AcquireExistingWithTimeout(ctx context.Context, path string, timeout time.D
 		_ = f.Close()
 		return nil, errors.New("lock path is not a regular file")
 	}
-	return acquireOpened(ctx, f, timeout)
+	return acquireOpened(ctx, f, timeout, false)
 }
 
 func AcquireDirectoryWithTimeout(ctx context.Context, directory string, timeout time.Duration) (*Lock, error) {
@@ -193,10 +193,10 @@ func AcquireDirectoryWithTimeout(ctx context.Context, directory string, timeout 
 		_ = f.Close()
 		return nil, errors.New("lock path is not a directory")
 	}
-	return acquireOpened(ctx, f, timeout)
+	return acquireOpened(ctx, f, timeout, false)
 }
 
-func acquireOpened(ctx context.Context, file *os.File, timeout time.Duration) (*Lock, error) {
+func acquireOpened(ctx context.Context, file *os.File, timeout time.Duration, shared bool) (*Lock, error) {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
@@ -204,7 +204,11 @@ func acquireOpened(ctx context.Context, file *os.File, timeout time.Duration) (*
 	defer deadline.Stop()
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
-	try := func() error { return syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) }
+	how := syscall.LOCK_EX | syscall.LOCK_NB
+	if shared {
+		how = syscall.LOCK_SH | syscall.LOCK_NB
+	}
+	try := func() error { return syscall.Flock(int(file.Fd()), how) }
 	for {
 		err := try()
 		if err == nil {
