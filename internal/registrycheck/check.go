@@ -255,14 +255,31 @@ func Materialize(ctx context.Context, item *manifest.Manifest) error {
 }
 
 func MaterializeWithClient(ctx context.Context, item *manifest.Manifest, client *download.Client) error {
-	if item == nil {
-		return errors.New("manifest is nil")
-	}
-	home, err := os.MkdirTemp("", "tarlink-registry-check-")
+	session, err := NewSession(client)
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(home)
+	defer session.Close()
+	return session.Materialize(ctx, item)
+}
+
+// Session owns one isolated registry-check home and canonical artifact cache.
+// Materializing several items through one Session reuses verified artifacts
+// within the run while keeping them out of the user's real TarLink cache.
+type Session struct {
+	home   string
+	layout filesystem.Layout
+	client *download.Client
+}
+
+// NewSession creates a private temporary home whose artifact cache is shared by
+// every materialization in the session. The client is cloned so the caller's
+// cache root and lifecycle state are never mutated.
+func NewSession(client *download.Client) (*Session, error) {
+	home, err := os.MkdirTemp("", "tarlink-registry-check-")
+	if err != nil {
+		return nil, err
+	}
 	layout, err := filesystem.LayoutFor(home, func(name string) string {
 		switch name {
 		case "XDG_DATA_HOME":
@@ -276,22 +293,45 @@ func MaterializeWithClient(ctx context.Context, item *manifest.Manifest, client 
 		}
 	})
 	if err != nil {
-		return err
+		_ = os.RemoveAll(home)
+		return nil, err
 	}
-	manager := install.New(layout, client)
+	if client == nil {
+		client = download.NewClient()
+	}
+	scoped := *client
+	scoped.ArtifactCache = layout.ArtifactCacheRoot()
+	return &Session{home: home, layout: layout, client: &scoped}, nil
+}
+
+// Close removes the session's private home, including its artifact cache.
+func (s *Session) Close() error {
+	if s == nil || s.home == "" {
+		return nil
+	}
+	return os.RemoveAll(s.home)
+}
+
+// Materialize installs and uninstalls one release projection under the
+// session's isolated home, reusing already-verified artifacts.
+func (s *Session) Materialize(ctx context.Context, item *manifest.Manifest) error {
+	if item == nil {
+		return errors.New("manifest is nil")
+	}
+	manager := install.New(s.layout, s.client)
 	// Materialization operates on a release projection. Preserve its
 	// registry-approved channel in the state record so the lifecycle check
 	// exercises the same tracking metadata as a real install.
 	if _, err := manager.InstallWithOptions(ctx, item, install.Options{Channel: item.Release.Channel}, nil); err != nil {
 		return fmt.Errorf("materialize %s %s/%s: %w", item.ID, item.Platform.OS, item.Platform.Arch, err)
 	}
-	if _, err := state.LoadForApp(layout, item.ID); err != nil {
+	if _, err := state.LoadForApp(s.layout, item.ID); err != nil {
 		return fmt.Errorf("verify materialized state for %s: %w", item.ID, err)
 	}
 	if _, err := manager.Uninstall(ctx, item.ID, nil); err != nil {
 		return fmt.Errorf("uninstall %s: %w", item.ID, err)
 	}
-	if _, err := state.LoadForApp(layout, item.ID); !os.IsNotExist(err) {
+	if _, err := state.LoadForApp(s.layout, item.ID); !os.IsNotExist(err) {
 		return fmt.Errorf("state remains after uninstall for %s: %v", item.ID, err)
 	}
 	return nil

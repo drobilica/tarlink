@@ -12,7 +12,8 @@ $XDG_STATE_HOME/tarlink/
 ├── locks/<id>.lock
 └── states/<id>.json
 $XDG_CACHE_HOME/tarlink/
-├── artifacts/
+├── artifacts/v1/{sha256,sha512}/<digest>
+├── artifacts/locks/<algorithm>-<digest>.lock
 └── registry/
     ├── generations/generation-*/apps/
     └── current -> generations/generation-*
@@ -49,6 +50,8 @@ perform; this is recorded as a desktop-cache limitation, not an integration
 defect.
 
 Unset XDG variables fall back to `~/.local/share`, `~/.local/state`, and `~/.cache`. Configured XDG homes must be absolute, control-character-free paths within `$HOME`; TarLink does not manage data outside the user's home tree. Application and registry `current` pointers are relative symlinks constrained below their owning roots. New versions and registry generations are completed before activation, and only the current and one previous generation are retained.
+
+The `artifacts` cache is TarLink's canonical verified-blob store. Verified application artifacts, runtime artifacts, and remote desktop PNG icons are published under `artifacts/v1/<algorithm>/<digest>` only after the exact bytes match the declared digest, and a valid object is reused without network access. A cached object is handed off as an open, no-follow descriptor positioned at the start of the verified bytes rather than a re-openable path, so a later path swap cannot substitute different content. The cache is disposable and never an authority: only the validated official registry decides which URL and digest may be acquired. `tarlink registry check` uses a private per-session cache below its temporary home, so one check run reuses verified artifacts across its own materializations without reading or writing the user's real cache. Repository sync copies verified bytes into the published repository tree; on a cache miss it acquires directly into repository staging, and repository objects remain independent `0644` regular files.
 
 `repositories.json` is the ordered, global user configuration for static
 artifact sources; TarLink never reads project-local repository configuration.

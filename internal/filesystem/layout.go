@@ -127,6 +127,14 @@ func (l Layout) Ensure() error {
 	return nil
 }
 
+// ArtifactCacheRoot returns the canonical verified-blob cache root. Verified
+// artifacts are stored at <root>/v1/<algorithm>/<digest>.
+func (l Layout) ArtifactCacheRoot() string {
+	return filepath.Join(l.Cache, artcacheDir)
+}
+
+const artcacheDir = "artifacts"
+
 // RuntimePath returns the immutable deployment directory for an exact runtime
 // identity. Runtime deployments never have a mutable "current" pointer.
 func (l Layout) RuntimePath(id, version, fingerprint string) (string, error) {

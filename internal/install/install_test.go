@@ -270,6 +270,46 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 }
 
+func TestInstallReusesCanonicalVerifiedArtifactCache(t *testing.T) {
+	layout := testLayout(t)
+	data := fixtureArchive(t, "shared")
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = writer.Write(data)
+	}))
+	t.Cleanup(server.Close)
+	digest := sha256.Sum256(data)
+
+	manifestFor := func(id string) *manifest.Manifest {
+		noLink := false
+		release := manifest.Release{Channel: "stable", Version: "1.0", URL: server.URL, Verification: manifest.Verification{
+			Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.URL + "/SHA256SUMS",
+		}, Archive: "tar.gz"}
+		return &manifest.Manifest{
+			Schema: manifest.SchemaV5, ID: id, Name: id, Summary: "shared artifact", Homepage: "https://example.com/",
+			Categories: []string{"utilities"}, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
+			Release:        release,
+			ReleaseHistory: manifest.ReleaseHistory{DefaultChannel: "stable", Channels: map[string]manifest.ChannelHead{"stable": {Current: "1.0"}}, Releases: []manifest.Release{release}},
+			Application:    manifest.Application{Executables: []manifest.Executable{{Name: "run-" + id, Path: "bin/run", CreateBinLink: &noLink}}},
+			Desktop:        manifest.Desktop{Categories: []string{}},
+		}
+	}
+	manager := New(layout, &download.Client{HTTP: server.Client(), RedirectLimit: 2})
+	for _, id := range []string{"alpha", "bravo"} {
+		if _, err := manager.InstallWithOptions(context.Background(), manifestFor(id), Options{Channel: "stable"}, nil); err != nil {
+			t.Fatalf("install %s: %v", id, err)
+		}
+	}
+	if requests != 1 {
+		t.Fatalf("artifact requests = %d, want 1 (canonical cache reuse)", requests)
+	}
+	cachePath := filepath.Join(layout.ArtifactCacheRoot(), "v1", "sha256", hex.EncodeToString(digest[:]))
+	if info, err := os.Lstat(cachePath); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("canonical cache object = %v, %v", info, err)
+	}
+}
+
 func TestSameVersionFingerprintSeparatesMaterialChangesButReconcilesMetadata(t *testing.T) {
 	layout := testLayout(t)
 	first := newArtifactServer(t, fixtureArchive(t, "same-version-a"))

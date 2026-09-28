@@ -84,15 +84,25 @@ func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Clie
 			_ = os.RemoveAll(stage)
 		}
 	}()
-	archivePath := filepath.Join(stage, "artifact.tar.xz")
-	if _, err := client.FetchArtifact(ctx, download.ArtifactRequest{URL: value.Artifact.URL, Algorithm: "sha256", Digest: value.Artifact.Verification.Digest, Destination: archivePath, MaxBytes: maxRuntimeBytes, ReportProgress: progress}); err != nil {
+	if client == nil {
+		return "", "", errors.New("runtime download client is not configured")
+	}
+	if client.ArtifactCache == "" && layout.Cache != "" {
+		client.ArtifactCache = layout.ArtifactCacheRoot()
+	}
+	artifact, err := client.AcquireVerified(ctx, download.VerifiedRequest{
+		URL: value.Artifact.URL, Algorithm: "sha256", Digest: value.Artifact.Verification.Digest,
+		MaxBytes: maxRuntimeBytes, ReportProgress: progress,
+	})
+	if err != nil {
 		return "", "", err
 	}
+	defer artifact.Close()
 	extracted := filepath.Join(stage, "extracted")
 	if err := os.Mkdir(extracted, 0700); err != nil {
 		return "", "", err
 	}
-	if err := extractValveDeployment(ctx, archivePath, extracted); err != nil {
+	if err := extractValveDeployment(ctx, artifact.File, extracted); err != nil {
 		return "", "", err
 	}
 	root, err := singleRoot(extracted)
@@ -218,13 +228,8 @@ func validateOwnedOrMissing(root, path string) error {
 	return err
 }
 
-func extractValveDeployment(ctx context.Context, source, destination string) error {
-	file, err := os.Open(source)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	reader, err := xz.NewReader(file)
+func extractValveDeployment(ctx context.Context, source io.Reader, destination string) error {
+	reader, err := xz.NewReader(source)
 	if err != nil {
 		return err
 	}

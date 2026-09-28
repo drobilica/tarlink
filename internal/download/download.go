@@ -21,6 +21,7 @@ import (
 
 	"github.com/drobilica/tarlink/internal/checksum"
 	"github.com/drobilica/tarlink/internal/filesystem"
+	"github.com/drobilica/tarlink/internal/locking"
 	"github.com/drobilica/tarlink/internal/version"
 )
 
@@ -37,6 +38,7 @@ var (
 	ErrTooLarge         = errors.New("download exceeds size limit")
 	ErrNetwork          = errors.New("network download failed")
 	ErrDestinationWrite = errors.New("download destination write failed")
+	ErrUnsafeCache      = errors.New("unsafe artifact cache object")
 )
 
 type Progress func(downloaded, total int64)
@@ -51,6 +53,82 @@ type ArtifactRequest struct {
 	Destination    string
 	MaxBytes       int64
 	ReportProgress Progress
+}
+
+// VerifiedRequest acquires one digest-pinned artifact into the canonical
+// verified-blob cache. It has no destination: the cache path is derived from
+// the exact algorithm and digest.
+type VerifiedRequest struct {
+	URL            string
+	Algorithm      string
+	Digest         string
+	MaxBytes       int64
+	ReportProgress Progress
+}
+
+// Verified is a digest-verified artifact held at its canonical cache path.
+// File is an open, no-follow descriptor positioned at the start of the exact
+// verified bytes and is the authoritative handoff: callers read the artifact
+// through File rather than re-opening Path. Close must be called when the
+// caller is done (usually via defer).
+type Verified struct {
+	File      *os.File
+	Path      string
+	Algorithm string
+	Digest    string
+	Bytes     int64
+	Cached    bool
+}
+
+// OpenCachedVerified returns a freshly verified canonical cache object without
+// creating or repairing the cache. A nil object is an ordinary absent or
+// corrupt-cache miss. Unsafe filesystem entries return an error.
+func (c *Client) OpenCachedVerified(ctx context.Context, request VerifiedRequest) (*Verified, error) {
+	if c == nil || strings.TrimSpace(c.ArtifactCache) == "" {
+		return nil, errors.New("artifact cache root is not configured")
+	}
+	if c.SourceConfigError != nil {
+		return nil, fmt.Errorf("load repository sources: %w", c.SourceConfigError)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err := validateDigest(request.Algorithm, request.Digest); err != nil {
+		return nil, err
+	}
+	if _, err := parseHTTPS(request.URL); err != nil {
+		return nil, err
+	}
+	if request.MaxBytes <= 0 {
+		request.MaxBytes = DefaultMaxArtifactBytes
+	}
+	path, err := artifactCachePath(c.ArtifactCache, request.Algorithm, request.Digest)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(c.ArtifactCache); errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+	if err := filesystem.CheckOwnedDirectory(c.ArtifactCache); err != nil {
+		return nil, fmt.Errorf("%w: validate artifact cache root: %v", ErrUnsafeCache, err)
+	}
+	if err := filesystem.CheckOwnedDirectoryWithin(c.ArtifactCache, filepath.Dir(path)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%w: validate artifact cache path: %v", ErrUnsafeCache, err)
+	}
+	return openVerified(path, request.Algorithm, request.Digest, request.MaxBytes)
+}
+
+// Close releases the verified descriptor. It is safe to call on a nil handle.
+func (v *Verified) Close() error {
+	if v == nil || v.File == nil {
+		return nil
+	}
+	return v.File.Close()
 }
 
 type RegistryRequest struct {
@@ -89,6 +167,11 @@ type Client struct {
 	// SourceConfigError prevents acquisition from silently ignoring a malformed
 	// optional repositories.json while allowing local-only commands to start.
 	SourceConfigError error
+	// ArtifactCache is the canonical verified-blob cache root (the
+	// Layout.Cache/artifacts directory). When set, AcquireVerified reuses and
+	// publishes digest-pinned objects below v1/<algorithm>/<digest>. It is empty
+	// for clients that only use FetchArtifact.
+	ArtifactCache string
 }
 
 func NewClient() *Client {
@@ -116,8 +199,7 @@ func (c *Client) FetchArtifact(ctx context.Context, request ArtifactRequest) (Re
 	if err := validateDigest(request.Algorithm, request.Digest); err != nil {
 		return Result{}, err
 	}
-	_, err := parseHTTPS(request.URL)
-	if err != nil {
+	if _, err := parseHTTPS(request.URL); err != nil {
 		return Result{}, err
 	}
 	if request.MaxBytes <= 0 {
@@ -127,6 +209,13 @@ func (c *Client) FetchArtifact(ctx context.Context, request ArtifactRequest) (Re
 		result.Cached = true
 		return result, nil
 	}
+	return c.acquireArtifact(ctx, request.URL, request.Algorithm, request.Digest, request.Destination, request.MaxBytes, request.ReportProgress)
+}
+
+// acquireArtifact performs the ordered repository/upstream acquisition shared
+// by FetchArtifact and AcquireVerified. The verified bytes are published atomically
+// at destination and the destination is never treated as trusted cache here.
+func (c *Client) acquireArtifact(ctx context.Context, rawURL, algorithm, digest, destination string, maxBytes int64, progress Progress) (Result, error) {
 	var failures []string
 	for index, source := range c.Sources {
 		if index >= DefaultMaxArtifactSources {
@@ -140,7 +229,7 @@ func (c *Client) FetchArtifact(ctx context.Context, request ArtifactRequest) (Re
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
-		if err := c.validateSource(ctx, source, request.Destination); err != nil {
+		if err := c.validateSource(ctx, source, destination); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return Result{}, err
 			}
@@ -153,7 +242,7 @@ func (c *Client) FetchArtifact(ctx context.Context, request ArtifactRequest) (Re
 			}
 			continue
 		}
-		candidate, err := sourceObject(source, request.Algorithm, request.Digest)
+		candidate, err := sourceObject(source, algorithm, digest)
 		if err != nil {
 			failures = append(failures, source+": "+err.Error())
 			if c.SourceDiagnostic != nil {
@@ -163,10 +252,10 @@ func (c *Client) FetchArtifact(ctx context.Context, request ArtifactRequest) (Re
 		}
 		var result Result
 		if filepath.IsAbs(source) {
-			result.Bytes, err = copyLocalArtifact(ctx, source, request.Destination, request.MaxBytes, request.Algorithm, request.Digest)
-			result.Path, result.Algorithm, result.Digest = request.Destination, request.Algorithm, request.Digest
+			result.Bytes, err = copyLocalArtifact(ctx, source, destination, maxBytes, algorithm, digest)
+			result.Path, result.Algorithm, result.Digest = destination, algorithm, digest
 		} else if strings.HasPrefix(candidate, "https://") {
-			result, err = c.fetch(ctx, candidate, request.Destination, request.MaxBytes, request.Algorithm, request.Digest, nil, request.ReportProgress)
+			result, err = c.fetch(ctx, candidate, destination, maxBytes, algorithm, digest, nil, progress)
 		}
 		if err == nil {
 			return result, nil
@@ -182,11 +271,154 @@ func (c *Client) FetchArtifact(ctx context.Context, request ArtifactRequest) (Re
 			c.SourceDiagnostic(failures[len(failures)-1])
 		}
 	}
-	result, err := c.fetch(ctx, request.URL, request.Destination, request.MaxBytes, request.Algorithm, request.Digest, nil, request.ReportProgress)
+	result, err := c.fetch(ctx, rawURL, destination, maxBytes, algorithm, digest, nil, progress)
 	if err != nil && len(failures) > 0 {
 		return Result{}, fmt.Errorf("artifact acquisition failed; attempted sources: %s; upstream: %w", strings.Join(failures, "; "), err)
 	}
 	return result, err
+}
+
+// AcquireVerified acquires one digest-pinned artifact into the canonical
+// verified-blob cache and returns an open, verified descriptor. A valid cached
+// object is reused without network access. Objects are immutable and published
+// by atomic replacement, so the per-object cache lock is an optimization for
+// convergent acquisition; it is a leaf lock acquired only after the caller's
+// lifecycle or repository lock.
+func (c *Client) AcquireVerified(ctx context.Context, request VerifiedRequest) (*Verified, error) {
+	if c == nil || strings.TrimSpace(c.ArtifactCache) == "" {
+		return nil, errors.New("artifact cache root is not configured")
+	}
+	if c.SourceConfigError != nil {
+		return nil, fmt.Errorf("load repository sources: %w", c.SourceConfigError)
+	}
+	if err := validateDigest(request.Algorithm, request.Digest); err != nil {
+		return nil, err
+	}
+	if _, err := parseHTTPS(request.URL); err != nil {
+		return nil, err
+	}
+	if request.MaxBytes <= 0 {
+		request.MaxBytes = DefaultMaxArtifactBytes
+	}
+	destination, err := artifactCachePath(c.ArtifactCache, request.Algorithm, request.Digest)
+	if err != nil {
+		return nil, err
+	}
+	if err := filesystem.SecureMkdirAll(c.ArtifactCache, 0o700); err != nil {
+		return nil, fmt.Errorf("%w: validate artifact cache root: %v", ErrDestinationWrite, err)
+	}
+	if err := filesystem.CheckOwnedDirectory(c.ArtifactCache); err != nil {
+		return nil, fmt.Errorf("%w: validate artifact cache root: %v", ErrDestinationWrite, err)
+	}
+	if err := filesystem.SecureMkdirAll(filepath.Dir(destination), 0o700); err != nil {
+		return nil, fmt.Errorf("%w: create artifact cache: %v", ErrDestinationWrite, err)
+	}
+	if err := filesystem.CheckOwnedDirectoryWithin(c.ArtifactCache, filepath.Dir(destination)); err != nil {
+		return nil, fmt.Errorf("%w: validate artifact cache path: %v", ErrDestinationWrite, err)
+	}
+	lock, lockErr := locking.AcquireWithTimeout(ctx, artifactCacheLock(c.ArtifactCache, request.Algorithm, request.Digest), locking.DefaultTimeout)
+	if lockErr != nil {
+		if !errors.Is(lockErr, locking.ErrConflict) {
+			return nil, lockErr
+		}
+		// Content-addressed publication is atomic, so a contended lock only
+		// costs a duplicate download after the bounded lock wait.
+		lock = nil
+	} else {
+		defer lock.Release()
+	}
+	if verified, err := openVerified(destination, request.Algorithm, request.Digest, request.MaxBytes); err != nil {
+		return nil, err
+	} else if verified != nil {
+		verified.Cached = true
+		return verified, nil
+	}
+	if _, err := c.acquireArtifact(ctx, request.URL, request.Algorithm, request.Digest, destination, request.MaxBytes, request.ReportProgress); err != nil {
+		return nil, err
+	}
+	verified, err := openVerified(destination, request.Algorithm, request.Digest, request.MaxBytes)
+	if err != nil {
+		return nil, err
+	}
+	if verified == nil {
+		return nil, fmt.Errorf("%w: published artifact is not a verified regular file", ErrDestinationWrite)
+	}
+	return verified, nil
+}
+
+// artifactCachePath returns the canonical cache location for one digest.
+func artifactCachePath(root, algorithm, digest string) (string, error) {
+	if !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return "", errors.New("artifact cache root must be an absolute, clean path")
+	}
+	if _, err := checksum.NewHasher(algorithm, digest); err != nil {
+		return "", err
+	}
+	return filepath.Join(root, "v1", algorithm, digest), nil
+}
+
+// artifactCacheLock returns the per-object lock path used to converge
+// concurrent acquisition of the same digest.
+func artifactCacheLock(root, algorithm, digest string) string {
+	return filepath.Join(root, "locks", algorithm+"-"+digest+".lock")
+}
+
+// openVerified opens and hashes one cached object in a single pass on the same
+// no-follow descriptor, then rewinds it. A nil handle with nil error means the
+// path is absent or not a valid cached object; a non-nil error means the object
+// cannot be evaluated safely.
+func openVerified(path, algorithm, expected string, maxBytes int64) (*Verified, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || !singleLink(info) {
+		return nil, fmt.Errorf("%w: %s", ErrUnsafeCache, path)
+	}
+	// A stricter consumer limit is an ordinary miss. It must not evict the
+	// digest-valid object; acquisition fails before publication if it cannot fit.
+	if info.Size() > maxBytes {
+		return nil, nil
+	}
+	hasher, err := newHasher(algorithm, expected)
+	if err != nil {
+		return nil, err
+	}
+	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	if err != nil {
+		if errors.Is(err, syscall.ELOOP) {
+			return nil, fmt.Errorf("%w: %s", ErrUnsafeCache, path)
+		}
+		return nil, err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = syscall.Close(fd)
+		return nil, nil
+	}
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() || !singleLink(opened) || opened.Size() > maxBytes {
+		file.Close()
+		return nil, fmt.Errorf("%w: %s", ErrUnsafeCache, path)
+	}
+	postInfo, postErr := os.Lstat(path)
+	if postErr != nil || !os.SameFile(postInfo, opened) {
+		file.Close()
+		return nil, fmt.Errorf("%w: %s", ErrUnsafeCache, path)
+	}
+	written, err := io.Copy(hasher, io.LimitReader(file, maxBytes+1))
+	if err != nil || written > maxBytes || hex.EncodeToString(hasher.Sum(nil)) != expected {
+		file.Close()
+		return nil, nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		file.Close()
+		return nil, err
+	}
+	return &Verified{File: file, Path: path, Algorithm: algorithm, Digest: expected, Bytes: written}, nil
 }
 
 func sourceObject(raw, algorithm, digest string) (string, error) {

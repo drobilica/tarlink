@@ -65,12 +65,20 @@ func (core *Core) CheckRegistry(ctx context.Context, options RegistryCheckOption
 	if err != nil {
 		return RegistryCheckResult{}, classify("registry check", err)
 	}
+	if len(selection.Items) == 0 {
+		return RegistryCheckResult{}, nil
+	}
 	client := download.NewClient()
 	if core != nil && core.syncer != nil && core.syncer.Client != nil {
 		client = core.syncer.Client
 	}
+	session, err := registrycheck.NewSession(client)
+	if err != nil {
+		return RegistryCheckResult{}, classify("registry check", err)
+	}
+	defer session.Close()
 	for _, item := range selection.Items {
-		if err := registrycheck.MaterializeWithClient(ctx, item, client); err != nil {
+		if err := session.Materialize(ctx, item); err != nil {
 			return RegistryCheckResult{}, classify("registry check", err)
 		}
 	}

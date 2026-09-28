@@ -40,6 +40,19 @@ func elfMachine(filename string) (uint16, error) {
 	if err != nil || !os.SameFile(before, opened) || !os.SameFile(before, after) {
 		return 0, fmt.Errorf("AppImage: %w (artifact changed while opening)", ErrInvalid)
 	}
+	return elfMachineReader(file)
+}
+
+// elfMachineReader reads and validates the ELF header from an already-open,
+// caller-verified descriptor.
+func elfMachineReader(file *os.File) (uint16, error) {
+	opened, err := file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("stat opened AppImage: %w", err)
+	}
+	if !opened.Mode().IsRegular() {
+		return 0, fmt.Errorf("AppImage: %w (opened artifact is not a regular file)", ErrInvalid)
+	}
 	var header [64]byte
 	if _, err := io.ReadFull(file, header[:]); err != nil {
 		return 0, fmt.Errorf("AppImage header: %w: %v", ErrInvalid, err)
@@ -79,6 +92,26 @@ func ValidatePath(filename, architecture string) error {
 	if err != nil {
 		return err
 	}
+	return validateMachine(machine, architecture)
+}
+
+// ValidateReader applies the same bounded structural checks as ValidatePath to
+// an already-open, digest-verified descriptor. The caller is responsible for
+// the descriptor's provenance; ValidateReader only rejects structurally invalid
+// AppImages and architecture mismatches.
+func ValidateReader(file *os.File, architecture string) error {
+	if file == nil {
+		return fmt.Errorf("AppImage: %w (no open artifact)", ErrInvalid)
+	}
+	machine, err := elfMachineReader(file)
+	if err != nil {
+		return err
+	}
+	return validateMachine(machine, architecture)
+}
+
+// validateMachine requires the ELF machine to match the requested architecture.
+func validateMachine(machine uint16, architecture string) error {
 	var expected uint16
 	switch architecture {
 	case "amd64":

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/drobilica/tarlink/internal/artifactrepo"
+	"github.com/drobilica/tarlink/internal/download"
 )
 
 func repositoryServiceDigest(content []byte) string {
@@ -120,6 +121,60 @@ func repositoryServiceObject(t *testing.T, repo, digest string) string {
 		t.Fatal(err)
 	}
 	return string(content)
+}
+
+func TestRepositorySyncReusesCanonicalVerifiedCache(t *testing.T) {
+	content := []byte("bravo artifact bytes")
+	digest := repositoryServiceDigest(content)
+	artifacts := map[string][]byte{"bravo": content}
+	archive := repositoryServiceArchive(t, artifacts)
+	artifactUnavailable := false
+	core, _ := registryRuntimeCore(t, func(request *http.Request) (*http.Response, error) {
+		payload := archive
+		if request.URL.Host == "example.com" {
+			if artifactUnavailable {
+				return nil, errors.New("artifact network disabled")
+			}
+			payload = artifacts[strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/"), ".tar.gz")]
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(payload)),
+			Header: make(http.Header), Request: request, ContentLength: int64(len(payload)),
+		}, nil
+	})
+	repositoryServiceBootstrap(t, core)
+	repo := filepath.Join(t.TempDir(), "repository")
+	core.installer.Client.ArtifactCache = core.layout.ArtifactCacheRoot()
+	verified, err := core.installer.Client.AcquireVerified(context.Background(), download.VerifiedRequest{
+		URL: "https://example.com/bravo.tar.gz", Algorithm: "sha256", Digest: digest,
+	})
+	if err != nil {
+		t.Fatalf("prepare canonical cache object: %v", err)
+	}
+	_ = verified.Close()
+	if _, err := core.RepositorySync(context.Background(), repo, artifactrepo.Selection{}, false); err != nil {
+		t.Fatalf("initial sync error = %v", err)
+	}
+	if got := repositoryServiceObject(t, repo, digest); got != string(content) {
+		t.Fatalf("synced object = %q", got)
+	}
+	// The verified object is now in the canonical cache. Removing the
+	// repository object and disabling the network must still repair it from
+	// the cache, proving the sync adapter reuses verified bytes.
+	if err := os.Remove(filepath.Join(repo, "v1", "sha256", digest)); err != nil {
+		t.Fatal(err)
+	}
+	artifactUnavailable = true
+	report, err := core.RepositorySync(context.Background(), repo, artifactrepo.Selection{}, false)
+	if err != nil {
+		t.Fatalf("cache-reuse sync error = %v", err)
+	}
+	if report.Downloaded != 1 {
+		t.Fatalf("cache-reuse sync report = %+v, want one downloaded object", report)
+	}
+	if got := repositoryServiceObject(t, repo, digest); got != string(content) {
+		t.Fatalf("restored object = %q", got)
+	}
 }
 
 func TestRepositoryStatusMissingOnlyIsNotFound(t *testing.T) {

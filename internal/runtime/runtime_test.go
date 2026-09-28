@@ -4,8 +4,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	goruntime "runtime"
@@ -18,7 +21,7 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-func runtimeArchive(t *testing.T, entries []tar.Header) string {
+func runtimeArchiveBytes(t *testing.T, entries []tar.Header) []byte {
 	t.Helper()
 	var data bytes.Buffer
 	writer, err := xz.NewWriter(&data)
@@ -42,17 +45,32 @@ func runtimeArchive(t *testing.T, entries []tar.Header) string {
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
+	return data.Bytes()
+}
+
+func runtimeArchive(t *testing.T, entries []tar.Header) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "runtime.tar.xz")
-	if err := os.WriteFile(path, data.Bytes(), 0600); err != nil {
+	if err := os.WriteFile(path, runtimeArchiveBytes(t, entries), 0600); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
+func openArchive(t *testing.T, path string) *os.File {
+	t.Helper()
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = file.Close() })
+	return file
+}
+
 func TestExtractValveDeploymentAllowsContainedRelativeLink(t *testing.T) {
 	archive := runtimeArchive(t, []tar.Header{{Name: "SteamLinuxRuntime_4/", Typeflag: tar.TypeDir, Mode: 0755}, {Name: "SteamLinuxRuntime_4/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755}, {Name: "SteamLinuxRuntime_4/link", Typeflag: tar.TypeSymlink, Linkname: "_v2-entry-point"}})
 	destination := t.TempDir()
-	if err := extractValveDeployment(context.Background(), archive, destination); err != nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateDeployment(filepath.Join(destination, "SteamLinuxRuntime_4")); err != nil {
@@ -62,7 +80,7 @@ func TestExtractValveDeploymentAllowsContainedRelativeLink(t *testing.T) {
 
 func TestExtractValveDeploymentRejectsEscapingLink(t *testing.T) {
 	archive := runtimeArchive(t, []tar.Header{{Name: "SteamLinuxRuntime_4/", Typeflag: tar.TypeDir, Mode: 0755}, {Name: "SteamLinuxRuntime_4/link", Typeflag: tar.TypeSymlink, Linkname: "../../outside"}})
-	if err := extractValveDeployment(context.Background(), archive, t.TempDir()); err == nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir()); err == nil {
 		t.Fatal("escaping symlink was accepted")
 	}
 }
@@ -82,7 +100,7 @@ func TestExtractValveDeploymentAllowsSniperRoot(t *testing.T) {
 		{Name: "SteamLinuxRuntime_sniper/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
 	})
 	destination := t.TempDir()
-	if err := extractValveDeployment(context.Background(), archive, destination); err != nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateDeployment(filepath.Join(destination, "SteamLinuxRuntime_sniper")); err != nil {
@@ -95,7 +113,7 @@ func TestExtractValveDeploymentRejectsUnknownRoot(t *testing.T) {
 		{Name: "SteamLinuxRuntime_5/", Typeflag: tar.TypeDir, Mode: 0755},
 		{Name: "SteamLinuxRuntime_5/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
 	})
-	if err := extractValveDeployment(context.Background(), archive, t.TempDir()); err == nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir()); err == nil {
 		t.Fatal("unknown runtime root was accepted")
 	}
 }
@@ -107,7 +125,7 @@ func TestExtractValveDeploymentSniperLinkStaysWithinRoot(t *testing.T) {
 		{Name: "SteamLinuxRuntime_sniper/link", Typeflag: tar.TypeSymlink, Linkname: "_v2-entry-point"},
 	})
 	destination := t.TempDir()
-	if err := extractValveDeployment(context.Background(), archive, destination); err != nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateDeployment(filepath.Join(destination, "SteamLinuxRuntime_sniper")); err != nil {
@@ -121,7 +139,7 @@ func TestExtractValveDeploymentSniperLinkEscapingRejected(t *testing.T) {
 		{Name: "SteamLinuxRuntime_sniper/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
 		{Name: "SteamLinuxRuntime_sniper/link", Typeflag: tar.TypeSymlink, Linkname: "../../outside"},
 	})
-	if err := extractValveDeployment(context.Background(), archive, t.TempDir()); err == nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir()); err == nil {
 		t.Fatal("escaping sniper symlink was accepted")
 	}
 }
@@ -170,6 +188,43 @@ func TestGCRejectsUppercaseDeploymentName(t *testing.T) {
 	}
 	if err := GC(layout); err == nil {
 		t.Fatal("GC accepted an uppercase deployment name")
+	}
+}
+
+func TestEnsureReusesCanonicalVerifiedArtifactCache(t *testing.T) {
+	data := runtimeArchiveBytes(t, []tar.Header{
+		{Name: "SteamLinuxRuntime_4/", Typeflag: tar.TypeDir, Mode: 0755},
+		{Name: "SteamLinuxRuntime_4/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
+	})
+	digest := sha256.Sum256(data)
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = writer.Write(data)
+	}))
+	defer server.Close()
+
+	layout := runtimeTestLayout(t)
+	client := &download.Client{HTTP: server.Client(), RedirectLimit: 2}
+	runtimeFor := func(version string) *manifest.Runtime {
+		return &manifest.Runtime{
+			Schema: manifest.RuntimeSchemaV1, ID: "steam-linux-runtime-4", Kind: manifest.RuntimeKindSteamLinuxRuntime,
+			Version: version, Platform: manifest.Platform{OS: "linux", Arch: "amd64"},
+			Artifact: manifest.RuntimeArtifact{
+				URL: server.URL, Archive: "tar.xz",
+				Verification: manifest.Verification{Algorithm: "sha256", Digest: hex.EncodeToString(digest[:]), Source: server.URL + "/SHA256SUMS"},
+			},
+			Interface: manifest.RuntimeInterfaceValveV2,
+		}
+	}
+	if _, _, err := Ensure(context.Background(), layout, client, runtimeFor("4.0.1"), nil); err != nil {
+		t.Fatalf("first Ensure() error = %v", err)
+	}
+	if _, _, err := Ensure(context.Background(), layout, client, runtimeFor("4.0.2"), nil); err != nil {
+		t.Fatalf("second Ensure() error = %v", err)
+	}
+	if requests != 1 {
+		t.Fatalf("runtime requests = %d, want 1 (canonical cache reuse)", requests)
 	}
 }
 
