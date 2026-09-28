@@ -803,7 +803,7 @@ func artifactRepository(raw string) (string, string) {
 		}
 		p = strings.Join(parts[:2], "/")
 	} else {
-		for _, marker := range []string{"/-/releases", "/-/package", "/releases/"} {
+		for _, marker := range []string{"/-/releases", "/-/package", "/-/archive/", "/releases/"} {
 			if i := strings.Index(p, marker); i >= 0 {
 				p = p[:i]
 				break

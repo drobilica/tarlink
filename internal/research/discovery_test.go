@@ -228,6 +228,21 @@ func TestNormalizeRepositoryKeepsProviderAndNamespaceBoundaries(t *testing.T) {
 	}
 }
 
+func TestArtifactRepositoryRecognizesGitLabSourceArchives(t *testing.T) {
+	for _, test := range []struct {
+		url  string
+		repo string
+	}{
+		{"https://gitlab.com/group/project/-/archive/v1/project.tar.gz", "group/project"},
+		{"https://gitlab.com/group/subgroup/project/-/archive/0123456789abcdef/project-0123456789abcdef.zip", "group/subgroup/project"},
+	} {
+		provider, repo := artifactRepository(test.url)
+		if provider != "gitlab" || repo != test.repo {
+			t.Errorf("artifactRepository(%q) = (%q, %q), want (gitlab, %q)", test.url, provider, repo, test.repo)
+		}
+	}
+}
+
 func TestCatalogSourcesRejectDotSegmentsAndUnsafeMetadataNames(t *testing.T) {
 	for _, source := range []string{
 		"https://github.com/./repo",
