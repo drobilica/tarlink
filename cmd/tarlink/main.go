@@ -68,6 +68,7 @@ func main() {
 			Research:   maintainer,
 			Onboarding: maintainer,
 			Candidates: maintainer,
+			Discovery:  maintainer,
 			Blockers:   maintainer,
 			Icons:      maintainer,
 		}

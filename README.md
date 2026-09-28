@@ -183,6 +183,7 @@ process.
 | Manifest contract (schema v5) | [docs/manifest-v5.md](docs/manifest-v5.md) |
 | Owned filesystem paths | [docs/filesystem-layout.md](docs/filesystem-layout.md) |
 | Registry research workflow | [docs/registry-research.md](docs/registry-research.md) |
+| Exhaustive CLI reference | [cli/README.md](cli/README.md) |
 | Contributor workflow | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Vulnerability reporting | [SECURITY.md](SECURITY.md) |
 | Live application catalog | [tarlink-registry](https://github.com/drobilica/tarlink-registry) |

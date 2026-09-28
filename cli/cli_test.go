@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -891,6 +893,19 @@ type candidateService struct {
 	called bool
 }
 
+type discoveryService struct {
+	report  research.DiscoveryReport
+	calls   int
+	options research.DiscoveryOptions
+	err     error
+}
+
+func (d *discoveryService) DiscoverCandidates(_ context.Context, options research.DiscoveryOptions) (research.DiscoveryReport, error) {
+	d.calls++
+	d.options = options
+	return d.report, d.err
+}
+
 func (f *candidateService) CandidateLedger() (research.CandidateLedger, error) { return f.ledger, nil }
 func (f *candidateService) CandidateChanges(context.Context) (research.CandidateChanges, error) {
 	f.called = true
@@ -914,6 +929,27 @@ func TestRegistryCandidatesMarkdownIsLocalAndExclusive(t *testing.T) {
 		errOut.Reset()
 		if code := runner.Run(context.Background(), append([]string{"registry", "candidates"}, args...)); code == 0 || !strings.Contains(errOut.String(), "mutually exclusive") {
 			t.Fatalf("args=%v code=%d stdout=%q stderr=%q", args, code, out.String(), errOut.String())
+		}
+	}
+}
+
+func TestRegistryCandidatesDiscoverFlagsAndPairOutput(t *testing.T) {
+	service := &discoveryService{report: research.DiscoveryReport{SchemaVersion: 1, Catalog: research.DiscoveryCatalog{Adapter: "quiver", Source: "local", Revision: ""}, Registry: research.DiscoveryRegistry{Source: "/registry"}, Entries: []research.DiscoveryEntry{}}}
+	var out, errOut bytes.Buffer
+	runner := Runner{Registry: RegistryTools{Discovery: service}, Stdout: &out, Stderr: &errOut}
+	base := []string{"registry", "candidates", "discover", "--catalog", "quiver:/catalog", "--registry", "/registry"}
+	if code := runner.Run(context.Background(), append(base, "--json", "--markdown")); code == 0 || !strings.Contains(errOut.String(), "mutually exclusive") || service.calls != 0 {
+		t.Fatalf("mutual exclusion code=%d stderr=%q calls=%d", code, errOut.String(), service.calls)
+	}
+	out.Reset()
+	errOut.Reset()
+	dir := t.TempDir()
+	if code := runner.Run(context.Background(), append(base, "--output-dir", dir)); code != 0 || service.calls != 1 {
+		t.Fatalf("pair code=%d stderr=%q calls=%d", code, errOut.String(), service.calls)
+	}
+	for _, name := range []string{"discovery.json", "discovery.md"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("missing %s: %v", name, err)
 		}
 	}
 }

@@ -26,6 +26,7 @@ type RegistryTools struct {
 	Research   app.ResearchService
 	Onboarding app.RegistryOnboardingService
 	Candidates app.CandidateService
+	Discovery  app.DiscoveryService
 	Blockers   app.BlockerService
 	Icons      app.RegistryIconService
 }

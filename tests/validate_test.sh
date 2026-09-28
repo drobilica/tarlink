@@ -127,6 +127,7 @@ cat >"$fake_bin/go" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
 	vet) exit 0 ;;
+	run) exit 0 ;;
 	test) exit 3 ;;
 	*) exit 0 ;;
 esac

@@ -23,6 +23,12 @@ func (m *Maintainer) CandidateChanges(ctx context.Context) (research.CandidateCh
 	return research.DetectChanges(ctx, c, l), nil
 }
 func (m *Maintainer) CandidateLedger() (research.CandidateLedger, error) { return candidateLedger() }
+func (m *Maintainer) DiscoverCandidates(ctx context.Context, options research.DiscoveryOptions) (research.DiscoveryReport, error) {
+	if m.client != nil {
+		options.HTTP = m.client.HTTP
+	}
+	return research.Discover(ctx, options)
+}
 func (m *Maintainer) Blockers(capability string) ([]research.BlockerSummary, error) {
 	l, e := candidateLedger()
 	if e != nil {

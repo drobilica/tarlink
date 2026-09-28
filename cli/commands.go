@@ -66,6 +66,7 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry inspect <owner/repo | release-asset-url | https-artifact-url | manifest.yaml | directory> [--json] [--refresh]
   tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]
   tarlink registry candidates [--changed] [--json] [--markdown]
+  tarlink registry candidates discover --catalog <adapter:source> --registry <path> [--changed] [--json|--markdown|--output-dir <path>]
   tarlink registry blockers [--capability <capability>] [--json]
   tarlink registry icons <path> [--app <id>] [--fix] [--json]
 `
@@ -241,7 +242,7 @@ func repositoryScopeLabel(selection artifactrepo.Selection) (string, string) {
 
 func (r Runner) repositoryInitCommand() *cobra.Command {
 	usage := "usage: tarlink repository init PATH"
-	command := &cobra.Command{Use: "init PATH", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "init PATH", Short: "Initialize an artifact repository", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -266,7 +267,7 @@ func (r Runner) printRepositoryUnsupported(report app.RepositoryReport) error {
 func (r Runner) repositoryVerifyCommand() *cobra.Command {
 	var jsonOutput bool
 	usage := "usage: tarlink repository verify PATH [--json]"
-	command := &cobra.Command{Use: "verify PATH", Args: exactArgs(1, usage), RunE: func(cmd *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "verify PATH", Short: "Verify repository metadata and artifact digests", Args: exactArgs(1, usage), RunE: func(cmd *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -295,7 +296,7 @@ func (r Runner) repositorySyncCommand() *cobra.Command {
 	var appID, platform string
 	var all, dry, jsonOutput bool
 	usage := "usage: tarlink repository sync PATH [--app ID] [--platform PLATFORM] [--all-retained] [--dry-run] [--json]"
-	command := &cobra.Command{Use: "sync PATH", Args: exactArgs(1, usage), RunE: func(ctx *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "sync PATH", Short: "Mirror approved artifacts additively", Args: exactArgs(1, usage), RunE: func(ctx *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -335,7 +336,7 @@ func (r Runner) repositoryStatusCommand() *cobra.Command {
 	var appID, platform string
 	var all, jsonOutput bool
 	usage := "usage: tarlink repository status PATH [--app ID] [--platform PLATFORM] [--all-retained] [--json]"
-	command := &cobra.Command{Use: "status PATH", Args: exactArgs(1, usage), RunE: func(cmd *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "status PATH", Short: "Show repository status", Args: exactArgs(1, usage), RunE: func(cmd *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -373,7 +374,7 @@ func (r Runner) repositoryStatusCommand() *cobra.Command {
 
 func (r Runner) repositoryAddCommand() *cobra.Command {
 	usage := "usage: tarlink repository add URL_OR_PATH"
-	command := &cobra.Command{Use: "add URL_OR_PATH", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "add URL_OR_PATH", Short: "Add a repository source", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -390,7 +391,7 @@ func (r Runner) repositoryAddCommand() *cobra.Command {
 
 func (r Runner) repositoryRemoveCommand() *cobra.Command {
 	usage := "usage: tarlink repository remove URL_OR_PATH"
-	command := &cobra.Command{Use: "remove URL_OR_PATH", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "remove URL_OR_PATH", Short: "Remove a repository source", Args: exactArgs(1, usage), RunE: func(_ *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -407,7 +408,7 @@ func (r Runner) repositoryRemoveCommand() *cobra.Command {
 
 func (r Runner) repositoryListCommand() *cobra.Command {
 	usage := "usage: tarlink repository list"
-	command := &cobra.Command{Use: "list", Args: noArgs(usage), RunE: func(_ *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "list", Short: "List repository sources", Args: noArgs(usage), RunE: func(_ *cobra.Command, _ []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -939,7 +940,7 @@ func (r Runner) registryCommand() *cobra.Command {
 
 func (r Runner) registryValidateCommand() *cobra.Command {
 	usage := "usage: tarlink registry validate <path>"
-	command := &cobra.Command{Use: "validate <path>", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "validate <path>", Short: "Validate a registry tree", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
 		if r.Registry.Validation == nil {
 			return errors.New("registry validation is unavailable")
 		}
@@ -956,7 +957,7 @@ func (r Runner) registryValidateCommand() *cobra.Command {
 func (r Runner) registryCheckCommand() *cobra.Command {
 	usage := "usage: tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]"
 	var options app.RegistryCheckOptions
-	command := &cobra.Command{Use: "check <path>", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
+	command := &cobra.Command{Use: "check <path>", Short: "Check registry artifacts", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
 		selected := 0
 		if options.App != "" {
 			selected++
@@ -998,7 +999,7 @@ func (r Runner) registryCheckCommand() *cobra.Command {
 func (r Runner) registryFreshnessCommand() *cobra.Command {
 	usage := "usage: tarlink registry freshness <app> [--json]"
 	var jsonOutput bool
-	command := &cobra.Command{Use: "freshness <app>", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "freshness <app>", Short: "Inspect upstream release freshness", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
@@ -1022,7 +1023,7 @@ func (r Runner) registryInspectCommand() *cobra.Command {
 	usage := "usage: tarlink registry inspect <owner/repo | release-asset-url | https-artifact-url | manifest.yaml | directory> [--json] [--refresh]"
 	var jsonOutput, refresh bool
 	var release, asset string
-	command := &cobra.Command{Use: "inspect <target>", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "inspect <target>", Short: "Inspect an upstream artifact", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
 		target := args[0]
 		_, directErr := research.ParseReleaseAssetURL(target)
 		_, artifactErr := app.ParseRegistryHTTPSArtifactURL(target)
@@ -1087,7 +1088,7 @@ func (r Runner) registryAddCommand() *cobra.Command {
 	var options app.RegistryAddOptions
 	var jsonOutput, dryRun, createBinLink, noCreateBinLink bool
 	var output, categories string
-	command := &cobra.Command{Use: "add <owner/repo | release-asset-url>", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
+	command := &cobra.Command{Use: "add <owner/repo | release-asset-url>", Short: "Construct a candidate manifest", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
 		if jsonOutput && !options.NonInteractive || dryRun && output != "" || createBinLink && noCreateBinLink {
 			return invalidCommand(usage)
 		}
@@ -1166,7 +1167,7 @@ func (r Runner) registryAddCommand() *cobra.Command {
 func (r Runner) registryCandidatesCommand() *cobra.Command {
 	usage := "usage: tarlink registry candidates [--changed] [--json] [--markdown]"
 	var changed, jsonOutput, markdown bool
-	command := &cobra.Command{Use: "candidates", Args: noArgs(usage), RunE: func(command *cobra.Command, _ []string) error {
+	command := &cobra.Command{Use: "candidates", Short: "Review registry research candidates", Args: noArgs(usage), RunE: func(command *cobra.Command, _ []string) error {
 		if r.Registry.Candidates == nil {
 			return errors.New("candidate ledger is unavailable")
 		}
@@ -1204,9 +1205,53 @@ func (r Runner) registryCandidatesCommand() *cobra.Command {
 		}
 		return nil
 	}}
+	command.AddCommand(r.registryCandidatesDiscoverCommand())
 	command.Flags().BoolVar(&changed, "changed", false, "show changed candidates")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "write JSON")
 	command.Flags().BoolVar(&markdown, "markdown", false, "write Markdown research report")
+	configureCommand(command, usage)
+	return command
+}
+
+func (r Runner) registryCandidatesDiscoverCommand() *cobra.Command {
+	usage := "usage: tarlink registry candidates discover --catalog <adapter:source> --registry <path> [--changed] [--json|--markdown|--output-dir <path>]"
+	var catalog, registryRoot, outputDir string
+	var changed, jsonOutput, markdown bool
+	command := &cobra.Command{Use: "discover", Short: "Compare an external catalog with a local registry", Args: noArgs(usage), RunE: func(command *cobra.Command, _ []string) error {
+		if strings.TrimSpace(catalog) == "" || strings.TrimSpace(registryRoot) == "" {
+			return invalidCommand(usage)
+		}
+		paired := command.Flags().Changed("output-dir")
+		if (jsonOutput && markdown) || (jsonOutput && paired) || (markdown && paired) {
+			return invalidCommand(usage + ": --json, --markdown, and --output-dir are mutually exclusive")
+		}
+		if paired && strings.TrimSpace(outputDir) == "" {
+			return invalidCommand(usage + ": --output-dir requires a path")
+		}
+		if r.Registry.Discovery == nil {
+			return errors.New("catalog discovery is unavailable")
+		}
+		report, err := r.Registry.Discovery.DiscoverCandidates(command.Context(), research.DiscoveryOptions{Catalog: catalog, Registry: registryRoot, Changed: changed})
+		if err != nil {
+			return err
+		}
+		if err := research.ValidateDiscoveryReport(report); err != nil {
+			return err
+		}
+		if paired {
+			return research.WriteDiscoveryReports(outputDir, report)
+		}
+		if jsonOutput {
+			return writeJSON(r.Stdout, report)
+		}
+		return research.RenderDiscovery(r.Stdout, report, markdown)
+	}}
+	command.Flags().StringVar(&catalog, "catalog", "", "external catalog adapter and source")
+	command.Flags().StringVar(&registryRoot, "registry", "", "explicit local registry root")
+	command.Flags().BoolVar(&changed, "changed", false, "show new, changed, unsupported, and ambiguous entries")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "write deterministic JSON")
+	command.Flags().BoolVar(&markdown, "markdown", false, "write deterministic Markdown")
+	command.Flags().StringVar(&outputDir, "output-dir", "", "write discovery.json and discovery.md")
 	configureCommand(command, usage)
 	return command
 }
@@ -1215,7 +1260,7 @@ func (r Runner) registryBlockersCommand() *cobra.Command {
 	usage := "usage: tarlink registry blockers [--capability <capability>] [--json]"
 	var capability string
 	var jsonOutput bool
-	command := &cobra.Command{Use: "blockers", Args: noArgs(usage), RunE: func(*cobra.Command, []string) error {
+	command := &cobra.Command{Use: "blockers", Short: "Summarize candidate blockers", Args: noArgs(usage), RunE: func(*cobra.Command, []string) error {
 		if r.Registry.Blockers == nil {
 			return errors.New("blocker analysis is unavailable")
 		}
@@ -1253,7 +1298,7 @@ func (r Runner) registryIconsCommand() *cobra.Command {
 	usage := "usage: tarlink registry icons <path> [--app <id>] [--fix] [--json]"
 	var options app.RegistryIconOptions
 	var jsonOutput bool
-	command := &cobra.Command{Use: "icons <path>", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "icons <path>", Short: "Audit registry desktop icons", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
 		if r.Registry.Icons == nil {
 			return errors.New("registry icon maintenance is unavailable")
 		}
