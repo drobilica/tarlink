@@ -143,6 +143,64 @@ func TestMaterializeWithClientLifecycleAndNoExecution(t *testing.T) {
 	}
 }
 
+func TestSessionReusesIsolatedArtifactCache(t *testing.T) {
+	data := checkerArchive(t, "bin/run", "#!/bin/sh\nexit 0\n")
+	requests := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = writer.Write(data)
+	}))
+	defer server.Close()
+
+	first := checkerMaterializeManifest(server, data, "run", "bin/run")
+	second := checkerMaterializeManifest(server, data, "run", "bin/run")
+	second.ID = "second"
+
+	session, err := NewSession(&download.Client{HTTP: server.Client(), RedirectLimit: 2})
+	if err != nil {
+		t.Fatalf("NewSession() error = %v", err)
+	}
+	if !strings.Contains(session.layout.ArtifactCacheRoot(), session.home) || !strings.Contains(session.layout.Cache, session.home) {
+		t.Fatalf("session cache %q is not isolated below %q", session.layout.ArtifactCacheRoot(), session.home)
+	}
+	sessionHome := session.home
+	for _, item := range []*manifest.Manifest{first, second} {
+		if err := session.Materialize(context.Background(), item); err != nil {
+			t.Fatalf("materialize %s: %v", item.ID, err)
+		}
+	}
+	if requests != 1 {
+		t.Fatalf("artifact requests = %d, want 1 (session cache reuse)", requests)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if _, err := os.Stat(sessionHome); !os.IsNotExist(err) {
+		t.Fatalf("session home remains after Close: %v", err)
+	}
+}
+
+func TestSessionFailureLeavesNoCachedObject(t *testing.T) {
+	data := checkerArchive(t, "bin/run", "#!/bin/sh\nexit 0\n")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte("tampered"))
+	}))
+	defer server.Close()
+	session, err := NewSession(&download.Client{HTTP: server.Client(), RedirectLimit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if err := session.Materialize(context.Background(), checkerMaterializeManifest(server, data, "run", "bin/run")); err == nil {
+		t.Fatal("checksum-mismatched materialization unexpectedly succeeded")
+	}
+	digest := sha256.Sum256(data)
+	object := filepath.Join(session.layout.ArtifactCacheRoot(), "v1", "sha256", hex.EncodeToString(digest[:]))
+	if _, err := os.Stat(object); !os.IsNotExist(err) {
+		t.Fatalf("failed materialization left a cached object: %v", err)
+	}
+}
+
 func TestChangedFingerprintAndMetadataBehavior(t *testing.T) {
 	oldRoot := writeCheckerRegistry(t, checkerManifest)
 	for name, body := range map[string]string{

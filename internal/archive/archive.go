@@ -155,8 +155,24 @@ func ExtractPathWithProgress(ctx context.Context, sourcePath, destination string
 // ExtractNestedPath performs exactly two declared extraction layers under one
 // cumulative budget. It does not inspect or recurse into any other archive.
 func ExtractNestedPath(ctx context.Context, sourcePath, outerDestination, innerDestination string, outerFormat Format, innerPath string, innerFormat Format, limits Limits, progress Progress) error {
+	f, err := os.Open(sourcePath)
+	if err != nil {
+		return fmt.Errorf("archive: open source: %w", err)
+	}
+	defer f.Close()
+	return ExtractNestedWithProgress(ctx, f, outerDestination, innerDestination, outerFormat, innerPath, innerFormat, limits, progress)
+}
+
+// ExtractNestedWithProgress performs exactly two declared extraction layers
+// from an already-open reader under one cumulative budget. It does not inspect
+// or recurse into any other archive.
+func ExtractNestedWithProgress(ctx context.Context, source io.Reader, outerDestination, innerDestination string, outerFormat Format, innerPath string, innerFormat Format, limits Limits, progress Progress) error {
+	if source == nil {
+		return fmt.Errorf("archive: nil source: %w", ErrInvalidFormat)
+	}
+	ctx = ctxOrBackground(ctx)
 	b := newBudget(limits)
-	if err := extractPathWithProgress(ctx, sourcePath, outerDestination, outerFormat, b, progress); err != nil {
+	if err := extract(ctx, &contextReader{ctx: ctx, r: source}, outerDestination, outerFormat, b, progress); err != nil {
 		return err
 	}
 	inner, err := openDeclaredFile(outerDestination, innerPath, b.limits)
@@ -164,16 +180,7 @@ func ExtractNestedPath(ctx context.Context, sourcePath, outerDestination, innerD
 		return fmt.Errorf("archive: declared inner archive: %w", err)
 	}
 	defer inner.Close()
-	return extract(ctxOrBackground(ctx), &contextReader{ctx: ctxOrBackground(ctx), r: inner}, innerDestination, innerFormat, b, progress)
-}
-
-func extractPathWithProgress(ctx context.Context, sourcePath, destination string, declared Format, b *budget, progress Progress) error {
-	f, err := os.Open(sourcePath)
-	if err != nil {
-		return fmt.Errorf("archive: open source: %w", err)
-	}
-	defer f.Close()
-	return extract(ctxOrBackground(ctx), &contextReader{ctx: ctxOrBackground(ctx), r: f}, destination, declared, b, progress)
+	return extract(ctx, &contextReader{ctx: ctx, r: inner}, innerDestination, innerFormat, b, progress)
 }
 
 func ctxOrBackground(ctx context.Context) context.Context {

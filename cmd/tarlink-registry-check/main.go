@@ -38,9 +38,15 @@ func main() {
 		fmt.Println("registry structure is valid")
 		return
 	}
+	session, err := registrycheck.NewSession(nil)
+	if err != nil {
+		fail(err)
+	}
+	defer session.Close()
 	for _, item := range selection.Items {
 		fmt.Printf("materializing %s %s/%s\n", item.ID, item.Platform.OS, item.Platform.Arch)
-		if err := registrycheck.Materialize(context.Background(), item); err != nil {
+		if err := session.Materialize(context.Background(), item); err != nil {
+			_ = session.Close()
 			fail(err)
 		}
 	}

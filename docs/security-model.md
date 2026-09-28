@@ -26,9 +26,12 @@ their path are rejected. Initialized repositories use non-secret `0755`
 directory permissions and `0644` descriptor/object permissions so a separate
 static reader such as nginx can serve the completed tree; sync locks and
 staging remain private. HTTPS source URLs may have a path prefix, and object
-URLs are formed below that prefix. Each acquisition uses the verified local
-cache first, then ordered configured repositories, then the exact upstream URL
-recorded by the validated official registry. Repository body-read,
+URLs are formed below that prefix. Application, runtime, icon, and repository
+acquisitions use the canonical
+verified-blob cache at `artifacts/v1/<algorithm>/<digest>` first, then ordered
+configured repositories, then the exact upstream URL recorded by the validated
+official registry. A cache hit is accepted only after the opened descriptor's
+full content is re-hashed to the requested digest without following symlinks. Repository body-read,
 truncation, size, and digest failures are ordinary source failures and fall
 through to the next source; cancellation and destination-write failures stop
 the operation. A malformed optional `repositories.json` is retained as an

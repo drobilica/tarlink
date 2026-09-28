@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -51,6 +52,9 @@ func NewCore(layout filesystem.Layout, client *download.Client) (*Core, error) {
 	}
 	client.Sources = sources
 	client.SourceConfigError = sourceErr
+	if layout.Cache != "" {
+		client.ArtifactCache = layout.ArtifactCacheRoot()
+	}
 	installer := install.New(layout, client)
 	upgradeClient := download.NewClient()
 	upgradeClient.HTTP = client.HTTP
@@ -166,12 +170,50 @@ func classifyPlanError(operation string, err error) error {
 
 func repositoryFetch(core *Core) artifactrepo.Fetch {
 	return func(ctx context.Context, url, algorithm, digest, destination string) error {
-		_, err := core.installer.Client.FetchArtifact(ctx, download.ArtifactRequest{URL: url, Algorithm: algorithm, Digest: digest, Destination: destination})
+		client := core.installer.Client
+		if client.ArtifactCache == "" && core.layout.Cache != "" {
+			client.ArtifactCache = core.layout.ArtifactCacheRoot()
+		}
+		verified, err := client.OpenCachedVerified(ctx, download.VerifiedRequest{URL: url, Algorithm: algorithm, Digest: digest})
+		if err != nil {
+			return err
+		}
+		if verified != nil {
+			defer verified.Close()
+			if err := copyVerifiedTo(destination, verified.File); err != nil {
+				return fmt.Errorf("%w: %v", artifactrepo.ErrDestinationWrite, err)
+			}
+			return nil
+		}
+		// A cache miss or corrupt object uses the existing destination-oriented
+		// acquisition and never populates the persistent CAS.
+		_, err = client.FetchArtifact(ctx, download.ArtifactRequest{
+			URL: url, Algorithm: algorithm, Digest: digest, Destination: destination,
+		})
 		if errors.Is(err, download.ErrDestinationWrite) {
 			return fmt.Errorf("%w: %v", artifactrepo.ErrDestinationWrite, err)
 		}
 		return err
 	}
+}
+
+// copyVerifiedTo copies a verified cache object into the repository staging
+// file. The repository must own its bytes, so the object is copied rather than
+// linked.
+func copyVerifiedTo(destination string, source *os.File) error {
+	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, source); err != nil {
+		_ = out.Close()
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
 }
 
 func (core *Core) RepositoryVerify(ctx context.Context, path string) (RepositoryReport, error) {

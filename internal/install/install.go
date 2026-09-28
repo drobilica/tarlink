@@ -105,6 +105,18 @@ func New(layout filesystem.Layout, client *download.Client) *Manager {
 	return &Manager{Layout: layout, Client: client, Limits: archive.DefaultLimits()}
 }
 
+// ensureArtifactCache points the shared download client at the canonical
+// verified-blob cache for this layout when the caller supplied a client without
+// one. It is a no-op once configured and never overrides an explicit root.
+func (manager *Manager) ensureArtifactCache() {
+	if manager.Client == nil {
+		manager.Client = download.NewClient()
+	}
+	if manager.Client.ArtifactCache == "" && manager.Layout.Cache != "" {
+		manager.Client.ArtifactCache = manager.Layout.ArtifactCacheRoot()
+	}
+}
+
 func (manager *Manager) Install(ctx context.Context, item *manifest.Manifest, progress Progress) (Outcome, error) {
 	return manager.InstallWithOptions(ctx, item, Options{}, progress)
 }
@@ -957,6 +969,7 @@ func removeStateFile(path string) error {
 }
 
 func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress SubjectProgress) (outcome Outcome, returnErr error) {
+	manager.ensureArtifactCache()
 	if item.Runtime != nil {
 		if _, _, err := taruntime.Ensure(ctx, manager.Layout, manager.Client, item.Runtime, func(current, total int64) { manager.report(progress, "downloading", current, total, "runtime") }); err != nil {
 			return Outcome{}, fmt.Errorf("install runtime: %w", err)
@@ -979,20 +992,16 @@ func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manif
 // changes integration, activation, or state.
 func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.Manifest, progress SubjectProgress) (materializedArtifact, error) {
 	manager.report(progress, "downloading", 0, 0)
-	artifacts := filepath.Join(manager.Layout.Cache, "artifacts")
-	if err := filesystem.SecureMkdirAll(artifacts, 0o700); err != nil {
-		return materializedArtifact{}, err
-	}
+	manager.ensureArtifactCache()
 	verification := item.Release.Verification
-	artifactPath := filepath.Join(artifacts, verification.Algorithm+"-"+verification.Digest+"."+strings.ReplaceAll(item.Release.Archive, ".", "-"))
-	_, err := manager.Client.FetchArtifact(ctx, download.ArtifactRequest{
+	artifact, err := manager.Client.AcquireVerified(ctx, download.VerifiedRequest{
 		URL: item.Release.URL, Algorithm: verification.Algorithm, Digest: verification.Digest,
-		Destination:    artifactPath,
 		ReportProgress: func(current, total int64) { manager.report(progress, "downloading", current, total) },
 	})
 	if err != nil {
 		return materializedArtifact{}, err
 	}
+	defer artifact.Close()
 	manager.report(progress, "verifying", 0, 0)
 	if err := manager.inject("after_download"); err != nil {
 		return materializedArtifact{}, err
@@ -1012,26 +1021,21 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 	var applicationRoot string
 	if item.Release.Archive == "appimage" {
 		manager.report(progress, "validating-appimage", 0, 0)
-		if err := appimage.ValidatePath(artifactPath, item.Platform.Arch); err != nil {
+		if err := appimage.ValidateReader(artifact.File, item.Platform.Arch); err != nil {
 			return materializedArtifact{}, err
 		}
 		applicationRoot = stage
-		file, openErr := os.Open(artifactPath)
-		if openErr != nil {
-			return materializedArtifact{}, openErr
+		if _, err := artifact.File.Seek(0, io.SeekStart); err != nil {
+			return materializedArtifact{}, err
 		}
 		destination := filepath.Join(stage, "appimage")
 		out, createErr := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o700)
 		if createErr == nil {
-			_, createErr = io.Copy(out, file)
+			_, createErr = io.Copy(out, artifact.File)
 			closeErr := out.Close()
 			if createErr == nil {
 				createErr = closeErr
 			}
-		}
-		fileCloseErr := file.Close()
-		if createErr == nil {
-			createErr = fileCloseErr
 		}
 		if createErr != nil {
 			return materializedArtifact{}, fmt.Errorf("stage AppImage: %w", createErr)
@@ -1051,7 +1055,7 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 			if err := os.Mkdir(final, 0o700); err != nil {
 				return materializedArtifact{}, err
 			}
-			if err := archive.ExtractNestedPath(ctx, artifactPath, outer, final, archive.Format(item.Release.Archive), item.Release.NestedArchive.Path, archive.Format(item.Release.NestedArchive.Archive), manager.Limits, func(stage string, current, total int64) {
+			if err := archive.ExtractNestedWithProgress(ctx, artifact.File, outer, final, archive.Format(item.Release.Archive), item.Release.NestedArchive.Path, archive.Format(item.Release.NestedArchive.Archive), manager.Limits, func(stage string, current, total int64) {
 				progressStage := "extracting"
 				if stage == archive.ProgressPreparing {
 					progressStage = "extracting-preparing"
@@ -1061,7 +1065,7 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 				return materializedArtifact{}, err
 			}
 			extracted = final
-		} else if err := archive.ExtractPathWithProgress(ctx, artifactPath, outer, archive.Format(item.Release.Archive), manager.Limits, func(stage string, current, total int64) {
+		} else if err := archive.ExtractWithProgress(ctx, artifact.File, outer, archive.Format(item.Release.Archive), manager.Limits, func(stage string, current, total int64) {
 			progressStage := "extracting"
 			if stage == archive.ProgressPreparing {
 				progressStage = "extracting-preparing"
@@ -1116,9 +1120,10 @@ func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Mani
 		return "", 0, err
 	}
 	manager.report(progress, "downloading", 0, 0, "remote-desktop-icon")
-	_, err := manager.Client.FetchArtifact(ctx, download.ArtifactRequest{
+	manager.ensureArtifactCache()
+	verified, err := manager.Client.AcquireVerified(ctx, download.VerifiedRequest{
 		URL: item.Desktop.Icon.URL, Algorithm: "sha256", Digest: item.Desktop.Icon.SHA256,
-		Destination: destination, MaxBytes: maxRemoteIconBytes,
+		MaxBytes: maxRemoteIconBytes,
 		ReportProgress: func(current, total int64) {
 			manager.report(progress, "downloading", current, total, "remote-desktop-icon")
 		},
@@ -1126,33 +1131,37 @@ func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Mani
 	if err != nil {
 		return "", 0, fmt.Errorf("download desktop icon: %w", err)
 	}
-	info, err := os.Lstat(destination)
+	defer verified.Close()
+	content, err := io.ReadAll(io.LimitReader(verified.File, maxRemoteIconBytes+1))
 	if err != nil {
 		return "", 0, err
-	}
-	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > maxRemoteIconBytes {
-		return "", 0, fmt.Errorf("%w: retained icon is not a bounded regular file", ErrConflict)
-	}
-	file, err := os.Open(destination)
-	if err != nil {
-		return "", 0, err
-	}
-	content, err := io.ReadAll(io.LimitReader(file, maxRemoteIconBytes+1))
-	closeErr := file.Close()
-	if err != nil {
-		return "", 0, err
-	}
-	if closeErr != nil {
-		return "", 0, closeErr
 	}
 	if int64(len(content)) > maxRemoteIconBytes {
 		return "", 0, fmt.Errorf("%w: retained icon exceeds size limit", ErrConflict)
+	}
+	if err := writeRetainedIcon(destination, content); err != nil {
+		return "", 0, err
 	}
 	size, err := manifest.IconSizeFromPNG(content)
 	if err != nil {
 		return "", 0, fmt.Errorf("desktop icon: %w", err)
 	}
 	return remoteIconFile, size, nil
+}
+
+// writeRetainedIcon publishes already-verified icon bytes at the reserved
+// payload path. The caller has proven the destination is unoccupied.
+func writeRetainedIcon(destination string, content []byte) error {
+	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := out.Write(content); err != nil {
+		_ = out.Close()
+		_ = os.Remove(destination)
+		return err
+	}
+	return out.Close()
 }
 
 // activateMaterialized publishes a validated staged application and commits
