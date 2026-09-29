@@ -156,6 +156,9 @@ mutually exclusive. Reports retain all registry IDs/releases and all eligible
 preferred-format variants, with exact alternative filenames in JSON. AppImage
 preference is presentation only. Architecture labels are inferred from
 filenames, never verified ELF claims; `unknown` remains unverified.
+An asset mixing supported and unsupported architecture labels is ambiguous
+and is retained as evidence rather than a preferred artifact. Platform
+selections without an explicit provider also remain ambiguous.
 Catalog asset filters select literal, case-insensitive filename substrings.
 When several catalog applications share a registry ID, discovery keeps all
 matches and marks their application association ambiguous; a repository match

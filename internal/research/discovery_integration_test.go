@@ -94,6 +94,47 @@ func fixturePlatform(provider, repo, release string, assets ...string) quiverPla
 	return quiverPlatformEntry{Provider: provider, Repository: repo, ReleaseTag: release, SelectionRevision: 1, AssetNames: assets}
 }
 
+func TestDiscoveryMissingPlatformProviderRemainsAmbiguous(t *testing.T) {
+	opts := discoveryFixture(t, []quiverApp{fixtureApp("game", "github", "owner/game")}, []quiverPlatformEntry{fixturePlatform("", "owner/game", "v1", "Game-linux-amd64.AppImage")}, []discoveryRegistryFixture{{"game", "github", "owner/game", "v1"}})
+	report, err := Discover(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := report.Entries[0]
+	if entry.Status != "ambiguous" || len(entry.RegistryMatches) != 1 || len(entry.Preferred.Assets) != 0 {
+		t.Fatalf("missing provider produced confident selection: %+v", entry)
+	}
+}
+
+func TestDiscoveryConflictingArchitectureEvidence(t *testing.T) {
+	for _, test := range []struct {
+		name, status, architectures string
+		assets, preferred           []string
+	}{
+		{"amd64 and RISC-V", "ambiguous", "amd64,riscv64", []string{"Game-linux-amd64-riscv64.AppImage"}, nil},
+		{"arm64 and i386", "ambiguous", "arm64,i386", []string{"Game-linux-arm64-i386.AppImage"}, nil},
+		{"valid variant retained", "ambiguous", "amd64,arm64,riscv64", []string{"Game-linux-amd64-riscv64.AppImage", "Game-linux-arm64.AppImage"}, []string{"Game-linux-arm64.AppImage"}},
+		{"both supported", "new", "amd64,arm64", []string{"Game-linux-amd64-arm64.AppImage"}, []string{"Game-linux-amd64-arm64.AppImage"}},
+		{"only unsupported", "unsupported", "i386,riscv64", []string{"Game-linux-i386-riscv64.AppImage"}, nil},
+		{"unknown remains unverified", "new", "unknown", []string{"Game.AppImage"}, []string{"Game.AppImage"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			opts := discoveryFixture(t, []quiverApp{fixtureApp("game", "github", "owner/game")}, []quiverPlatformEntry{fixturePlatform("github", "owner/game", "v1", test.assets...)}, []discoveryRegistryFixture{{"other", "github", "owner/other", "v1"}})
+			report, err := Discover(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry := report.Entries[0]
+			if entry.Status != test.status || strings.Join(entry.Architectures, ",") != test.architectures || strings.Join(entry.Preferred.Assets, ",") != strings.Join(test.preferred, ",") || len(entry.LinuxAssets) != len(test.assets) {
+				t.Fatalf("architecture evidence lost or classified unsafely: %+v", entry)
+			}
+			if test.status == "ambiguous" && !strings.Contains(strings.Join(entry.Reasons, ","), "conflicting architecture markers") {
+				t.Fatalf("missing ambiguity reason: %+v", entry)
+			}
+		})
+	}
+}
+
 func TestDiscoveryIdentityMatchingIsLazyMemoizedAndProviderSpecific(t *testing.T) {
 	for _, test := range []struct {
 		name      string
