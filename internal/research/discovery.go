@@ -845,11 +845,17 @@ func classifyAssets(e *DiscoveryEntry, p quiverPlatformEntry, releaseFilter stri
 			}
 		}
 		eligibleArchitecture := false
+		unsupportedArchitecture := false
 		for _, arch := range architectures {
 			if arch == "unknown" || supportedLinuxArchitecture(arch) {
 				eligibleArchitecture = true
-				break
+			} else {
+				unsupportedArchitecture = true
 			}
+		}
+		if eligibleArchitecture && unsupportedArchitecture {
+			e.Reasons = appendUnique(e.Reasons, "conflicting architecture markers: "+name)
+			continue
 		}
 		if format == "" || !eligibleArchitecture {
 			continue
