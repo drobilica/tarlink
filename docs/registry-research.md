@@ -99,7 +99,7 @@ explains facts, `registry add` constructs a candidate, `registry validate`
 authoritatively validates its structure, and `registry check` authoritatively
 materializes artifacts through the lifecycle.
 
-Discovery metadata is cached for 24 hours under
+Metadata used by `registry inspect` and `registry add` is cached for 24 hours under
 `$XDG_CACHE_HOME/tarlink/registry-research/discovery` (or the corresponding
 `$HOME/.cache` location). `--refresh` bypasses discovery metadata but does not
 turn the command into an updater. No command here edits manifests, commits
@@ -120,6 +120,88 @@ The YAML ledger is authoritative. Generate local, grouped Markdown context with
 not update research state. Use `tarlink registry candidates --changed` as the
 freshness gate, and reuse recorded evidence when an immutable release is
 unchanged.
+
+Disposable external comparison is separate from that ledger:
+
+```text
+tarlink registry candidates discover \
+  --catalog quiver:https://github.com/tgeorgiadis/quiver-community-app-catalog \
+  --registry /path/to/tarlink-registry --changed --output-dir discovery
+```
+
+Both sources must be explicit; discovery never fetches a registry implicitly.
+Use a local Quiver directory to read catalog metadata from disk:
+
+```text
+tarlink registry candidates discover \
+  --catalog quiver:/home/user/src/quiver-community-app-catalog \
+  --registry ../tarlink-registry
+```
+
+The remote form resolves the catalog default branch through the GitHub API,
+reads the six fixed metadata files at that commit, and records the exact
+40-character commit in JSON. Local reports have an empty revision because a
+working tree is not an immutable provenance claim. Exact provider/repository
+matches use the supplied registry snapshot. Unmatched identities may require
+bounded GitHub or GitLab lookups to resolve renamed repositories, including
+when catalog files are local; failed lookups remain ambiguous. Results are
+disposable research leads. Discovery never clones the catalog, downloads
+application artifacts, thumbnails, or icons, executes binaries, or writes the
+candidate ledger or registry. External URLs and metadata are untrusted and
+cannot serve as approved installation inputs.
+
+The default output is an aligned table. `--json` emits schema-version-1 JSON;
+`--markdown` emits a Markdown table. These options and `--output-dir` are
+mutually exclusive. Reports retain all registry IDs/releases and all eligible
+preferred-format variants, with exact alternative filenames in JSON. AppImage
+preference is presentation only. Architecture labels are inferred from
+filenames, never verified ELF claims; `unknown` remains unverified.
+Catalog asset filters select literal, case-insensitive filename substrings.
+When several catalog applications share a registry ID, discovery keeps all
+matches and marks their application association ambiguous; a repository match
+alone cannot identify which reviewed application each catalog row represents.
+
+`new` means an eligible Linux lead has no resolved registry match.
+`registered-same` requires the same exact release identifier in every match;
+`release-diff` means at least one resolved match differs. Neither status
+implies chronological order or an available upgrade. Missing release metadata
+cannot establish equality. `no-linux` means there was insufficient Linux
+artifact evidence; a generic ZIP filename alone is insufficient. `unsupported`
+means Linux evidence existed but no artifact fits current formats and Linux
+architectures. `ambiguous` means identity, selection, platform, or comparison
+could not be resolved safely. Unresolved identity/selection takes precedence,
+then no-linux, unsupported, and release comparison. Informational requirements
+such as `original-game-data` do not block discovery; acquiring game data is
+outside this command.
+
+`--changed` emits only new, release-diff, unsupported, and ambiguous entries.
+It compares with the supplied registry snapshot, not the previous workflow
+run. Summary counts describe emitted entries after filtering and match the
+report rows. Core JSON fields use empty strings for absent scalar metadata and
+empty arrays for absent collections; optional evidence fields may be omitted.
+The `changed` field records the selected view. Conflicting release selections
+retain their identifiers in `catalog_releases` and leave `catalog_release`
+empty. Reports contain no timestamps. Identical normalized inputs produce identical
+JSON and Markdown.
+
+`--output-dir` writes `discovery.json` and `discovery.md` from one normalized
+result without repeating discovery. Use a fresh directory: existing report
+targets are refused. Incomplete generation returns failure.
+
+The manual/daily [discovery workflow](../.github/workflows/registry-candidate-discovery.yml)
+uses read-only permissions, builds TarLink once, and uploads both reports as
+`tarlink-candidate-discovery`. `workflow-revisions.txt` records the exact
+TarLink and registry checkout commits; the JSON records the resolved catalog
+commit. Parsing, comparison, and invalid/incomplete output fail the workflow;
+unsupported and ambiguous leads remain report data. The workflow never opens
+issues or PRs, commits changes, edits either repository, or mirrors artifacts.
+There is no automatic promotion from disposable reports into the reviewed
+[`candidates.yaml`](../registry-research/candidates.yaml) ledger or approved
+registry metadata.
+
+The exhaustive [CLI reference](../cli/README.md) is generated from the visible
+Cobra hierarchy. Regenerate it with `./scripts/update-cli-readme.sh`;
+canonical validation rejects a stale reference with that command in its error.
 
 `registry icons` remains the separate bounded desktop-icon workflow:
 

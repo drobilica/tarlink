@@ -77,6 +77,12 @@ phase_build() {
 	end_phase
 }
 
+phase_cli_reference() {
+	begin_phase 'CLI reference freshness'
+	./scripts/update-cli-readme.sh --check
+	end_phase
+}
+
 go_version_from_mod() {
 	while read -r directive value _; do
 		if [ "$directive" = go ]; then
@@ -102,6 +108,7 @@ validation_image() {
 
 run_quick() {
 	phase_format_go
+	phase_cli_reference
 	phase_go_tests ./...
 	phase_script 'Release asset state fixtures' ./tests/release_verify_test.sh
 	phase_script 'Release workflow contract' ./tests/release_workflow_test.sh
@@ -115,6 +122,7 @@ run_checks() {
 		printf '%s\n' 'warning: desktop-file-validate is unavailable; integration tests may skip desktop validation' >&2
 	fi
 	phase_format_go
+	phase_cli_reference
 	phase_vet ./...
 	phase_go_tests ./...
 	phase_script 'Release notes contract' ./tests/release_notes_test.sh
@@ -130,6 +138,8 @@ run_checks() {
 
 run_host_checks() {
 	phase_format_go
+	# Cobra imports the Linux application services; check its generated reference
+	# in native Linux validation (Podman above, or Ubuntu GitHub Actions).
 	phase_vet ./internal/checksum ./internal/manifest ./docs
 	phase_go_tests ./internal/checksum ./internal/manifest ./docs
 	phase_script 'Release notes contract' ./tests/release_notes_test.sh

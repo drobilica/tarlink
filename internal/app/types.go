@@ -236,6 +236,12 @@ type CandidateService interface {
 	CandidateChanges(context.Context) (research.CandidateChanges, error)
 }
 
+// DiscoveryService compares an explicit external catalog snapshot with an
+// explicit local registry tree. It is read-only and produces disposable leads.
+type DiscoveryService interface {
+	DiscoverCandidates(context.Context, research.DiscoveryOptions) (research.DiscoveryReport, error)
+}
+
 // BlockerService exposes read-only capability and blocker analysis for
 // registry-maintenance planning.
 type BlockerService interface {

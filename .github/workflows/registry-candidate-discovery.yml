@@ -1,0 +1,99 @@
+name: Registry candidate discovery
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Checkout registry snapshot
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: drobilica/tarlink-registry
+          path: tarlink-registry
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build TarLink
+        run: go build -o tarlink ./cmd/tarlink
+      - name: Record revisions
+        run: |
+          {
+            printf 'tarlink=%s\n' "$(git rev-parse HEAD)"
+            printf 'registry=%s\n' "$(git -C tarlink-registry rev-parse HEAD)"
+          } > workflow-revisions.txt
+          cat workflow-revisions.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Discover candidates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p discovery
+          ./tarlink registry candidates discover \
+            --catalog quiver:https://github.com/tgeorgiadis/quiver-community-app-catalog \
+            --registry "$GITHUB_WORKSPACE/tarlink-registry" \
+            --changed --output-dir discovery
+      - name: Validate discovery report pair
+        run: |
+          test -s discovery/discovery.json
+          test -s discovery/discovery.md
+          python3 - <<'PY'
+          import json
+          import re
+          from collections import Counter
+
+          def require(condition, message):
+              if not condition:
+                  raise ValueError(message)
+
+          def strings(value):
+              return type(value) is list and all(type(item) is str for item in value)
+
+          def group(value):
+              return type(value) is dict and type(value.get("format")) is str and strings(value.get("assets"))
+
+          with open("discovery/discovery.json", encoding="utf-8") as stream:
+              report = json.load(stream)
+          require(type(report.get("schema_version")) is int and report["schema_version"] == 1, "invalid schema_version")
+          catalog, registry = report.get("catalog", {}), report.get("registry", {})
+          require(catalog.get("adapter") == "quiver" and type(catalog.get("source")) is str, "invalid catalog")
+          require(re.fullmatch(r"[0-9a-f]{40}", catalog.get("revision", "")) is not None, "missing immutable catalog revision")
+          require(type(registry.get("source")) is str and registry["source"], "missing registry source")
+          require(type(report.get("entries")) is list, "invalid entries")
+          statuses = {"new": "new", "release-diff": "release_diff", "registered-same": "registered_same", "unsupported": "unsupported", "ambiguous": "ambiguous", "no-linux": "no_linux"}
+          counts = Counter()
+          for entry in report["entries"]:
+              require(type(entry) is dict and entry.get("status") in statuses, "invalid entry status")
+              for field in ("external_id", "name", "provider", "repository", "catalog_release", "thumbnail_url"):
+                  require(type(entry.get(field)) is str, "invalid " + field)
+              require(strings(entry.get("architectures")) and strings(entry.get("linux_assets")), "invalid asset evidence")
+              require(group(entry.get("preferred")), "invalid preferred group")
+              require(type(entry.get("alternatives")) is list and all(group(item) for item in entry["alternatives"]), "invalid alternatives")
+              matches = entry.get("registry_matches")
+              require(type(matches) is list and all(type(item) is dict and type(item.get("id")) is str and type(item.get("release")) is str for item in matches), "invalid registry matches")
+              require(entry["status"] in ("new", "release-diff", "unsupported", "ambiguous"), "unexpected unfiltered entry")
+              counts[statuses[entry["status"]]] += 1
+          summary = report.get("summary", {})
+          require(set(summary) == set(statuses.values()), "invalid summary fields")
+          require(all(type(value) is int and value >= 0 and value == counts[key] for key, value in summary.items()), "summary does not match emitted entries")
+          PY
+      - name: Upload discovery reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tarlink-candidate-discovery
+          path: |
+            discovery/discovery.json
+            discovery/discovery.md
+            workflow-revisions.txt
+          if-no-files-found: error
