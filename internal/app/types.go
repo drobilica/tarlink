@@ -58,6 +58,7 @@ type ProgressSubject string
 const (
 	ProgressSubjectPackageArtifact   ProgressSubject = "package-artifact"
 	ProgressSubjectRemoteDesktopIcon ProgressSubject = "remote-desktop-icon"
+	ProgressSubjectRuntime           ProgressSubject = "runtime"
 )
 
 type Progress struct {

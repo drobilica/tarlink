@@ -902,6 +902,19 @@ func (core *Core) progress(sink ProgressSink, appID string) install.SubjectProgr
 		resource := ProgressSubjectPackageArtifact
 		if subject == "remote-desktop-icon" {
 			resource = ProgressSubjectRemoteDesktopIcon
+		} else if subject == "runtime" {
+			resource = ProgressSubjectRuntime
+			if stage == "extracting" {
+				description = "Extracting runtime"
+			} else if description == "" {
+				stageLabel := string(mapped)
+				if stageLabel != "" {
+					stageLabel = strings.ToUpper(stageLabel[:1]) + stageLabel[1:]
+				}
+				description = stageLabel + " runtime"
+			} else if description == "Preparing extraction" {
+				description = "Preparing runtime extraction"
+			}
 		}
 		core.emitDetailed(sink, mapped, appID, resource, description, current, total)
 	}

@@ -36,10 +36,15 @@ var admittedRuntimeRoots = map[string]bool{
 	"SteamLinuxRuntime_sniper": true,
 }
 
+// Progress reports runtime acquisition. Stage is "downloading" while the
+// pinned artifact is fetched and "extracting" while the Valve deployment is
+// materialized. A total of -1 means the total is not known upfront.
+type Progress func(stage string, current, total int64)
+
 // Ensure publishes one complete immutable deployment, or leaves no deployment
 // visible. Callers hold TarLink's lifecycle lock; that lock also makes shared
 // runtime acquisition converge across applications.
-func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Client, value *manifest.Runtime, progress download.Progress) (string, string, error) {
+func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Client, value *manifest.Runtime, progress Progress) (string, string, error) {
 	if value == nil {
 		return "", "", errors.New("runtime is nil")
 	}
@@ -92,7 +97,11 @@ func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Clie
 	}
 	artifact, err := client.AcquireVerified(ctx, download.VerifiedRequest{
 		URL: value.Artifact.URL, Algorithm: "sha256", Digest: value.Artifact.Verification.Digest,
-		MaxBytes: maxRuntimeBytes, ReportProgress: progress,
+		MaxBytes: maxRuntimeBytes, ReportProgress: func(current, total int64) {
+			if progress != nil {
+				progress("downloading", current, total)
+			}
+		},
 	})
 	if err != nil {
 		return "", "", err
@@ -102,7 +111,7 @@ func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Clie
 	if err := os.Mkdir(extracted, 0700); err != nil {
 		return "", "", err
 	}
-	if err := extractValveDeployment(ctx, artifact.File, extracted); err != nil {
+	if err := extractValveDeployment(ctx, artifact.File, extracted, progress); err != nil {
 		return "", "", err
 	}
 	root, err := singleRoot(extracted)
@@ -228,14 +237,20 @@ func validateOwnedOrMissing(root, path string) error {
 	return err
 }
 
-func extractValveDeployment(ctx context.Context, source io.Reader, destination string) error {
+func extractValveDeployment(ctx context.Context, source io.Reader, destination string, progress Progress) error {
 	reader, err := xz.NewReader(source)
 	if err != nil {
 		return err
 	}
 	tarReader := tar.NewReader(reader)
 	entries := 0
-	var total int64
+	var declared, done int64
+	report := func() {
+		if progress != nil {
+			progress("extracting", done, -1)
+		}
+	}
+	report()
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -248,10 +263,10 @@ func extractValveDeployment(ctx context.Context, source io.Reader, destination s
 			return err
 		}
 		entries++
-		if entries > maxRuntimeEntries || header.Size < 0 || header.Size > maxRuntimeBytes || total > maxRuntimeBytes-header.Size {
+		if entries > maxRuntimeEntries || header.Size < 0 || header.Size > maxRuntimeBytes || declared > maxRuntimeBytes-header.Size {
 			return errors.New("runtime archive exceeds extraction budget")
 		}
-		total += header.Size
+		declared += header.Size
 		name, err := runtimePath(header.Name)
 		if err != nil {
 			return err
@@ -269,12 +284,16 @@ func extractValveDeployment(ctx context.Context, source io.Reader, destination s
 			if err := os.Mkdir(output, 0755); err != nil && !os.IsExist(err) {
 				return err
 			}
+			report()
 		case tar.TypeReg, tar.TypeRegA:
 			f, err := os.OpenFile(output, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 			if err != nil {
 				return err
 			}
-			_, copyErr := io.Copy(f, io.LimitReader(tarReader, header.Size))
+			copyErr := copyWithProgress(ctx, f, io.LimitReader(tarReader, header.Size), header.Size, func(n int64) {
+				done += n
+				report()
+			})
 			closeErr := f.Close()
 			if copyErr != nil {
 				return copyErr
@@ -294,8 +313,44 @@ func extractValveDeployment(ctx context.Context, source io.Reader, destination s
 			if err := os.Symlink(header.Linkname, output); err != nil {
 				return err
 			}
+			report()
 		default:
 			return errors.New("runtime archive contains unsupported entry type")
+		}
+	}
+	return nil
+}
+
+func copyWithProgress(ctx context.Context, dst io.Writer, src io.Reader, size int64, report func(n int64)) error {
+	if size == 0 {
+		return nil
+	}
+	buf := make([]byte, 1<<20)
+	remaining := size
+	for remaining > 0 {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		chunk := int64(len(buf))
+		if chunk > remaining {
+			chunk = remaining
+		}
+		n, err := io.ReadFull(src, buf[:chunk])
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return werr
+			}
+			remaining -= int64(n)
+			report(int64(n))
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if remaining > 0 {
+					return io.ErrUnexpectedEOF
+				}
+				return nil
+			}
+			return err
 		}
 	}
 	return nil

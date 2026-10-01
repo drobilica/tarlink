@@ -70,7 +70,7 @@ func openArchive(t *testing.T, path string) *os.File {
 func TestExtractValveDeploymentAllowsContainedRelativeLink(t *testing.T) {
 	archive := runtimeArchive(t, []tar.Header{{Name: "SteamLinuxRuntime_4/", Typeflag: tar.TypeDir, Mode: 0755}, {Name: "SteamLinuxRuntime_4/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755}, {Name: "SteamLinuxRuntime_4/link", Typeflag: tar.TypeSymlink, Linkname: "_v2-entry-point"}})
 	destination := t.TempDir()
-	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination); err != nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateDeployment(filepath.Join(destination, "SteamLinuxRuntime_4")); err != nil {
@@ -80,7 +80,7 @@ func TestExtractValveDeploymentAllowsContainedRelativeLink(t *testing.T) {
 
 func TestExtractValveDeploymentRejectsEscapingLink(t *testing.T) {
 	archive := runtimeArchive(t, []tar.Header{{Name: "SteamLinuxRuntime_4/", Typeflag: tar.TypeDir, Mode: 0755}, {Name: "SteamLinuxRuntime_4/link", Typeflag: tar.TypeSymlink, Linkname: "../../outside"}})
-	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir()); err == nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir(), nil); err == nil {
 		t.Fatal("escaping symlink was accepted")
 	}
 }
@@ -100,7 +100,7 @@ func TestExtractValveDeploymentAllowsSniperRoot(t *testing.T) {
 		{Name: "SteamLinuxRuntime_sniper/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
 	})
 	destination := t.TempDir()
-	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination); err != nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateDeployment(filepath.Join(destination, "SteamLinuxRuntime_sniper")); err != nil {
@@ -113,7 +113,7 @@ func TestExtractValveDeploymentRejectsUnknownRoot(t *testing.T) {
 		{Name: "SteamLinuxRuntime_5/", Typeflag: tar.TypeDir, Mode: 0755},
 		{Name: "SteamLinuxRuntime_5/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
 	})
-	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir()); err == nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir(), nil); err == nil {
 		t.Fatal("unknown runtime root was accepted")
 	}
 }
@@ -125,7 +125,7 @@ func TestExtractValveDeploymentSniperLinkStaysWithinRoot(t *testing.T) {
 		{Name: "SteamLinuxRuntime_sniper/link", Typeflag: tar.TypeSymlink, Linkname: "_v2-entry-point"},
 	})
 	destination := t.TempDir()
-	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination); err != nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), destination, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := validateDeployment(filepath.Join(destination, "SteamLinuxRuntime_sniper")); err != nil {
@@ -139,7 +139,7 @@ func TestExtractValveDeploymentSniperLinkEscapingRejected(t *testing.T) {
 		{Name: "SteamLinuxRuntime_sniper/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755},
 		{Name: "SteamLinuxRuntime_sniper/link", Typeflag: tar.TypeSymlink, Linkname: "../../outside"},
 	})
-	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir()); err == nil {
+	if err := extractValveDeployment(context.Background(), openArchive(t, archive), t.TempDir(), nil); err == nil {
 		t.Fatal("escaping sniper symlink was accepted")
 	}
 }
@@ -263,6 +263,67 @@ func (r roundTripFile) RoundTrip(request *http.Request) (*http.Response, error) 
 		return nil, err
 	}
 	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(r.file), Header: make(http.Header), Request: request, ContentLength: r.size}, nil
+}
+
+func TestExtractValveDeploymentReportsExtractionProgress(t *testing.T) {
+	payload := make([]byte, 3<<20)
+	for i := range payload {
+		payload[i] = byte(i)
+	}
+	var data bytes.Buffer
+	writer, err := xz.NewWriter(&data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tarWriter := tar.NewWriter(writer)
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "SteamLinuxRuntime_4/", Typeflag: tar.TypeDir, Mode: 0755}); err != nil {
+		t.Fatal(err)
+	}
+	header := &tar.Header{Name: "SteamLinuxRuntime_4/_v2-entry-point", Typeflag: tar.TypeReg, Mode: 0755, Size: int64(len(payload))}
+	if err := tarWriter.WriteHeader(header); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	type event struct {
+		stage   string
+		current int64
+		total   int64
+	}
+	var events []event
+	destination := t.TempDir()
+	if err := extractValveDeployment(context.Background(), bytes.NewReader(data.Bytes()), destination, func(stage string, current, total int64) {
+		events = append(events, event{stage: stage, current: current, total: total})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("extraction progress events = %d, want at least 2", len(events))
+	}
+	var last int64 = -1
+	sawAdvance := false
+	for _, e := range events {
+		if e.stage != "extracting" {
+			t.Fatalf("extraction stage = %q, want extracting", e.stage)
+		}
+		if e.current < last {
+			t.Fatalf("extraction progress regressed: %d after %d", e.current, last)
+		}
+		if e.current > last {
+			sawAdvance = true
+		}
+		last = e.current
+	}
+	if !sawAdvance || last != int64(len(payload)) {
+		t.Fatalf("extraction did not advance to payload size: events=%v last=%d want=%d", events, last, len(payload))
+	}
 }
 
 func runtimeTestLayout(t *testing.T) filesystem.Layout {
