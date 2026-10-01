@@ -11,7 +11,7 @@ registry. Applications are versioned, verified, and easy to roll back—without
 Install TarLink:
 
 ```sh
-RELEASE=v0.18.2
+RELEASE=v0.19.0
 curl -fL --proto '=https' --tlsv1.2 -o tarlink-install.sh \
   "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/install.sh"
 sed -n '1,$p' tarlink-install.sh
@@ -21,7 +21,7 @@ sh tarlink-install.sh "$RELEASE"
 Uninstall TarLink:
 
 ```sh
-RELEASE=v0.18.2
+RELEASE=v0.19.0
 curl -fL --proto '=https' --tlsv1.2 -o tarlink-uninstall.sh \
   "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/uninstall.sh"
 sed -n '1,$p' tarlink-uninstall.sh
@@ -48,14 +48,18 @@ Run `tarlink` without a command to open the interactive TUI.
 
 ## Version status
 
-The latest stable release is `v0.18.2`. It refreshes the interactive TUI's
-navigation, application details, version history, progress, and contextual help.
-It also includes static artifact repositories: the `tarlink repository` commands and
+The latest stable release is `v0.19.0`. It retains the interactive TUI refresh and
+static artifact repositories: the `tarlink repository` commands and
 `$XDG_CONFIG_HOME/tarlink/repositories.json` sources described in the technical
 documentation are available in the release. `tarlink repository sync /repository`
 reconciles a local repository against the validated registry, with `--app`,
 `--platform`, `--all-retained`, `--dry-run`, and `--json` forms for narrowing,
-planning, and machine output. Application, runtime, and
+planning, and machine output. `tarlink registry inspect` additionally accepts one
+exact absolute HTTPS artifact URL for bounded download, hashing, and static
+inspection. Downloads use the canonical verified artifact cache, and repository
+`status` and `verify` run on read-only mounts with shared reader locking.
+`tarlink registry candidates discover` compares an external catalog with the local
+registry, and `cli/README.md` records the exhaustive CLI reference. Application, runtime, and
 remote-icon bytes remain governed by the HTTPS sources and exact digests
 declared by the official registry. Sync is additive-only: it acquires missing
 objects, repairs corrupt required objects, and retains all valid artifacts —
