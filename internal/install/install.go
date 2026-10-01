@@ -971,7 +971,7 @@ func removeStateFile(path string) error {
 func (manager *Manager) installVersion(ctx context.Context, item *manifest.Manifest, installed *state.State, options Options, progress SubjectProgress) (outcome Outcome, returnErr error) {
 	manager.ensureArtifactCache()
 	if item.Runtime != nil {
-		if _, _, err := taruntime.Ensure(ctx, manager.Layout, manager.Client, item.Runtime, func(current, total int64) { manager.report(progress, "downloading", current, total, "runtime") }); err != nil {
+		if _, _, err := taruntime.Ensure(ctx, manager.Layout, manager.Client, item.Runtime, func(stage string, current, total int64) { manager.report(progress, stage, current, total, "runtime") }); err != nil {
 			return Outcome{}, fmt.Errorf("install runtime: %w", err)
 		}
 	}

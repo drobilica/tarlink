@@ -443,3 +443,25 @@ func TestRepositoryStatusRetainedExtrasAreHealthy(t *testing.T) {
 		t.Fatalf("report = %+v", report)
 	}
 }
+
+func TestRuntimeSubjectProgressKeepsRuntimeIdentity(t *testing.T) {
+	core := &Core{}
+	var events []Progress
+	sink := func(event Progress) { events = append(events, event) }
+	report := core.progress(sink, "magic-sushi")
+	report("downloading", "runtime", 10, 100)
+	report("extracting", "runtime", 5, -1)
+	report("downloading", "package-artifact", 10, 100)
+	if len(events) != 3 {
+		t.Fatalf("progress events = %d, want 3", len(events))
+	}
+	if events[0].Subject != ProgressSubjectRuntime || events[0].Stage != ProgressDownloading || events[0].Description != "Downloading runtime" || events[0].AppID != "magic-sushi" {
+		t.Fatalf("runtime download event = %+v", events[0])
+	}
+	if events[1].Subject != ProgressSubjectRuntime || events[1].Stage != ProgressExtracting || events[1].Description != "Extracting runtime" {
+		t.Fatalf("runtime extraction event = %+v", events[1])
+	}
+	if events[2].Subject != ProgressSubjectPackageArtifact || events[2].Description != "" {
+		t.Fatalf("package event = %+v", events[2])
+	}
+}

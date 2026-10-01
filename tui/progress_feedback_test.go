@@ -73,3 +73,11 @@ func TestProgressLineShowsOnlyEventIdentityAndKnownValues(t *testing.T) {
 		t.Fatalf("progress changed for unrelated input: %q", got)
 	}
 }
+
+func TestRuntimeExtractionProgressShowsLiveBytes(t *testing.T) {
+	m := model{width: 80, color: false, theme: newTheme(false), progressBar: newProgress(false), progress: app.Progress{Stage: app.ProgressExtracting, Subject: app.ProgressSubjectRuntime, Description: "Extracting runtime", AppID: "magic-sushi", BytesDone: 5 << 20, BytesTotal: -1}}
+	line := m.progressLine()
+	if !strings.Contains(line, "Extracting runtime") || !strings.Contains(line, "magic-sushi") || !strings.Contains(line, "MiB") {
+		t.Fatalf("runtime progress hid background work: %q", line)
+	}
+}
