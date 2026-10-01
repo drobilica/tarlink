@@ -32,13 +32,6 @@ previous_tag=$(jq -r '.tag // empty' <<<"$previous_record")
 previous_date=$(jq -r '.publishedAt // empty' <<<"$previous_record")
 published_date=$(jq -r --arg tag "$tag" '.[] | select(.tagName == $tag) | .publishedAt // empty' <<<"$releases")
 
-notes_args=(--method POST "repos/$repo/releases/generate-notes" -f "tag_name=$tag" -f "target_commitish=$target_sha")
-if [[ -n $previous_tag ]]; then
-  notes_args+=(-f "previous_tag_name=$previous_tag")
-fi
-generated=$(gh api "${notes_args[@]}" --jq .body)
-generated=$(printf '%s\n' "$generated" | sed '/^\*\*Full Changelog\*\*:/d')
-
 compare_base=$previous_tag
 
 tmp=$(mktemp -d)
@@ -53,10 +46,28 @@ fi
 target_date=$(gh api "repos/$repo/commits/$target_sha" --jq '.commit.committer.date // .commit.author.date')
 [[ -n $published_date ]] && target_date=$published_date
 
+# Highlights come from pull requests merged since the previous release. The
+# GitHub generate-notes endpoint is a POST and needs contents:write, which
+# the read-only release-notes job must not have; the pulls list is a plain
+# read that stays inside the job's permission boundary.
+pulls_json="$tmp/pulls.json"
+gh api --paginate --slurp "repos/$repo/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100" >"$pulls_json"
+pulls_tsv="$tmp/pulls.tsv"
+jq -r --arg since "$previous_date" --arg until "$target_date" '
+  .[][]? | select(.merged_at != null and
+    ($since == "" or .merged_at > $since) and
+    ($until == "" or .merged_at <= $until)) |
+    [.number, .title, (.user.login // "unknown"), .html_url] | @tsv' "$pulls_json" \
+  | sort -t "$(printf '\t')" -k1,1n >"$pulls_tsv"
+generated=$(while IFS=$'\t' read -r number title author url; do
+  printf '%s\n' "- [#$number]($url) $title by @$author"
+done <"$pulls_tsv")
+[[ -n $generated ]] || generated='_No merged pull requests._'
+
 {
   printf '# TarLink %s\n\n' "$tag"
   printf '## Highlights\n\n'
-  printf '%s\n\n' 'The categorized changes below summarize user-visible work since the previous release.'
+  printf '%s\n\n' 'The pull requests below were merged since the previous release.'
   printf '%s\n\n' "$generated"
 
   direct_file="$tmp/direct.tsv"
@@ -112,7 +123,7 @@ target_date=$(gh api "repos/$repo/commits/$target_sha" --jq '.commit.committer.d
   printf '\n## Upgrade notes\n\n'
   if [[ $tag == v0.13.0 ]]; then
     printf 'Update TarLink to v0.13.0 or newer before consuming the schema-v4 official registry.\n'
-  elif (( breaking_count > 0 )) || [[ "$generated" == *'Removed / Breaking Changes'* || "$generated" == *'Breaking Changes'* || "$generated" == *'Upgrade Notes'* ]]; then
+  elif (( breaking_count > 0 )); then
     printf 'Review the breaking or upgrade changes above before upgrading.\n'
   else
     printf 'No migration required.\n'
