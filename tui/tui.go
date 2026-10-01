@@ -168,6 +168,9 @@ type model struct {
 	uninstallConflict   *app.UninstallConflict
 	helpOverlay         bool
 	componentsReady     bool
+	tableConfigured     bool
+	tableWidth          int
+	tableHeight         int
 	searchInput         textinput.Model
 	reviewScroll        int
 	overlayScroll       int
@@ -195,9 +198,6 @@ func (m model) Init() tea.Cmd { return tea.Batch(m.loadCmd(), m.checkVersionCmd(
 
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	m.initComponents()
-	if m.isListScreen() {
-		m.configureApplicationTable(m.visibleApplications(), max(1, viewWidth(m.width)-4), max(3, m.height-8))
-	}
 	switch message := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width = message.Width
@@ -210,6 +210,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.help.SetWidth(m.width)
 		m.progressBar.SetWidth(progressBarWidthFor(m.width))
 		m.searchInput.SetWidth(max(12, m.width-18))
+		m.rebuildApplicationTable()
 		return m, nil
 	case loadedMsg:
 		if message.generation != m.requestGeneration {
@@ -234,6 +235,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.clampSelection()
+		m.rebuildApplicationTable()
 		return m, nil
 	case versionMsg:
 		if message.err == nil {
@@ -279,6 +281,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.selected = 0
 		m.clampSelection()
+		m.rebuildApplicationTable()
 		return m, nil
 	case versionsMsg:
 		m.busy = ""
@@ -311,10 +314,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.status = "Operation cancelled"
 			m.batchIDs, m.batchTargets = nil, nil
 			m.selectedIDs = nil
+			m.rebuildApplicationTable()
 			return m, nil
 		}
 		if message.err != nil {
 			m.status = ""
+			m.rebuildApplicationTable()
 			return m, nil
 		}
 		if message.clearUpgrade {
@@ -329,6 +334,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.batchIDs, m.batchTargets = nil, nil
 			m.selectedIDs = nil
 		}
+		m.rebuildApplicationTable()
 		return m, m.loadCmd()
 	case progressMsg:
 		if message.generation != m.operationGeneration || m.opCancel == nil {
@@ -349,7 +355,22 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, waitProgress(message.hub)
 	case tea.KeyPressMsg:
-		return m.updateKey(message)
+		// Configure the table before the first navigation so models that never
+		// saw a window-size message still move the cursor.
+		if m.isListScreen() && !m.tableConfigured {
+			m.rebuildApplicationTable()
+		}
+		updated, command := m.updateKey(message)
+		next := updated.(model)
+		// Keys other than pure cursor movement can change the rows, markers,
+		// screen, filter, or workspace budget, so rebuild the table for them.
+		// Cursor navigation instead reuses the configured rows, keeping the
+		// Bubbles viewport scroll offset and skipping a full row rebuild per
+		// keypress.
+		if next.isListScreen() && !next.searching && !next.cursorMovement(message) {
+			next.rebuildApplicationTable()
+		}
+		return next, command
 	}
 	return m, nil
 }
@@ -397,10 +418,7 @@ func (m model) bodyLines() []string {
 	var expanded []string
 	if m.helpOverlay {
 		expanded = m.helpOverlayLines()
-		if len(expanded) > max(1, remaining-2) {
-			expanded = expanded[:max(1, remaining-2)]
-		}
-		remaining = max(0, remaining-len(expanded)-1)
+		remaining, expanded = applyHelpOverlayBudget(remaining, expanded)
 	}
 	workspace, _ := m.workspaceLinesFor(remaining)
 	if m.isOverlay() && m.busy == "" && remaining < 5 {
@@ -490,17 +508,15 @@ func (m model) workspaceLinesFor(budget int) ([]string, int) {
 	}
 	previewRows := 0
 	if m.isListScreen() {
-		headingRows := 1
-		if m.screen == screenAvailable {
-			headingRows++
+		tableWidth, tableHeight, tablePreviewRows := m.applicationTableSize(values, budget)
+		previewRows = tablePreviewRows
+		// Render the configured table so the viewport scroll offset that
+		// Bubbles maintains during navigation survives rendering. Fall back
+		// to a local configuration only for models that never passed through
+		// Update or whose workspace budget changed since the configuration.
+		if !m.tableConfigured || m.tableWidth != tableWidth || m.tableHeight != tableHeight {
+			m.configureApplicationTable(values, tableWidth, tableHeight)
 		}
-		if m.hasPreview(values) && budget >= headingRows+8 {
-			previewRows = 3
-		}
-		tableBudget := max(2, budget-headingRows-previewRows)
-		m.configureApplicationTable(values, max(1, viewWidth(m.width)-2), min(tableBudget, max(3, len(values)+2)))
-	}
-	if m.isListScreen() {
 		lines := []string{m.theme.panel.Render("Applications")}
 		if m.screen == screenAvailable {
 			lines = append(lines, m.filterView())
@@ -600,22 +616,7 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 	nameWidth = max(1, contentWidth-selectionWidth-statusWidth-installedWidth-availableWidth-channelWidth)
 	rows := make([]table.Row, 0, len(values))
 	for index, value := range values {
-		marker := " "
-		if m.selectedIDs[value.ID] {
-			marker = "✓"
-		}
-		if !m.color {
-			marker = "  "
-			if m.selectedIDs[value.ID] {
-				marker = " ✓"
-			}
-			if value.ID == m.cursorID || (m.cursorID == "" && index == m.selected) {
-				marker = "> "
-				if m.selectedIDs[value.ID] {
-					marker = ">✓"
-				}
-			}
-		}
+		marker := applicationMarker(m.selectedIDs[value.ID], value.ID == m.cursorID || (m.cursorID == "" && index == m.selected), m.color)
 		var status string
 		if value.UpdateAvailable && !value.Pinned {
 			status = "UPDATE"
@@ -672,15 +673,21 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 			columns[index].Width = 0
 		}
 	}
-	// Bubbles renders while columns change. Clear rows first so a transition
-	// between six and compact columns cannot index an old row shape.
-	m.applicationTable.SetRows(nil)
+	// Bubbles renders while columns change. Clear rows only if the row shape
+	// changes; otherwise preserve the table viewport's scroll offset.
+	if len(m.applicationTable.Columns()) != len(columns) {
+		m.applicationTable.SetRows(nil)
+	}
 	m.applicationTable.SetColumns(columns)
 	m.applicationTable.SetRows(rows)
 	if len(values) == 0 {
-		m.applicationTable.Blur()
+		if m.applicationTable.Focused() {
+			m.applicationTable.Blur()
+		}
 	} else {
-		m.applicationTable.Focus()
+		if !m.applicationTable.Focused() {
+			m.applicationTable.Focus()
+		}
 	}
 	m.applicationTable.SetWidth(max(1, width))
 	m.applicationTable.SetHeight(max(2, height))
@@ -698,7 +705,63 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 	if len(values) > 0 {
 		m.cursorID = values[cursor].ID
 	}
-	m.applicationTable.SetCursor(max(0, cursor))
+	if m.applicationTable.Cursor() != max(0, cursor) {
+		m.applicationTable.SetCursor(max(0, cursor))
+	}
+	m.tableConfigured = true
+	m.tableWidth = max(1, width)
+	m.tableHeight = max(2, height)
+}
+
+// rebuildApplicationTable rebuilds the applications table for the current list
+// state. It runs after anything that can change the table rows, markers,
+// screen, filter, or workspace budget. Pure cursor navigation never calls it:
+// navigation reuses the configured rows so Bubbles keeps the viewport scroll
+// offset and no row is rebuilt per keypress.
+func (m *model) rebuildApplicationTable() {
+	if !m.isListScreen() {
+		return
+	}
+	values := m.visibleApplications()
+	width, height, _ := m.applicationTableSize(values, m.listTableBudget())
+	m.configureApplicationTable(values, width, height)
+}
+
+// applicationTableSize returns the width, height, and preview row count the
+// list screen needs for the given workspace budget. Update-time table
+// configuration and view-time layout share this single owner so the configured
+// table geometry and the rendered layout cannot drift apart.
+func (m model) applicationTableSize(values []app.Application, budget int) (width, height, previewRows int) {
+	headingRows := 1
+	if m.screen == screenAvailable {
+		headingRows++
+	}
+	if m.hasPreview(values) && budget >= headingRows+8 {
+		previewRows = 3
+	}
+	tableBudget := max(2, budget-headingRows-previewRows)
+	return max(1, viewWidth(m.width)-2), min(tableBudget, max(3, len(values)+2)), previewRows
+}
+
+// listTableBudget returns the workspace line budget available to the
+// applications table on the active list screen. For list screens it equals the
+// budget bodyLines passes to workspaceLinesFor: the shell header, feedback
+// lines, and the expanded help overlay are accounted for the same way.
+func (m model) listTableBudget() int {
+	budget := m.workspaceHeight()
+	if m.helpOverlay {
+		budget, _ = applyHelpOverlayBudget(budget, m.helpOverlayLines())
+	}
+	return budget
+}
+
+// applyHelpOverlayBudget bounds the expanded help overlay to the workspace
+// budget and returns the budget left after the overlay and its separator line.
+func applyHelpOverlayBudget(budget int, expanded []string) (int, []string) {
+	if len(expanded) > max(1, budget-2) {
+		expanded = expanded[:max(1, budget-2)]
+	}
+	return max(0, budget-len(expanded)-1), expanded
 }
 
 func emptyDash(value string) string {
@@ -706,6 +769,25 @@ func emptyDash(value string) string {
 		return "—"
 	}
 	return value
+}
+
+func applicationMarker(selected, cursor, color bool) string {
+	if color {
+		if selected {
+			return "✓"
+		}
+		return " "
+	}
+	if cursor {
+		if selected {
+			return ">✓"
+		}
+		return "> "
+	}
+	if selected {
+		return " ✓"
+	}
+	return "  "
 }
 
 func (m model) reviewLines() []string {
@@ -1285,25 +1367,42 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenUninstallConflictConfirm
 		}
 	}
-	m.clampSelection()
+	if !m.cursorMovement(message) {
+		m.clampSelection()
+	}
 	return m, nil
 }
 
+// cursorMovement reports whether the key is a pure list cursor movement, which
+// reuses the configured table rows instead of rebuilding them.
+func (m model) cursorMovement(message tea.KeyPressMsg) bool {
+	return m.matchesAction(message, actionUp) || m.matchesAction(message, actionDown)
+}
+
 func (m *model) moveSelection(delta int) {
-	length := len(m.visibleApplications())
-	if length == 0 {
+	values := m.visibleApplications()
+	if len(values) == 0 {
 		m.selected = 0
 		return
 	}
+	previous := m.selected
 	if delta < 0 {
 		m.applicationTable.MoveUp(-delta)
 	} else {
 		m.applicationTable.MoveDown(delta)
 	}
 	m.selected = m.applicationTable.Cursor()
-	values := m.visibleApplications()
 	if m.selected >= 0 && m.selected < len(values) {
 		m.cursorID = values[m.selected].ID
+	}
+	if !m.color && previous != m.selected {
+		rows := m.applicationTable.Rows()
+		for _, index := range []int{previous, m.selected} {
+			if index >= 0 && index < len(values) && index < len(rows) {
+				rows[index][0] = applicationMarker(m.selectedIDs[values[index].ID], index == m.selected, false)
+			}
+		}
+		m.applicationTable.SetRows(rows)
 	}
 }
 
@@ -1854,26 +1953,25 @@ func (m model) selectedInstalled() bool {
 }
 
 func (m *model) clampSelection() {
-	length := len(m.visibleApplications())
-	if length == 0 {
+	values := m.visibleApplications()
+	if len(values) == 0 {
 		m.selected = 0
 	} else {
 		if m.cursorID != "" {
-			for index, value := range m.visibleApplications() {
+			for index, value := range values {
 				if value.ID == m.cursorID {
 					m.selected = index
 					break
 				}
 			}
 		}
-		if m.selected >= length {
-			m.selected = length - 1
+		if m.selected >= len(values) {
+			m.selected = len(values) - 1
 		}
 	}
-	if m.selected >= 0 && m.selected < length {
-		m.cursorID = m.visibleApplications()[m.selected].ID
+	if m.selected >= 0 && m.selected < len(values) {
+		m.cursorID = values[m.selected].ID
 	}
-	m.applicationTable.SetCursor(m.selected)
 }
 
 func updates(values []app.Application) []app.Application {
