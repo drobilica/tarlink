@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -136,6 +137,59 @@ func writeInstalledUninstallFixture(t *testing.T, layout filesystem.Layout, appI
 	}
 }
 
+func writeInstalledSVGUninstallFixture(t *testing.T, layout filesystem.Layout, appID string) {
+	t.Helper()
+	appRoot := filepath.Join(layout.Apps, appID)
+	packagePath, err := layout.PackagePath(appID, "v1", testStateFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(packagePath, "bin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(packagePath, "bin", "run"), []byte("run"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	icon := []byte(`<svg xmlns="http://www.w3.org/2000/svg"><path d="M1 1h2v2H1z"/></svg>`)
+	if err := os.WriteFile(filepath.Join(packagePath, ".tarlink-icon.svg"), icon, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(appRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target, err := filepath.Rel(appRoot, packagePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(appRoot, "current")); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(icon)
+	spec := integration.Spec{
+		ID: appID, Name: appID, Executables: []integration.ExecutableSpec{{Name: appID, Path: "bin/run"}},
+		ApplicationRoot: appRoot, IconSourceRoot: packagePath, Icon: ".tarlink-icon.svg",
+		IconDirectory: layout.Icons, LocalBinDirectory: layout.Bin, DesktopDirectory: layout.Desktop,
+		DesktopEnabled: true, DesktopCategories: []string{"Utility"}, IconSHA256: fmt.Sprintf("%x", digest[:]),
+	}
+	spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
+	paths, _, err := integration.Ensure(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := state.State{
+		Schema: state.Schema, App: appID, Current: "v1", CurrentFingerprint: testStateFingerprint,
+		Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: appID, Path: "bin/run"}}, DesktopEnabled: true,
+		Integration: state.Integration{
+			Executables:  []state.ExecutableIntegration{{Name: appID, Path: "bin/run", Link: paths.Executables[0].Link, Target: filepath.Join(appRoot, "current", "bin", "run")}},
+			DesktopEntry: paths.DesktopEntry, DesktopSHA256: spec.DesktopSHA256,
+			IconFile: paths.IconFile, IconSHA256: spec.IconSHA256, IconSource: ".tarlink-icon.svg",
+		},
+	}
+	if err := state.WriteForApp(layout, value); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // corruptStateFixture builds a fully installed application and then overwrites
 // its state file with one that fails strict decoding. The remaining payload,
 // bin link, and desktop entry are the "real remnants" the degraded removal
@@ -164,8 +218,9 @@ func TestUninstallAllPurgesApplicationsAndPreservesSharedSiblings(t *testing.T) 
 	if err := layout.Ensure(); err != nil {
 		t.Fatal(err)
 	}
-	writeInstalledUninstallFixture(t, layout, "alpha")
+	writeInstalledSVGUninstallFixture(t, layout, "alpha")
 	writeInstalledUninstallFixture(t, layout, "beta")
+	iconPath := filepath.Join(layout.Icons, "scalable", "apps", "tarlink-alpha.svg")
 	if err := os.MkdirAll(filepath.Dir(layout.RepositoryConfig), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -188,6 +243,9 @@ func TestUninstallAllPurgesApplicationsAndPreservesSharedSiblings(t *testing.T) 
 	core := &Core{layout: layout, installer: install.New(layout, nil)}
 	if _, err := core.UninstallAll(context.Background(), nil); err != nil {
 		t.Fatalf("UninstallAll() error = %v", err)
+	}
+	if _, err := os.Lstat(iconPath); !os.IsNotExist(err) {
+		t.Fatalf("purged SVG icon remains: %v", err)
 	}
 	for _, path := range []string{layout.Apps, layout.States, layout.Locks, layout.Cache, filepath.Dir(layout.RepositoryConfig)} {
 		if _, err := os.Lstat(path); !os.IsNotExist(err) {

@@ -163,9 +163,9 @@ func TestDoctorReportsMalformedStateAndPathWarning(t *testing.T) {
 	}
 }
 
-func TestDoctorValidatesRetainedRemoteIcon(t *testing.T) {
+func TestDoctorValidatesRetainedRemoteSVGIcon(t *testing.T) {
 	core, layout := doctorCore(t)
-	icon := []byte("retained 512 icon")
+	icon := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1 1h14v14H1z"/></svg>`)
 	digest := sha256.Sum256(icon)
 	root := filepath.Join(layout.Apps, "remote")
 	version, err := layout.PackagePath("remote", "1.0", testStateFingerprint)
@@ -175,7 +175,7 @@ func TestDoctorValidatesRetainedRemoteIcon(t *testing.T) {
 	if err := os.MkdirAll(version, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(version, ".tarlink-icon.png"), icon, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(version, ".tarlink-icon.svg"), icon, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(version, "bin"), 0o700); err != nil {
@@ -194,18 +194,18 @@ func TestDoctorValidatesRetainedRemoteIcon(t *testing.T) {
 	if err := os.MkdirAll(layout.Bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	spec := integration.Spec{ID: "remote", Name: "remote", ApplicationRoot: root, LocalBinDirectory: layout.Bin, DesktopDirectory: layout.Desktop, IconDirectory: layout.Icons, DesktopEnabled: true, DesktopCategories: []string{"Utility"}, Icon: ".tarlink-icon.png", IconSize: 512, IconSHA256: hex.EncodeToString(digest[:]), IconSourceRoot: version, Executables: []integration.ExecutableSpec{{Name: "run", Path: "bin/run"}}}
+	spec := integration.Spec{ID: "remote", Name: "remote", ApplicationRoot: root, LocalBinDirectory: layout.Bin, DesktopDirectory: layout.Desktop, IconDirectory: layout.Icons, DesktopEnabled: true, DesktopCategories: []string{"Utility"}, Icon: ".tarlink-icon.svg", IconSHA256: hex.EncodeToString(digest[:]), IconSourceRoot: version, Executables: []integration.ExecutableSpec{{Name: "run", Path: "bin/run"}}}
 	spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
 	paths, _, err := integration.Ensure(spec)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if filepath.Base(filepath.Dir(filepath.Dir(paths.IconFile))) != "512x512" {
+	if filepath.Base(filepath.Dir(filepath.Dir(paths.IconFile))) != "scalable" {
 		t.Fatalf("doctor fixture icon path = %q", paths.IconFile)
 	}
 	value := state.State{Schema: state.Schema, App: "remote", Current: "1.0", CurrentFingerprint: testStateFingerprint, Channel: "stable", Artifact: "tar.gz", Executables: []state.Executable{{Name: "run", Path: "bin/run"}}, DesktopEnabled: true, Integration: state.Integration{
 		DesktopEntry: paths.DesktopEntry, DesktopSHA256: spec.DesktopSHA256,
-		IconFile: paths.IconFile, IconSHA256: spec.IconSHA256, IconSize: 512, IconSource: ".tarlink-icon.png",
+		IconFile: paths.IconFile, IconSHA256: spec.IconSHA256, IconSource: ".tarlink-icon.svg",
 		Executables: []state.ExecutableIntegration{{Name: "run", Path: "bin/run", Link: filepath.Join(layout.Bin, "run"), Target: filepath.Join(root, "current", "bin", "run")}},
 	}}
 	if err := state.WriteForApp(layout, value); err != nil {

@@ -1123,6 +1123,96 @@ func TestRemoteIconInstallRetainsBytesAndPlacesThemedIcon(t *testing.T) {
 	}
 }
 
+func TestRemoteSVGInstallRollbackDoctorStateAndUninstall(t *testing.T) {
+	layout := testLayout(t)
+	iconV1 := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><path fill="#345" d="M1 1h30v30H1z"/></svg>`)
+	iconV2 := minimalPNG(t, 256, 256)
+	routes := map[string][]byte{
+		"/fixture-v1.tar.gz":    fixtureArchive(t, "v1"),
+		"/icons/fixture-v1.svg": iconV1,
+		"/fixture-v2.tar.gz":    fixtureArchive(t, "v2"),
+		"/icons/fixture-v2.png": iconV2,
+	}
+	server := newMultiRouteServer(t, routes)
+	manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+	v1 := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/fixture-v1.svg")
+	installed, err := manager.InstallWithOptions(context.Background(), v1, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatalf("install SVG icon: %v", err)
+	}
+	retainedPath, err := layout.PackagePath("fixture", installed.State.Current, installed.State.CurrentFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retained := filepath.Join(retainedPath, ".tarlink-icon.svg")
+	if content, err := os.ReadFile(retained); err != nil || !bytes.Equal(content, iconV1) {
+		t.Fatalf("retained SVG bytes = %q, %v", content, err)
+	}
+	themedSVG := filepath.Join(layout.Icons, "scalable", "apps", "tarlink-fixture.svg")
+	if content, err := os.ReadFile(themedSVG); err != nil || !bytes.Equal(content, iconV1) {
+		t.Fatalf("themed SVG bytes = %q, %v", content, err)
+	}
+	entry, err := os.ReadFile(filepath.Join(layout.Desktop, "tarlink-fixture.desktop"))
+	if err != nil || !strings.Contains(string(entry), "\nIcon=tarlink-fixture\n") || strings.Contains(string(entry), "Icon="+themedSVG) {
+		t.Fatalf("desktop icon reference = %q, %v", entry, err)
+	}
+	iconDigest := sha256.Sum256(iconV1)
+	cachePath := filepath.Join(layout.ArtifactCacheRoot(), "v1", "sha256", hex.EncodeToString(iconDigest[:]))
+	if content, err := os.ReadFile(cachePath); err != nil || !bytes.Equal(content, iconV1) {
+		t.Fatalf("verified SVG cache object = %q, %v", content, err)
+	}
+	stateAfterInstall, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stateAfterInstall.Integration.IconSource != ".tarlink-icon.svg" || stateAfterInstall.Integration.IconSize != 0 || stateAfterInstall.Integration.IconFile != themedSVG {
+		t.Fatalf("SVG ownership state = %#v", stateAfterInstall.Integration)
+	}
+	if err := stateAfterInstall.ValidateForLayout(layout); err != nil {
+		t.Fatalf("SVG state layout validation: %v", err)
+	}
+	if err := integration.ValidateOwned(integration.Spec{
+		ID: "fixture", DesktopDirectory: layout.Desktop, IconDirectory: layout.Icons,
+		DesktopEnabled: true, DesktopSHA256: stateAfterInstall.Integration.DesktopSHA256,
+		Icon:           stateAfterInstall.Integration.IconSource,
+		IconSourceRoot: filepath.Join(layout.Apps, "fixture", "current"),
+		IconSHA256:     stateAfterInstall.Integration.IconSHA256, IconSize: stateAfterInstall.Integration.IconSize,
+	}); err != nil {
+		t.Fatalf("SVG integration doctor ownership check: %v", err)
+	}
+
+	v2 := server.manifest(t, "v2", routes, "/fixture-v2.tar.gz", "/icons/fixture-v2.png")
+	if _, err := manager.UpdateWithOptions(context.Background(), v2, Options{Channel: "stable"}, nil); err != nil {
+		t.Fatalf("update from SVG to PNG: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Icons, "256x256", "apps", "tarlink-fixture.png")); err != nil {
+		t.Fatalf("updated PNG destination missing: %v", err)
+	}
+	server.server.Close()
+	if _, err := manager.Rollback(context.Background(), "fixture", nil); err != nil {
+		t.Fatalf("offline rollback to retained SVG: %v", err)
+	}
+	if content, err := os.ReadFile(themedSVG); err != nil || !bytes.Equal(content, iconV1) {
+		t.Fatalf("reactivated SVG bytes = %q, %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(layout.Icons, "256x256", "apps", "tarlink-fixture.png")); !os.IsNotExist(err) {
+		t.Fatalf("rolled-back PNG destination remains: %v", err)
+	}
+	rolledBackState, err := state.LoadForApp(layout, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := rolledBackState.ValidateForLayout(layout); err != nil {
+		t.Fatalf("state after SVG reactivation: %v", err)
+	}
+	if _, err := manager.Uninstall(context.Background(), "fixture", nil); err != nil {
+		t.Fatalf("uninstall SVG integration: %v", err)
+	}
+	if _, err := os.Lstat(themedSVG); !os.IsNotExist(err) {
+		t.Fatalf("themed SVG remains after uninstall: %v", err)
+	}
+}
+
 func TestRemoteIconUpdateRollbackNeedsNoNetwork(t *testing.T) {
 	layout := testLayout(t)
 	iconV1 := minimalPNG(t, 512, 512)
@@ -1253,6 +1343,68 @@ func TestRemoteIconDownloadFailuresLeaveNoInstallation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRemoteSVGDownloadFailurePaths(t *testing.T) {
+	valid := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1 1h14v14H1z"/></svg>`)
+	for name, icon := range map[string][]byte{
+		"malformed XML":            []byte(`<svg xmlns="http://www.w3.org/2000/svg"><path></svg>`),
+		"wrong root":               []byte(`<html/>`),
+		"non-SVG bytes on SVG URL": []byte("not an SVG document"),
+		"PNG bytes on SVG URL":     minimalPNG(t, 16, 16),
+		"script":                   []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>`),
+		"event handler":            []byte(`<svg xmlns="http://www.w3.org/2000/svg"><path onload="alert(1)"/></svg>`),
+		"external resource":        []byte(`<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.invalid/a.png"/></svg>`),
+		"stylesheet":               []byte(`<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(https://example.invalid/a.css)</style></svg>`),
+		"DOCTYPE":                  []byte(`<!DOCTYPE svg><svg xmlns="http://www.w3.org/2000/svg"/>`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			layout := testLayout(t)
+			routes := map[string][]byte{
+				"/fixture-v1.tar.gz": fixtureArchive(t, "v1"),
+				"/icons/fixture.svg": icon,
+			}
+			server := newMultiRouteServer(t, routes)
+			item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/fixture.svg")
+			manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+			if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); err == nil {
+				t.Fatal("unsafe SVG unexpectedly installed")
+			}
+			if _, err := state.LoadForApp(layout, "fixture"); !os.IsNotExist(err) {
+				t.Fatalf("state exists after rejected SVG: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(err) {
+				t.Fatalf("app root exists after rejected SVG: %v", err)
+			}
+			if stages, globErr := filepath.Glob(filepath.Join(layout.Apps, ".staging-fixture-*")); globErr != nil || len(stages) != 0 {
+				t.Fatalf("staging cleanup = %v, %v", stages, globErr)
+			}
+		})
+	}
+	t.Run("checksum mismatch", func(t *testing.T) {
+		layout := testLayout(t)
+		routes := map[string][]byte{"/fixture-v1.tar.gz": fixtureArchive(t, "v1"), "/icons/fixture.svg": valid}
+		server := newMultiRouteServer(t, routes)
+		item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/fixture.svg")
+		item.Desktop.Icon.SHA256 = strings.Repeat("0", 64)
+		manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+		if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); !errors.Is(err, download.ErrChecksumMismatch) {
+			t.Fatalf("checksum mismatch error = %v", err)
+		}
+	})
+	t.Run("exceeds size limit", func(t *testing.T) {
+		layout := testLayout(t)
+		routes := map[string][]byte{
+			"/fixture-v1.tar.gz": fixtureArchive(t, "v1"),
+			"/icons/fixture.svg": bytes.Repeat([]byte("x"), maxRemoteIconBytes+1),
+		}
+		server := newMultiRouteServer(t, routes)
+		item := server.manifest(t, "v1", routes, "/fixture-v1.tar.gz", "/icons/fixture.svg")
+		manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
+		if _, err := manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil); !errors.Is(err, download.ErrTooLarge) {
+			t.Fatalf("oversized SVG error = %v", err)
+		}
+	})
 }
 
 func fixtureArchiveWithIcon(t *testing.T, version string) []byte {
@@ -1448,12 +1600,12 @@ func TestRemoteIconReservedPathRejectsOccupiedAndSymlinkedSources(t *testing.T) 
 	manager := New(layout, &download.Client{HTTP: server.server.Client(), RedirectLimit: 2})
 	for name, prepare := range map[string]func(string){
 		"regular file": func(root string) {
-			if err := os.WriteFile(filepath.Join(root, remoteIconFile), []byte("user owned"), 0o600); err != nil {
+			if err := os.WriteFile(filepath.Join(root, remoteIconFile+".png"), []byte("user owned"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 		},
 		"symlink": func(root string) {
-			if err := os.Symlink(t.TempDir(), filepath.Join(root, remoteIconFile)); err != nil {
+			if err := os.Symlink(t.TempDir(), filepath.Join(root, remoteIconFile+".png")); err != nil {
 				t.Fatal(err)
 			}
 		},

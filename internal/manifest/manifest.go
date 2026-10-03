@@ -551,10 +551,10 @@ type Desktop struct {
 }
 
 // DesktopIcon declares a desktop icon either as a path inside the extracted
-// application tree or as a verified remote PNG. Exactly one form is allowed;
-// a remote icon requires an HTTPS URL, a lowercase SHA-256 digest, and a PNG
-// extension. The hicolor raster size of a remote icon is validated from the
-// downloaded PNG header at install time, never from the URL path.
+// application tree or as a verified remote PNG/SVG. Exactly one form is
+// allowed; a remote icon requires an HTTPS URL, a lowercase SHA-256 digest,
+// and a PNG or SVG extension. Downloaded bytes are checked against the
+// declared format before they are retained in the package payload.
 type DesktopIcon struct {
 	Path   string `yaml:"path,omitempty" json:"path,omitempty"`
 	URL    string `yaml:"url,omitempty" json:"url,omitempty"`
@@ -564,7 +564,7 @@ type DesktopIcon struct {
 // IsZero reports whether no icon is declared.
 func (i DesktopIcon) IsZero() bool { return i.Path == "" && i.URL == "" && i.SHA256 == "" }
 
-// Remote reports whether the icon is a verified remote PNG rather than an
+// Remote reports whether the icon is a verified remote PNG/SVG rather than an
 // archive-contained path.
 func (i DesktopIcon) Remote() bool { return i.URL != "" }
 
@@ -1247,10 +1247,35 @@ func (i DesktopIcon) validate() error {
 	if err != nil {
 		return fmt.Errorf("invalid desktop icon URL: %w", err)
 	}
-	if !strings.EqualFold(path.Ext(parsed.Path), ".png") {
-		return errors.New("desktop icon URL must reference a PNG file")
+	extension := strings.ToLower(path.Ext(parsed.Path))
+	if extension != ".png" && extension != ".svg" {
+		return errors.New("desktop icon URL must reference a PNG or SVG file")
 	}
 	return nil
+}
+
+// Extension returns the normalized file extension of a remote icon URL. It is
+// used only after Validate has restricted the URL to PNG or SVG.
+func (i DesktopIcon) Extension() string {
+	parsed, err := url.Parse(i.URL)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(path.Ext(parsed.Path))
+}
+
+// ValidateRemoteDesktopIcon validates downloaded bytes according to their
+// manifest-declared URL extension. The caller must verify the exact-byte digest
+// before invoking this function.
+func ValidateRemoteDesktopIcon(data []byte, extension string) (int, error) {
+	switch strings.ToLower(extension) {
+	case ".png":
+		return IconSizeFromPNG(data)
+	case ".svg":
+		return 0, ValidateSVG(data)
+	default:
+		return 0, errors.New("desktop icon must be PNG or SVG")
+	}
 }
 
 // supportedHicolorSizes are the raster sizes TarLink places into the XDG
