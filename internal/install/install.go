@@ -43,12 +43,12 @@ func (e *UninstallConflictError) Error() string {
 func (e *UninstallConflictError) Unwrap() error { return integration.ErrConflict }
 
 const (
-	// remoteIconFile is the reserved relative path where a verified remote
+	// remoteIconFile is the reserved basename where a verified remote
 	// desktop icon is retained inside each version payload so activation,
 	// doctor checks, and rollback never need the network again.
-	remoteIconFile = ".tarlink-icon.png"
+	remoteIconFile = ".tarlink-icon"
 	// maxRemoteIconBytes bounds remote desktop icon downloads. The manifest
-	// URL must reference a PNG and the archive source limit is identical.
+	// URL must reference a PNG or SVG and the archive source limit is identical.
 	maxRemoteIconBytes = 4 << 20
 )
 
@@ -70,8 +70,8 @@ type materializedArtifact struct {
 	// version payload. It is either the declared archive path or the reserved
 	// retained remote-icon file.
 	iconSource string
-	// iconSize is the hicolor raster size of a remote PNG icon; zero for
-	// archive-contained icons.
+	// iconSize is the hicolor raster size of a remote PNG icon; SVG and
+	// archive-contained icons use zero so SVG maps to scalable.
 	iconSize int
 }
 
@@ -1105,17 +1105,18 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 
 // materializeIcon returns the relative icon source path inside the staged
 // application root. Archive-contained icons are returned unchanged; remote
-// PNG icons are downloaded through the same bounded artifact client, retained
-// at the reserved path inside the version payload, and their actual PNG
-// dimensions (validated from the signature and IHDR header) determine the
-// hicolor raster size.
+// PNG and SVG icons are downloaded through the same bounded artifact client
+// and retained byte-for-byte at a format-specific reserved path inside the
+// version payload. PNG dimensions determine the raster hicolor size; SVG is
+// installed in the scalable hicolor directory after strict static-XML checks.
 func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Manifest, applicationRoot string, progress SubjectProgress) (string, int, error) {
 	if !item.Desktop.Icon.Remote() {
 		return item.Desktop.Icon.Path, 0, nil
 	}
-	destination := filepath.Join(applicationRoot, remoteIconFile)
+	iconSource := remoteIconFile + item.Desktop.Icon.Extension()
+	destination := filepath.Join(applicationRoot, iconSource)
 	if _, err := os.Lstat(destination); err == nil {
-		return "", 0, fmt.Errorf("%w: reserved icon path %q is occupied", ErrConflict, remoteIconFile)
+		return "", 0, fmt.Errorf("%w: reserved icon path %q is occupied", ErrConflict, iconSource)
 	} else if !os.IsNotExist(err) {
 		return "", 0, err
 	}
@@ -1139,14 +1140,14 @@ func (manager *Manager) materializeIcon(ctx context.Context, item *manifest.Mani
 	if int64(len(content)) > maxRemoteIconBytes {
 		return "", 0, fmt.Errorf("%w: retained icon exceeds size limit", ErrConflict)
 	}
-	if err := writeRetainedIcon(destination, content); err != nil {
-		return "", 0, err
-	}
-	size, err := manifest.IconSizeFromPNG(content)
+	size, err := manifest.ValidateRemoteDesktopIcon(content, item.Desktop.Icon.Extension())
 	if err != nil {
 		return "", 0, fmt.Errorf("desktop icon: %w", err)
 	}
-	return remoteIconFile, size, nil
+	if err := writeRetainedIcon(destination, content); err != nil {
+		return "", 0, err
+	}
+	return iconSource, size, nil
 }
 
 // writeRetainedIcon publishes already-verified icon bytes at the reserved

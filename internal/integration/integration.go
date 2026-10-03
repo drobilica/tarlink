@@ -187,8 +187,9 @@ type Spec struct {
 	IconSourceRoot    string
 	Icon              string
 	// IconSize is the explicit hicolor raster size of a remote PNG icon.
-	// When positive it overrides extension-based sizing; archive-contained
-	// icons leave it zero so SVG maps to scalable and other rasters to 48x48.
+	// When positive it overrides extension-based sizing; SVG icons and
+	// archive-contained icons leave it zero so SVG maps to scalable and other
+	// rasters to 48x48.
 	IconSize          int
 	DesktopEnabled    bool
 	DesktopCategories []string

@@ -143,6 +143,31 @@ func TestMaterializeWithClientLifecycleAndNoExecution(t *testing.T) {
 	}
 }
 
+func TestMaterializeWithClientValidatesRemoteSVGLifecycleWithoutExecution(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "executed")
+	data := checkerArchive(t, "bin/run", "#!/bin/sh\necho executed > "+marker+"\n")
+	icon := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M1 1h14v14H1z"/></svg>`)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/icon.svg" {
+			_, _ = writer.Write(icon)
+			return
+		}
+		_, _ = writer.Write(data)
+	}))
+	defer server.Close()
+	item := checkerMaterializeManifest(server, data, "run", "bin/run")
+	digest := sha256.Sum256(icon)
+	item.Desktop = manifest.Desktop{Enabled: true, Categories: []string{"Utility"}, Icon: manifest.DesktopIcon{
+		URL: server.URL + "/icon.svg", SHA256: hex.EncodeToString(digest[:]),
+	}}
+	if err := MaterializeWithClient(context.Background(), item, &download.Client{HTTP: server.Client(), RedirectLimit: 2}); err != nil {
+		t.Fatalf("materialize SVG desktop integration: %v", err)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("synthetic executable ran: %v", err)
+	}
+}
+
 func TestSessionReusesIsolatedArtifactCache(t *testing.T) {
 	data := checkerArchive(t, "bin/run", "#!/bin/sh\nexit 0\n")
 	requests := 0

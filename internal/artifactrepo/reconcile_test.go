@@ -40,6 +40,7 @@ type planContents struct {
 }
 
 func fixtureURL(name string) string { return "https://example.test/" + name + ".bin" }
+func fixtureIconURL() string        { return "https://example.test/alpha-icon.svg" }
 
 func fixtureContents() *planContents {
 	byName := map[string]string{
@@ -48,7 +49,7 @@ func fixtureContents() *planContents {
 		"alpha-amd64-v3": "alpha amd64 v3 bytes",
 		"alpha-arm64-v1": "alpha arm64 v1 bytes",
 		"alpha-arm64-v2": "alpha arm64 v2 bytes",
-		"alpha-icon":     "alpha icon bytes",
+		"alpha-icon":     `<svg xmlns="http://www.w3.org/2000/svg"><path d="M1 1h2v2H1z"/></svg>`,
 		"runtime-v1":     "runtime v1 bytes",
 		"beta-amd64-v1":  "beta amd64 v1 bytes",
 		"gamma-arm64-v1": "gamma arm64 v1 bytes",
@@ -58,6 +59,7 @@ func fixtureContents() *planContents {
 		contents.digests[name] = contentDigest(body)
 		contents.byURL[fixtureURL(name)] = body
 	}
+	contents.byURL[fixtureIconURL()] = byName["alpha-icon"]
 	contents.byURL[fixtureURL("beta-amd64-v2")] = byName["alpha-amd64-v2"]
 	return contents
 }
@@ -83,7 +85,7 @@ func fixtureCatalog(contents *planContents) *registry.Catalog {
 	newVariant := func(releases []manifest.Release, icon manifest.DesktopIcon) *manifest.Manifest {
 		return &manifest.Manifest{ID: "fixture", ReleaseHistory: manifest.ReleaseHistory{Releases: releases}, Desktop: manifest.Desktop{Icon: icon}}
 	}
-	remoteIcon := manifest.DesktopIcon{URL: fixtureURL("alpha-icon"), SHA256: digests["alpha-icon"]}
+	remoteIcon := manifest.DesktopIcon{URL: fixtureIconURL(), SHA256: digests["alpha-icon"]}
 	return &registry.Catalog{Revision: "fixture-rev-1", Variants: map[string]map[manifest.Platform]*manifest.Manifest{
 		"alpha": {
 			{OS: "linux", Arch: "amd64"}: newVariant(alphaAMD64, remoteIcon),
@@ -242,7 +244,7 @@ func TestBuildPlanNarrowsByAppAndPlatform(t *testing.T) {
 	for _, object := range plan.Desired {
 		byDigest[object.Digest] = object
 	}
-	if urls := byDigest[digests["alpha-icon"]].URLs; len(urls) != 1 || urls[0] != fixtureURL("alpha-icon") {
+	if urls := byDigest[digests["alpha-icon"]].URLs; len(urls) != 1 || urls[0] != fixtureIconURL() {
 		t.Fatalf("icon urls=%v", urls)
 	}
 }

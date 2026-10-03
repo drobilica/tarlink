@@ -50,7 +50,7 @@ desktop:                               # omit when desktop integration is absent
   icon:
     path: <canonical relative bundled path>
     # or:
-    url: <HTTPS PNG URL>
+    url: <immutable HTTPS PNG or SVG URL>
     sha256: <lowercase SHA-256 digest>
 ```
 
@@ -83,7 +83,16 @@ Exactly one of `path` and `paths` is allowed for each executable. Omitted
 names use the safe filesystem basename; `create-bin-link` defaults to true,
 except games and recompilations must state it explicitly. Desktop integration
 is enabled by the presence of `desktop`; omit `icon` when there is no icon.
-Icons are either bundled paths or immutable, HTTPS, verified PNGs.
+Icons are either bundled paths or immutable, HTTPS, SHA-256-verified PNG or
+SVG bytes. Remote icons are limited to 4 MiB. PNGs must have a valid signature,
+supported square hicolor dimensions, and are installed in the matching raster
+directory. SVGs must be well-formed XML rooted in the SVG namespace and use
+TarLink's restricted static-artwork subset; scripts, event handlers, foreign
+or active elements, stylesheets, DTDs/custom entity declarations, and external
+resource references are rejected. Only XML's predefined/numeric character
+references are accepted; undefined entities fail parsing. Accepted SVG bytes are retained unchanged and
+installed in `hicolor/scalable/apps`; desktop entries continue to reference the
+themed icon name, not a filesystem path.
 
 Schema v5 has no manifest-authored revision. TarLink derives a deterministic
 resolved-package fingerprint from the selected release artifact and all
