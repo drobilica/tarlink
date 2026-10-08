@@ -191,6 +191,27 @@ func TestGCRejectsUppercaseDeploymentName(t *testing.T) {
 	}
 }
 
+func TestGCRemovesStaleRuntimeStage(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("runtime ownership tests require Linux path semantics")
+	}
+	layout := runtimeTestLayout(t)
+	if err := layout.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	versionRoot := filepath.Join(layout.Runtimes, "steam-linux-runtime-4", "4.0")
+	stage := filepath.Join(versionRoot, ".tarlink-runtime-stage-abcdef")
+	if err := os.MkdirAll(filepath.Join(stage, "extracted"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := GC(layout); err != nil {
+		t.Fatalf("GC() error = %v", err)
+	}
+	if _, err := os.Lstat(stage); !os.IsNotExist(err) {
+		t.Fatalf("stale stage still exists (Lstat error = %v)", err)
+	}
+}
+
 func TestEnsureReusesCanonicalVerifiedArtifactCache(t *testing.T) {
 	data := runtimeArchiveBytes(t, []tar.Header{
 		{Name: "SteamLinuxRuntime_4/", Typeflag: tar.TypeDir, Mode: 0755},
@@ -225,6 +246,15 @@ func TestEnsureReusesCanonicalVerifiedArtifactCache(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("runtime requests = %d, want 1 (canonical cache reuse)", requests)
+	}
+	for _, version := range []string{"4.0.1", "4.0.2"} {
+		entries, err := os.ReadDir(filepath.Join(layout.Runtimes, "steam-linux-runtime-4", version))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || !validDeploymentName(entries[0].Name()) {
+			t.Fatalf("runtime version %s entries = %v, want only its deployment", version, entries)
+		}
 	}
 }
 

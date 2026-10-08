@@ -11,7 +11,7 @@ registry. Applications are versioned, verified, and easy to roll back—without
 Install TarLink:
 
 ```sh
-RELEASE=v0.19.1
+RELEASE=v0.19.3
 curl -fL --proto '=https' --tlsv1.2 -o tarlink-install.sh \
   "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/install.sh"
 sed -n '1,$p' tarlink-install.sh
@@ -21,7 +21,7 @@ sh tarlink-install.sh "$RELEASE"
 Uninstall TarLink:
 
 ```sh
-RELEASE=v0.19.1
+RELEASE=v0.19.3
 curl -fL --proto '=https' --tlsv1.2 -o tarlink-uninstall.sh \
   "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/uninstall.sh"
 sed -n '1,$p' tarlink-uninstall.sh
@@ -48,7 +48,10 @@ Run `tarlink` without a command to open the interactive TUI.
 
 ## Version status
 
-The latest stable release is `v0.19.1`. It fixes silent runtime acquisition in
+The latest stable release is `v0.19.3`. It removes runtime acquisition staging
+directories after success and cleans up stale TarLink staging directories during
+runtime garbage collection, avoiding deferred runtime-cleanup warnings on
+uninstall. It also includes the `v0.19.1` fix for silent runtime acquisition in
 the interactive TUI: installs of applications with an execution runtime now
 report `Downloading runtime` and live `Extracting runtime` progress instead of
 freezing on a complete download bar. It retains the interactive TUI refresh and
