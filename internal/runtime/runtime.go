@@ -83,12 +83,7 @@ func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Clie
 	if err != nil {
 		return "", "", err
 	}
-	keep := false
-	defer func() {
-		if !keep {
-			_ = os.RemoveAll(stage)
-		}
-	}()
+	defer func() { _ = filesystem.SafeRemove(filepath.Dir(destination), stage) }()
 	if client == nil {
 		return "", "", errors.New("runtime download client is not configured")
 	}
@@ -132,13 +127,12 @@ func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Clie
 	if err := syncDirectory(filepath.Dir(destination)); err != nil {
 		return "", "", err
 	}
-	keep = true
 	return destination, fingerprint, nil
 }
 
-// GC removes only deployments proven unreferenced by every valid retained
-// application closure. Any malformed state or unexpected runtime-tree entry
-// stops collection before deletion (fail closed).
+// GC removes incomplete TarLink staging directories and deployments proven
+// unreferenced by every valid retained application closure. Any malformed
+// state or unexpected runtime-tree entry stops collection before deletion.
 func GC(layout filesystem.Layout) error {
 	if err := validateOwnedOrMissing(layout.Home, layout.States); err != nil {
 		return err
@@ -201,10 +195,19 @@ func GC(layout filesystem.Layout) error {
 				return err
 			}
 			for _, deployment := range deployments {
+				candidate := filepath.Join(layout.Runtimes, id.Name(), version.Name(), deployment.Name())
+				if strings.HasPrefix(deployment.Name(), ".tarlink-runtime-stage-") {
+					if !deployment.IsDir() || deployment.Type()&os.ModeSymlink != 0 || !validStageName(deployment.Name()) {
+						return errors.New("runtime version contains unexpected entry")
+					}
+					if err := filesystem.SafeRemove(filepath.Join(layout.Runtimes, id.Name(), version.Name()), candidate); err != nil {
+						return err
+					}
+					continue
+				}
 				if !deployment.IsDir() || deployment.Type()&os.ModeSymlink != 0 || !validDeploymentName(deployment.Name()) {
 					return errors.New("runtime version contains unexpected entry")
 				}
-				candidate := filepath.Join(layout.Runtimes, id.Name(), version.Name(), deployment.Name())
 				if !live[candidate] {
 					if err := filesystem.SafeRemove(filepath.Join(layout.Runtimes, id.Name(), version.Name()), candidate); err != nil {
 						return err
@@ -214,6 +217,19 @@ func GC(layout filesystem.Layout) error {
 		}
 	}
 	return nil
+}
+
+func validStageName(name string) bool {
+	const prefix = ".tarlink-runtime-stage-"
+	if !strings.HasPrefix(name, prefix) || len(name) == len(prefix) {
+		return false
+	}
+	for _, character := range name[len(prefix):] {
+		if !(character >= 'a' && character <= 'z') && !(character >= '0' && character <= '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func validDeploymentName(name string) bool {
