@@ -183,6 +183,16 @@ func TestValidateForLayoutUsesRecordedRasterSize(t *testing.T) {
 	if !errors.Is(value.ValidateForLayout(layout), ErrCorrupt) {
 		t.Fatal("icon path size mismatch accepted")
 	}
+	value.Integration.IconFile = filepath.Join(layout.Icons, "scalable", "apps", "tarlink-demo.svg")
+	value.Integration.IconSource = ".tarlink-icon.svg"
+	value.Integration.IconSize = 0
+	if err := value.ValidateForLayout(layout); err != nil {
+		t.Fatalf("SVG scalable icon rejected: %v", err)
+	}
+	value.Integration.IconFile = filepath.Join(layout.Icons, "48x48", "apps", "tarlink-demo.svg")
+	if !errors.Is(value.ValidateForLayout(layout), ErrCorrupt) {
+		t.Fatal("SVG icon in a raster directory accepted")
+	}
 }
 
 func TestValidateRejectsInconsistentIconSize(t *testing.T) {

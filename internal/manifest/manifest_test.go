@@ -228,6 +228,20 @@ func TestFingerprintUsesEffectiveDesktopInputs(t *testing.T) {
 	if explicitFingerprint != withDesktopFingerprint {
 		t.Fatalf("omitted and explicit sole desktop executable differ: %q != %q", explicitFingerprint, withDesktopFingerprint)
 	}
+	withRemoteSVG := withDesktop
+	withRemoteSVG.Desktop.Icon = DesktopIcon{URL: "https://example.com/icon.svg", SHA256: strings.Repeat("a", 64)}
+	remoteFingerprint, err := withRemoteSVG.ResolvedPackageFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withRemoteSVG.Desktop.Icon.SHA256 = strings.Repeat("b", 64)
+	changedIconFingerprint, err := withRemoteSVG.ResolvedPackageFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remoteFingerprint == changedIconFingerprint {
+		t.Fatal("changing the pinned remote SVG bytes did not change the package fingerprint")
+	}
 
 	withMultipleExecutables := withDesktop
 	withMultipleExecutables.Application.Executables = append(append([]Executable(nil), withDesktop.Application.Executables...), Executable{Name: "other", Path: "bin/other"})
@@ -262,5 +276,30 @@ func TestDesktopIntegrationAllowsMissingIcon(t *testing.T) {
 	base.Desktop = Desktop{Icon: DesktopIcon{Path: "icon.png"}}
 	if err := validateApplicationRelease(base, base.Release); err == nil {
 		t.Fatal("icon without desktop integration accepted")
+	}
+}
+
+func TestRemoteDesktopIconAcceptsPNGAndSVGOnly(t *testing.T) {
+	base := parsePackage(t, validManifest, PlatformLinuxAMD64).Manifest
+	base.Desktop = Desktop{Enabled: true, Categories: []string{"Utility"}, Icon: DesktopIcon{
+		URL: "https://example.com/icon.svg", SHA256: strings.Repeat("a", 64),
+	}}
+	if err := base.Validate(); err != nil {
+		t.Fatalf("SVG URL rejected: %v", err)
+	}
+	if got := base.Desktop.Icon.Extension(); got != ".svg" {
+		t.Fatalf("SVG extension = %q", got)
+	}
+	base.Desktop.Icon.URL = "https://example.com/icon.png"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("PNG URL rejected: %v", err)
+	}
+	base.Desktop.Icon.URL = "https://example.com/icon.svg?download=1"
+	if err := base.Validate(); err != nil {
+		t.Fatalf("SVG URL with query rejected: %v", err)
+	}
+	base.Desktop.Icon.URL = "https://example.com/icon.ico"
+	if err := base.Validate(); err == nil {
+		t.Fatal("unsupported icon URL extension accepted")
 	}
 }

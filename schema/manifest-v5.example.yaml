@@ -1,5 +1,6 @@
 # Canonical manifest v5 example. Values are intentionally reviewed Helm
 # 4.2.4 Linux releases; this file is documentation, not a second registry source.
+# Optional desktop icons may be bundled paths or SHA-256-pinned remote PNG/SVG.
 schema: 5
 id: helm
 name: Helm
