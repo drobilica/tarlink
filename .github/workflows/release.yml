@@ -75,7 +75,7 @@ jobs:
           test "$version_output" = "tarlink $RELEASE_VERSION"
 
       - name: Upload binary for assembly
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tarlink-linux-${{ matrix.arch }}
           path: dist/tarlink-linux-${{ matrix.arch }}
@@ -160,7 +160,7 @@ jobs:
           bash ./.github/scripts/generate-release-notes.sh "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$EXPECTED_SHA" release-notes/notes.md
 
       - name: Upload structured release notes
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-notes
           path: release-notes/notes.md
@@ -203,7 +203,7 @@ jobs:
           ./tests/release_artifacts_test.sh dist "$RELEASE_VERSION" amd64
 
       - name: Upload assembled release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-assets
           path: |
@@ -350,7 +350,7 @@ jobs:
           fi
 
       - name: Upload verified bridge assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-bridge
           path: remote
