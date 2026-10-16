@@ -65,6 +65,7 @@ func main() {
 		maintainer := app.NewMaintainer(layout, client)
 		runner.Registry = cli.RegistryTools{
 			Validation: maintainer,
+			Editing:    maintainer,
 			Research:   maintainer,
 			Onboarding: maintainer,
 			Candidates: maintainer,

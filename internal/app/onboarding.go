@@ -92,6 +92,9 @@ type RegistryAddOptions struct {
 	Summary        string
 	Categories     []string
 	CreateBinLink  *bool
+	Executable     string
+	Icon           string
+	NoIcon         bool
 }
 
 type RegistryAddResult struct {
@@ -100,6 +103,8 @@ type RegistryAddResult struct {
 	Required  []RegistryRequiredInput `json:"required,omitempty"`
 	Manifest  *manifest.Document      `json:"manifest,omitempty"`
 	YAML      []byte                  `json:"-"`
+	Edit      *RegistryEditReport     `json:"edit,omitempty"`
+	Output    string                  `json:"output,omitempty"`
 }
 
 // RegistryOnboardingService is maintainer-only and never changes an official
@@ -253,20 +258,56 @@ func (m *Maintainer) AddRegistry(ctx context.Context, options RegistryAddOptions
 			return RegistryAddResult{Status: "needs-input", Required: required}, nil
 		}
 		candidate, required := candidateFromResearch(result, canonicalReleaseAssetURL(repo, result.Release.Tag, result.Asset.Name))
-		if len(required) != 0 {
-			return RegistryAddResult{Status: "needs-input", Candidate: candidate, Required: uniqueRequired(required)}, nil
-		}
-		return CompleteRegistryCandidate(candidate, options)
+		return completeDerivedRegistryCandidate(candidate, required, options)
 	}
 	candidate, required, err := m.deriveRegistryCandidate(ctx, target, options.Refresh)
 	if err != nil {
 		return RegistryAddResult{}, err
 	}
-	if len(required) != 0 {
-		if len(options.Categories) == 0 {
-			required = append(required, RegistryRequiredInput{Field: "categories", Reason: "semantic_category_required"})
+	return completeDerivedRegistryCandidate(candidate, required, options)
+}
+
+func applyRegistrySelections(candidate RegistryCandidate, options RegistryAddOptions) (RegistryCandidate, error) {
+	if options.Icon != "" && options.NoIcon {
+		return candidate, errors.New("select an icon or no icon, not both")
+	}
+	if options.Executable != "" {
+		if !contains(candidate.Executables, options.Executable) {
+			return candidate, errors.New("executable must be one of the inspected candidates")
 		}
-		return RegistryAddResult{Status: "needs-input", Candidate: candidate, Required: uniqueRequired(required)}, nil
+		candidate.Executable = options.Executable
+	}
+	if options.Icon != "" {
+		if !contains(candidate.Icons, options.Icon) {
+			return candidate, errors.New("icon must be one of the inspected archive candidates")
+		}
+		candidate.Icon = options.Icon
+		candidate.RemoteIconURL, candidate.RemoteIconSHA256 = "", ""
+	}
+	if options.NoIcon {
+		candidate.Icon, candidate.RemoteIconURL, candidate.RemoteIconSHA256 = "", "", ""
+	}
+	return candidate, nil
+}
+
+func completeDerivedRegistryCandidate(candidate RegistryCandidate, required []RegistryRequiredInput, options RegistryAddOptions) (RegistryAddResult, error) {
+	candidate, err := applyRegistrySelections(candidate, options)
+	if err != nil {
+		return RegistryAddResult{}, err
+	}
+	var remaining []RegistryRequiredInput
+	for _, input := range required {
+		if input.Field == "executable" && input.Reason == "ambiguous_executables" && options.Executable != "" ||
+			input.Field == "icon" && input.Reason == "ambiguous_icons" && (options.Icon != "" || options.NoIcon) {
+			continue
+		}
+		remaining = append(remaining, input)
+	}
+	if len(remaining) != 0 {
+		if len(options.Categories) == 0 {
+			remaining = append(remaining, RegistryRequiredInput{Field: "categories", Reason: "semantic_category_required"})
+		}
+		return RegistryAddResult{Status: "needs-input", Candidate: candidate, Required: uniqueRequired(remaining)}, nil
 	}
 	return CompleteRegistryCandidate(candidate, options)
 }
@@ -323,6 +364,10 @@ func canonicalReleaseAssetURL(repo research.Repository, tag, asset string) strin
 // CompleteRegistryCandidate applies reviewed maintainer decisions to a
 // previously derived candidate. It performs no network or filesystem access.
 func CompleteRegistryCandidate(candidate RegistryCandidate, options RegistryAddOptions) (RegistryAddResult, error) {
+	candidate, err := applyRegistrySelections(candidate, options)
+	if err != nil {
+		return RegistryAddResult{}, err
+	}
 	if options.ID == "" {
 		options.ID = defaultID(candidate.Repository)
 	}

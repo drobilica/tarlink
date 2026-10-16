@@ -10,7 +10,7 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 
 if (($# < 1)); then usage; exit 2; fi
-registry_root=$1
+registry_root=$(CDPATH= cd -- "$1" && pwd)
 shift
 
 if [ "${TARLINK_CHECK_IN_CONTAINER:-}" != 1 ] && [ "$(uname -s)" = Darwin ]; then
@@ -43,7 +43,8 @@ case "${1:-}" in
 		(($# == 2)) || { usage; exit 2; }
 		old_root=$(mktemp -d)
 		trap 'rm -rf -- "$old_root"' EXIT
-		git -C "$registry_root" archive "$2" apps | tar -x -C "$old_root"
+		baseline=$(git -C "$registry_root" rev-parse --verify --end-of-options "${2}^{commit}")
+		git -C "$registry_root" archive "$baseline" apps runtimes | tar -x -C "$old_root"
 		mode=(--old-root "$old_root")
 		;;
 	*) usage; exit 2;;
