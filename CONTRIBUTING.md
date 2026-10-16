@@ -1,95 +1,64 @@
 # Contributing
 
-Contributions are welcome when they preserve TarLink's narrow, rootless design.
+Read [AGENTS.md](AGENTS.md), the [architecture](docs/architecture.md), and the
+[security model](docs/security-model.md) before changing TarLink. Keep changes
+scoped and preserve its rootless trust boundaries. Pre-1.0 changes should remove
+obsolete designs rather than add compatibility layers.
 
-Development requires Go 1.26 or newer within the 1.26 release line. Core, CLI, TUI, tests, and developer utilities are Go; production builds must remain compatible with `CGO_ENABLED=0`.
+## Development and validation
 
-## Development workflow
-
-After the first checkout, or when starting work from an existing checkout, pull
-the current source and make sure it builds before iterating:
+Use Go 1.26 within the 1.26 release line. Production builds remain pure Go and
+compatible with `CGO_ENABLED=0`.
 
 ```sh
-git pull --ff-only
 go build ./...
+./scripts/validate.sh --quick  # During iteration
+./scripts/validate.sh          # Before opening a pull request
 ```
 
-Reuse that checkout for subsequent changes. On the first macOS validation,
-Podman pulls or builds the versioned Linux validation image and creates a
-persistent Go build-cache volume. Subsequent runs reuse both; there is no need
-to recreate them for each iteration.
+Quick validation checks formatting, CLI reference freshness, ordinary Go tests,
+release asset/workflow contracts, and action pins. Full validation adds vet,
+release notes, installer/uninstaller and validation-script tests, the race
+detector, and a static build. Regenerate command documentation with
+`./scripts/update-cli-readme.sh` when the command tree changes.
 
-During iteration, use the quick validation path:
+Validate natively on Linux. On macOS, the script uses ephemeral Linux Podman
+when available and otherwise runs host-compatible checks. Podman reuses a
+versioned validation image and Go build-cache volume. The image is pulled from
+`ghcr.io/drobilica/tarlink-validation` or built locally if unavailable; a
+maintainer must make that GHCR package public for anonymous pulls.
 
-```sh
-./scripts/validate.sh --quick
-```
-
-On macOS, when Podman is available and functioning, this runs the quick checks
-once in the Linux validation container rather than duplicating them on the
-host. If Podman is unavailable, it runs useful host-compatible checks and the
-Linux-specific checks are left to Ubuntu CI.
-
-The quick path is intentionally limited to formatting and ordinary Go tests
-for fast feedback. Run the full command before completion; it includes vet,
-release and installer checks, the race detector, and the static build.
-
-## Before opening a change
-
-1. Read [AGENTS.md](AGENTS.md), [docs/architecture.md](docs/architecture.md), and [docs/security-model.md](docs/security-model.md).
-2. Keep changes scoped. Do not add hooks, arbitrary command execution, custom destinations, telemetry, plugins, a daemon, CGO, or a system dependency. Self-upgrade changes must preserve canonical install ownership, strict stable release filtering, checksum verification, and atomic rollback behavior.
-3. Add regression tests for parser, filesystem, network, archive, registry, and state changes.
-4. Run the full canonical validation command before considering the change
-   complete or opening a pull request:
-
-```sh
-./scripts/validate.sh
-```
-
-TarLink targets Linux, and development from macOS is supported. The required
-full validation is local on Linux and uses Podman for Linux-specific checks on
-macOS when available. The `CI` workflow repeats the full validation on
-`ubuntu-24.04`; Ubuntu GitHub Actions is the authoritative final Linux
-integration environment, so its result must be green for the exact change
-being completed.
-
-The validation image is published at
-`ghcr.io/drobilica/tarlink-validation` when its `Containerfile`, `go.mod`, or
-`go.sum` changes. A repository maintainer must make that GHCR package public
-once in GitHub: open the package's **Package settings**, choose **Change
-visibility**, select **Public**, and confirm. Until then, anonymous pulls may
-fail and the script builds the exact image locally instead.
-
-5. Describe security impact and failure/rollback behavior in the pull request. Pre-1.0 changes should delete obsolete designs rather than add compatibility layers.
+The `CI` workflow runs full validation on Ubuntu 24.04. The exact change must
+pass `Canonical validation` before merge through a pull request.
 
 ## Registry changes
 
-Registry updates must use an official upstream portable Linux artifact over
-HTTPS plus its exact lowercase SHA-256 or SHA-512 digest. Maintainers may
-calculate that digest locally from the selected bytes; upstream checksum
-publication is optional. Schema-v5 `verification.source` records an honest
-official upstream release page or artifact-origin HTTPS URL as informational
-metadata, not independent checksum provenance. Store one strict v5 manifest at
-`apps/<id>/manifest.yaml`, with platform availability represented only by exact
-artifact keys in each retained release. Validate the registry with TarLink
-itself using `tarlink registry validate .`, then run the changed-artifact
-lifecycle check before review.
+Use one strict v5 manifest at `apps/<id>/manifest.yaml`. Select official upstream
+portable Linux artifacts over HTTPS and record their exact lowercase SHA-256 or
+SHA-512 digests. Maintainers may calculate digests locally; upstream checksum
+publication is optional. `verification.source` is informational upstream-origin
+metadata, not independent authentication.
 
-Platform availability is explicit. Omit unsupported artifact keys. The client
-resolves its exact `GOOS`/`GOARCH` pair and fails when that key is absent; it
-never substitutes another platform. Single-channel releases use the implicit
-channel form; PCSX2 retains the expanded multi-channel history. Schema v5 has
-no manifest-authored revision; TarLink derives the resolved package fingerprint
-used by update and rollback identity.
+Declare only supported platform artifact keys. The client resolves its exact
+`GOOS`/`GOARCH` pair and refuses an absent key. Single-channel releases omit
+channel plumbing. TarLink derives package fingerprints; there is no
+manifest-authored revision. See the [manifest contract](docs/manifest-v5.md).
 
-For icon coverage, use `tarlink registry icons . --fix` before normal registry
-validation. Review unresolved candidates manually. Icons remain
-limited to an archive-contained path or a verified HTTPS PNG with its exact
-lowercase SHA-256; validate the resulting registry with
-`tarlink registry validate .`.
+Run `tarlink registry icons . --fix` to discover missing icons and review
+unresolved candidates manually. Icons must be archive-contained or verified
+HTTPS PNG/SVG resources with exact lowercase SHA-256 digests. Then run
+`tarlink registry validate .` and the changed-artifact lifecycle check described
+in the [registry workflow](docs/registry-research.md) before review.
 
-## Review expectations
+## Review
 
-Reviewers should check path containment, symlink behavior, resource bounds, cancellation, atomicity, and deterministic output. A change that broadens the trust boundary needs an explicit design proposal before implementation.
+Describe security impact and failure/rollback behavior in the pull request.
+Check containment, symlinks, resource bounds, cancellation, atomicity, ownership,
+and deterministic output. Changes to parsing, extraction, trust, deletion,
+locking, state, download verification, or activation require focused success,
+hostile-input, and failure-path regression tests. Trust-boundary changes require
+an explicit design proposal before implementation.
 
-Changes to archive extraction, manifest parsing, official-registry trust, filesystem deletion, locking, state, download verification, or atomic activation are security-sensitive and must include focused success, hostile-input, and failure-path tests.
+Minor releases receive a source dead-code audit; routine patches do not require
+one. Dependency changes require the review described in
+[Dependency review](docs/dependencies.md).
