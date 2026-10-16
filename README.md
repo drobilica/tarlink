@@ -11,24 +11,16 @@ registry. Applications are versioned, verified, and easy to roll back—without
 Install TarLink:
 
 ```sh
-RELEASE=v0.19.3
-curl -fL --proto '=https' --tlsv1.2 -o tarlink-install.sh \
-  "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/install.sh"
-sed -n '1,$p' tarlink-install.sh
-sh tarlink-install.sh "$RELEASE"
+curl -fL --proto '=https' --tlsv1.2 -o tarlink-install.sh "https://raw.githubusercontent.com/drobilica/tarlink/v0.19.3/install.sh" && sed -n '1,$p' tarlink-install.sh && sh tarlink-install.sh v0.19.3
 ```
 
 Uninstall TarLink:
 
 ```sh
-RELEASE=v0.19.3
-curl -fL --proto '=https' --tlsv1.2 -o tarlink-uninstall.sh \
-  "https://raw.githubusercontent.com/drobilica/tarlink/$RELEASE/uninstall.sh"
-sed -n '1,$p' tarlink-uninstall.sh
-sh tarlink-uninstall.sh
+curl -fL --proto '=https' --tlsv1.2 -o tarlink-uninstall.sh "https://raw.githubusercontent.com/drobilica/tarlink/v0.19.3/uninstall.sh" && sed -n '1,$p' tarlink-uninstall.sh && sh tarlink-uninstall.sh
 ```
 
-The release-specific installer uses the same `RELEASE` for the official
+The release-specific installer uses the same release version for the official
 binary and `checksums.txt`; the uninstaller is downloaded from that release as
 well. These commands make the shell scripts inspectable before execution.
 Release tags and assets are publisher-controlled, so their checksums do not
