@@ -505,3 +505,109 @@ func TestListUsesSharedRegistryFreshnessPolicy(t *testing.T) {
 		t.Fatalf("registry requests=%d, want 2", *requests)
 	}
 }
+
+func registryRuntimeDisabledArchive(t *testing.T, version string) []byte {
+	return registryRuntimeDisabledArchiveVersions(t, version)
+}
+
+func registryRuntimeDisabledArchiveVersions(t *testing.T, version string) []byte {
+	t.Helper()
+	manifest := `schema: 5
+id: fixture
+name: Fixture
+summary: Registry fixture
+homepage: https://example.com/
+categories: [utilities]
+enabled: false
+release:
+  current: "` + version + `"
+  archive: tar.gz
+  verification:
+    algorithm: sha256
+  releases:
+    - version: "` + version + `"
+      artifacts:
+        linux-amd64:
+          url: https://example.com/fixture.tar.gz
+          verification:
+            digest: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+            source: https://example.com/SHA256SUMS
+application:
+  executable:
+    name: fixture
+    path: fixture
+`
+	var output bytes.Buffer
+	gzipWriter := gzip.NewWriter(&output)
+	tarWriter := tar.NewWriter(gzipWriter)
+	entries := []struct {
+		name string
+		mode int64
+		body []byte
+	}{
+		{name: "tarlink-registry-main/", mode: 0o755},
+		{name: "tarlink-registry-main/apps/", mode: 0o755},
+		{name: "tarlink-registry-main/apps/fixture/", mode: 0o755},
+		{name: "tarlink-registry-main/apps/fixture/manifest.yaml", mode: 0o644, body: []byte(manifest)},
+	}
+	for _, entry := range entries {
+		typeFlag := byte(tar.TypeDir)
+		if entry.body != nil {
+			typeFlag = tar.TypeReg
+		}
+		header := &tar.Header{Name: entry.name, Mode: entry.mode, Typeflag: typeFlag, Size: int64(len(entry.body))}
+		if err := tarWriter.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if len(entry.body) != 0 {
+			if _, err := tarWriter.Write([]byte(entry.body)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return output.Bytes()
+}
+
+func TestDisabledApplicationIsNotInstalled(t *testing.T) {
+	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeDisabledArchive(t, "1.0")))
+	if _, err := core.SyncRegistry(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.Install(context.Background(), "fixture", nil); err == nil {
+		t.Fatal("disabled application unexpectedly installed")
+	} else if CodeOf(err) != CodeInvalidArguments {
+		t.Fatalf("unexpected error code: %v", err)
+	}
+}
+
+func TestDisabledApplicationIsNotSearched(t *testing.T) {
+	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeDisabledArchive(t, "1.0")))
+	if _, err := core.SyncRegistry(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	applications, err := core.Search(context.Background(), "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(applications) != 0 {
+		t.Fatalf("disabled application must not be offered, got %#v", applications)
+	}
+}
+
+func TestDisabledApplicationIsNotResolvable(t *testing.T) {
+	core, _ := registryRuntimeCore(t, registryResponse(registryRuntimeDisabledArchive(t, "1.0")))
+	if _, err := core.SyncRegistry(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := core.Info(context.Background(), "fixture"); err == nil {
+		t.Fatal("disabled application unexpectedly resolvable")
+	} else if CodeOf(err) != CodeInvalidArguments {
+		t.Fatalf("unexpected error code: %v", err)
+	}
+}

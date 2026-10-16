@@ -530,3 +530,26 @@ func TestRegistryWorkingTreeIntegration(t *testing.T) {
 		}
 	}
 }
+
+func TestSearchHidesDisabledApplications(t *testing.T) {
+	root := createRegistry(t)
+	if err := os.MkdirAll(filepath.Join(root, "apps", "fixture"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	disabled := strings.Replace(testManifest, "id: blender", "id: fixture", 1)
+	disabled = strings.Replace(disabled, "name: Blender", "name: Fixture", 1)
+	disabled = strings.Replace(disabled, "categories: [game-development, graphics]", "categories: [utilities]\nenabled: false", 1)
+	if err := os.WriteFile(filepath.Join(root, "apps", "fixture", "manifest.yaml"), []byte(disabled), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := ValidateTree(root)
+	if err != nil {
+		t.Fatalf("ValidateTree() error = %v", err)
+	}
+	if got := catalog.SearchForPlatform("fixture", "linux", "amd64"); len(got) != 0 {
+		t.Fatalf("disabled application must not be offered, got %#v", got)
+	}
+	if got := catalog.SearchForPlatform("3d", "linux", "amd64"); len(got) != 1 || got[0].ID != "blender" {
+		t.Fatalf("enabled application must be offered, got %#v", got)
+	}
+}

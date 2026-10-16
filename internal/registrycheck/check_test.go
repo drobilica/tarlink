@@ -277,3 +277,50 @@ func TestStructuralRejectsSchemaV4(t *testing.T) {
 		t.Fatal("schema v4 unexpectedly accepted")
 	}
 }
+
+func TestDisabledApplicationIsNotSelectedForCheck(t *testing.T) {
+	disabled := strings.Replace(checkerManifest, "categories: [utilities]", "categories: [utilities]\nenabled: false", 1)
+	if selection, err := App(writeCheckerRegistry(t, disabled), "fixture"); err == nil {
+		t.Fatalf("disabled application unexpectedly selected: %#v", selection.Items)
+	} else if !strings.Contains(err.Error(), "is disabled") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDisabledApplicationsAreNotMaterialized(t *testing.T) {
+	disabled := strings.Replace(checkerManifest, "categories: [utilities]", "categories: [utilities]\nenabled: false", 1)
+	selection, err := Select(writeCheckerRegistry(t, disabled), "", true, "")
+	if err != nil {
+		t.Fatalf("ValidateTree() error = %v", err)
+	}
+	if len(selection.Items) != 0 {
+		t.Fatalf("disabled application must not be selected, got %#v", selection.Items)
+	}
+}
+
+func TestDisabledTransitionIsNotChecked(t *testing.T) {
+	oldRoot := writeCheckerRegistry(t, checkerManifest)
+	disabled := strings.Replace(checkerManifest, "categories: [utilities]", "categories: [utilities]\nenabled: false", 1)
+	currentRoot := writeCheckerRegistry(t, disabled)
+	selection, err := Changed(currentRoot, oldRoot)
+	if err != nil {
+		t.Fatalf("changed selection error = %v", err)
+	}
+	if len(selection.Items) != 0 {
+		t.Fatalf("disabled application must not be checked, got %#v", selection.Items)
+	}
+}
+
+func TestEnabledTransitionIsChecked(t *testing.T) {
+	disabled := strings.Replace(checkerManifest, "categories: [utilities]", "categories: [utilities]\nenabled: false", 1)
+	enabled := strings.Replace(disabled, "enabled: false", "enabled: true", 1)
+	oldRoot := writeCheckerRegistry(t, disabled)
+	currentRoot := writeCheckerRegistry(t, enabled)
+	selection, err := Changed(currentRoot, oldRoot)
+	if err != nil {
+		t.Fatalf("changed selection error = %v", err)
+	}
+	if len(selection.Items) == 0 {
+		t.Fatal("re-enabled application must be checked")
+	}
+}

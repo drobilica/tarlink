@@ -42,7 +42,12 @@ type Manifest struct {
 	Homepage     string   `json:"homepage"`
 	Categories   []string `json:"categories"`
 	Requirements []string `json:"requirements,omitempty"`
-	Platform     Platform `json:"platform"`
+	// Enabled is the application lifecycle toggle. An omitted value, or an
+	// explicit true, keeps the application offered by the catalog; an explicit
+	// false temporarily disables it. It is carried by resolved packages so
+	// catalog consumers can honor it without reparsing registry documents.
+	Enabled  *bool    `json:"enabled,omitempty"`
+	Platform Platform `json:"platform"`
 	// Release is the selected default-channel head. It is populated from
 	// ReleaseHistory by Parse and by registry resolution; it is not itself a
 	// YAML field. Keeping this convenience view avoids making consumers parse
@@ -77,16 +82,20 @@ type Platform struct {
 
 // Document is the one-file registry representation for an application.
 type Document struct {
-	Schema       int                   `yaml:"schema" json:"schema"`
-	ID           string                `yaml:"id" json:"id"`
-	Name         string                `yaml:"name" json:"name"`
-	Summary      string                `yaml:"summary" json:"summary"`
-	Homepage     string                `yaml:"homepage" json:"homepage"`
-	Categories   []string              `yaml:"categories" json:"categories"`
-	Requirements []string              `yaml:"requirements,omitempty" json:"requirements,omitempty"`
-	Release      ReleaseDocument       `yaml:"release" json:"release"`
-	Application  ApplicationDefinition `yaml:"application" json:"application"`
-	Desktop      *DesktopDefinition    `yaml:"desktop,omitempty" json:"desktop,omitempty"`
+	Schema       int      `yaml:"schema" json:"schema"`
+	ID           string   `yaml:"id" json:"id"`
+	Name         string   `yaml:"name" json:"name"`
+	Summary      string   `yaml:"summary" json:"summary"`
+	Homepage     string   `yaml:"homepage" json:"homepage"`
+	Categories   []string `yaml:"categories" json:"categories"`
+	Requirements []string `yaml:"requirements,omitempty" json:"requirements,omitempty"`
+	// Enabled is the application lifecycle toggle. An omitted value, or an
+	// explicit true, keeps the application active; an explicit false
+	// temporarily disables it. Catalog consumers read the resolved value.
+	Enabled     *bool                 `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Release     ReleaseDocument       `yaml:"release" json:"release"`
+	Application ApplicationDefinition `yaml:"application" json:"application"`
+	Desktop     *DesktopDefinition    `yaml:"desktop,omitempty" json:"desktop,omitempty"`
 	// Platforms is derived from release.artifacts and is never decoded from YAML.
 	Platforms map[string]PlatformManifest `yaml:"-" json:"-"`
 }
@@ -278,6 +287,7 @@ func (d *Document) resolvePlatform(platforms map[string]PlatformManifest, key st
 		ReleaseHistory: copyReleaseHistory(definition.ReleaseHistory),
 		Application:    copyApplication(definition.Application),
 		Desktop:        copyDesktop(definition.Desktop),
+		Enabled:        d.Enabled,
 	}
 	for index := range result.Application.Executables {
 		if result.Application.Executables[index].Name == "" {
@@ -542,6 +552,11 @@ type Executable struct {
 // WantsBinLink preserves the schema default: an omitted create-bin-link is true.
 func (e Executable) WantsBinLink() bool { return e.CreateBinLink == nil || *e.CreateBinLink }
 
+// WantsEnabled preserves the schema default: an omitted enabled is true. An
+// explicit false temporarily disables the application from the catalog
+// lifecycle.
+func (m Manifest) WantsEnabled() bool { return m.Enabled == nil || *m.Enabled }
+
 type Desktop struct {
 	Enabled          bool        `yaml:"enabled" json:"enabled"`
 	Executable       string      `yaml:"executable,omitempty" json:"executable,omitempty"`
@@ -705,7 +720,7 @@ func validateManifestShape(document *yaml.Node) error {
 	}
 	root, err := requiredMapping(document.Content[0], "manifest", []string{
 		"schema", "id", "name", "summary", "homepage", "categories", "release", "application",
-	}, []string{"requirements", "desktop"})
+	}, []string{"requirements", "desktop", "enabled"})
 	if err != nil {
 		return err
 	}
@@ -1027,6 +1042,14 @@ func (m Manifest) ResolvedPackageFingerprint() (string, error) {
 		writeFingerprintString(&encoded, m.Name)
 	} else {
 		writeFingerprintString(&encoded, "")
+	}
+	// The lifecycle toggle is part of the resolved package identity: an
+	// application that becomes enabled must be distinguishable from one that
+	// stays disabled, while disabled applications are never materialized.
+	if m.WantsEnabled() {
+		encoded.WriteByte(1)
+	} else {
+		encoded.WriteByte(0)
 	}
 	writeFingerprintString(&encoded, m.Platform.OS)
 	writeFingerprintString(&encoded, m.Platform.Arch)

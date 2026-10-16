@@ -51,6 +51,9 @@ func allFromCatalog(catalog *registry.Catalog) Selection {
 	var items []*manifest.Manifest
 	for _, variants := range catalog.Variants {
 		for _, item := range variants {
+			if !item.WantsEnabled() {
+				continue
+			}
 			items = append(items, releaseProjections(item)...)
 		}
 	}
@@ -88,6 +91,9 @@ func appFromCatalog(catalog *registry.Catalog, id string) (Selection, error) {
 	if len(items) > 0 {
 		return Selection{Items: items}, nil
 	}
+	if isDisabled(catalog, id) {
+		return Selection{}, fmt.Errorf("application %q is disabled", id)
+	}
 	return Selection{}, fmt.Errorf("application %q is not in the registry", id)
 }
 
@@ -102,8 +108,9 @@ func Changed(root, oldRoot string) (Selection, error) {
 }
 
 func changedFromCatalog(_ string, oldRoot string, catalog *registry.Catalog) (Selection, error) {
-	current := platformDefinitions(catalog)
-	previous, err := comparisonDefinitions(oldRoot)
+	disabled := disabledApplications(catalog)
+	current := platformDefinitions(catalog, disabled)
+	previous, err := comparisonDefinitions(oldRoot, disabled)
 	if err != nil {
 		return Selection{}, err
 	}
@@ -175,12 +182,15 @@ func releaseProjections(item *manifest.Manifest) []*manifest.Manifest {
 	return result
 }
 
-func platformDefinitions(catalog *registry.Catalog) map[string]*manifest.Manifest {
+func platformDefinitions(catalog *registry.Catalog, disabled map[string]bool) map[string]*manifest.Manifest {
 	result := make(map[string]*manifest.Manifest)
 	if catalog == nil {
 		return result
 	}
 	for id, variants := range catalog.Variants {
+		if disabled[id] {
+			continue
+		}
 		for platform, item := range variants {
 			result[platformIdentity(id, platform)] = item
 		}
@@ -188,7 +198,7 @@ func platformDefinitions(catalog *registry.Catalog) map[string]*manifest.Manifes
 	return result
 }
 
-func comparisonDefinitions(root string) (map[string]*manifest.Manifest, error) {
+func comparisonDefinitions(root string, disabled map[string]bool) (map[string]*manifest.Manifest, error) {
 	if root == "" {
 		return map[string]*manifest.Manifest{}, nil
 	}
@@ -196,7 +206,31 @@ func comparisonDefinitions(root string) (map[string]*manifest.Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("validate previous schema-v5 registry: %w", err)
 	}
-	return platformDefinitions(catalog), nil
+	return platformDefinitions(catalog, disabled), nil
+}
+
+// disabledApplications reports the application IDs this catalog disables.
+// The set is derived from the current tree only: an application that becomes
+// disabled is skipped by the comparison instead of looking removed, and an
+// application that becomes enabled again is selected as a new one.
+func disabledApplications(catalog *registry.Catalog) map[string]bool {
+	result := make(map[string]bool)
+	if catalog == nil {
+		return result
+	}
+	for id, variants := range catalog.Variants {
+		for _, item := range variants {
+			if !item.WantsEnabled() {
+				result[id] = true
+				break
+			}
+		}
+	}
+	return result
+}
+
+func isDisabled(catalog *registry.Catalog, id string) bool {
+	return disabledApplications(catalog)[id]
 }
 
 func platformIdentity(id string, platform manifest.Platform) string {

@@ -303,3 +303,26 @@ func TestRemoteDesktopIconAcceptsPNGAndSVGOnly(t *testing.T) {
 		t.Fatal("unsupported icon URL extension accepted")
 	}
 }
+
+func TestEnabledDefaultsToActive(t *testing.T) {
+	resolved := parsePackage(t, validManifest, PlatformLinuxAMD64)
+	if !resolved.WantsEnabled() {
+		t.Fatal("omitted enabled must keep the application active")
+	}
+}
+
+func TestExplicitEnabledTrueKeepsApplicationActive(t *testing.T) {
+	value := strings.Replace(validManifest, "categories: [development, utilities]", "categories: [development, utilities]\nenabled: true", 1)
+	resolved := parsePackage(t, value, PlatformLinuxAMD64)
+	if !resolved.WantsEnabled() {
+		t.Fatal("explicit enabled true must keep the application active")
+	}
+}
+
+func TestExplicitEnabledFalseDisablesApplication(t *testing.T) {
+	value := strings.Replace(validManifest, "categories: [development, utilities]", "categories: [development, utilities]\nenabled: false", 1)
+	resolved := parsePackage(t, value, PlatformLinuxAMD64)
+	if resolved.WantsEnabled() {
+		t.Fatal("explicit enabled false must disable the application")
+	}
+}
