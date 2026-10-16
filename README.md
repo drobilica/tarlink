@@ -1,10 +1,12 @@
 # TarLink
 
-### A rootless Linux application manager for verified portable software.
+A rootless Linux application manager for verified portable software.
 
-TarLink installs user-owned applications from an official
-registry. Applications are versioned, verified, and easy to roll back—without
-`sudo`, system-wide installation, or taking over your package manager.
+TarLink installs user-owned applications from the
+[official registry](https://github.com/drobilica/tarlink-registry), verifies their
+exact bytes, and activates them atomically. It retains the current version and
+one previous version for rollback, without `sudo`, a daemon, or system-wide
+installation. Linux amd64 and arm64 are supported when upstream artifacts exist.
 
 ## Quick start
 
@@ -14,201 +16,98 @@ Install TarLink:
 curl -fL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/drobilica/tarlink/main/install.sh | sh
 ```
 
-Uninstall TarLink:
+Install an application or open the interactive TUI:
+
+```sh
+tarlink install blender
+tarlink
+```
+
+The installer resolves the latest stable release and verifies its official
+binary against `checksums.txt`. Updates to TarLink itself are explicit:
+`tarlink self-update`
+verifies and atomically replaces the canonical owned binary.
+
+To remove TarLink and every managed application:
 
 ```sh
 curl -fL --proto '=https' --tlsv1.2 https://raw.githubusercontent.com/drobilica/tarlink/main/uninstall.sh | sh
 ```
 
-The installer resolves the latest stable release and verifies its official
-binary against `checksums.txt` before installing.
-Release tags and assets are publisher-controlled, so their checksums do not
-independently authenticate the publisher. Self-update is explicit and binds
-the latest resolved stable version to its checksum and binary before atomic
-replacement. Uninstallation removes every managed application and the
-TarLink binary, leaving files it cannot prove TarLink owns and reporting them
-as warnings.
+Uninstallation leaves files it cannot prove TarLink owns and reports warnings.
+See [GitHub Releases](https://github.com/drobilica/tarlink/releases) for release
+notes. TarLink is pre-1.0; manifest and command interfaces may change.
 
-Install an application from the [official registry](https://github.com/drobilica/tarlink-registry):
-
-```sh
-tarlink install blender
-```
-
-Run `tarlink` without a command to open the interactive TUI.
-
-## Version status
-
-The latest stable release is `v0.19.3`. It removes runtime acquisition staging
-directories after success and cleans up stale TarLink staging directories during
-runtime garbage collection, avoiding deferred runtime-cleanup warnings on
-uninstall. It also includes the `v0.19.1` fix for silent runtime acquisition in
-the interactive TUI: installs of applications with an execution runtime now
-report `Downloading runtime` and live `Extracting runtime` progress instead of
-freezing on a complete download bar. It retains the interactive TUI refresh and
-static artifact repositories: the `tarlink repository` commands and
-`$XDG_CONFIG_HOME/tarlink/repositories.json` sources described in the technical
-documentation are available in the release. `tarlink repository sync /repository`
-reconciles a local repository against the validated registry, with `--app`,
-`--platform`, `--all-retained`, `--dry-run`, and `--json` forms for narrowing,
-planning, and machine output. `tarlink registry inspect` additionally accepts one
-exact absolute HTTPS artifact URL for bounded download, hashing, and static
-inspection. Downloads use the canonical verified artifact cache, and repository
-`status` and `verify` run on read-only mounts with shared reader locking.
-`tarlink registry candidates discover` compares an external catalog with the local
-registry, and `cli/README.md` records the exhaustive CLI reference. Application, runtime, and
-remote-icon bytes remain governed by the HTTPS sources and exact digests
-declared by the official registry. Sync is additive-only: it acquires missing
-objects, repairs corrupt required objects, and retains all valid artifacts —
-including objects absent from the current registry and objects outside a
-narrowed selection — so repository storage may grow over time. The repository
-is an artifact mirror: hosting bytes does not authorize changing official
-metadata or installing releases absent from the validated registry snapshot.
-Default and `--all-retained` selections both cover the complete eligible
-retained set because the release-count bound is pending a history-ordering
-schema decision.
-
-## Why TarLink?
-
-- **Rootless and user-owned.** Everything TarLink manages stays in your user
-  environment; no `sudo`, daemon, or system package is required.
-- **Digest-pinned artifacts.** Registry manifests identify exact official
-  upstream releases and require a registry-approved SHA-256 or SHA-512 digest.
-  The digest verifies the downloaded bytes; it is not publisher authentication.
-- **Safe, versioned lifecycle.** Downloads are staged, installs are activated
-  atomically, and the current version plus one previous version are retained
-  for rollback.
-- **Integrity checks.** `tarlink doctor` audits managed state, payloads,
-  executable links, and declared desktop integration without running apps.
-- **PATH conflict protection.** TarLink detects executable conflicts and never
-  edits or executes your `PATH`.
-- **CLI and TUI.** Use the command line or the built-in interactive interface
-  over the same application service.
-- **Declarative integration.** Manifests may declare desktop entries and icons;
-  TarLink does not run shell hooks or arbitrary installation scripts.
-- **AppImage support.** Verified, supported AppImages are installed as opaque
-  application files and are never mounted or executed by TarLink.
-
-## How it works
-
-```text
-Official registry: exact release and digest
-        ↓
-Configured static repository or registry-declared HTTPS source
-        ↓ exact-byte digest verification
-Safe staging
-        ↓
-Versioned user-owned install
-        ↓
-Known executable and optional desktop integration
-```
-
-## Common commands
+## Everyday use
 
 ```sh
 tarlink search <query>
-tarlink installed --json
+tarlink list --installed
 tarlink install <app>...
-tarlink lock
-tarlink install -f tarlink.lock
 tarlink update <app>
 tarlink rollback <app>
 tarlink uninstall <app>...
 tarlink doctor
-tarlink self-update
 ```
 
-Use `tarlink` for the TUI. The registry is refreshed automatically when needed
-and can be refreshed explicitly with `tarlink refresh`. Explicit refresh always
-checks the current official registry and reports the successful UTC check time.
-`tarlink list` shows the available catalog with installed state; use
-`--installed` or `--updates` to filter it.
+Registry-dependent commands refresh the official catalog when needed;
+`tarlink refresh` always checks it explicitly. `tarlink doctor` audits managed
+state, payloads, executable links, and desktop integration without running apps.
+PATH conflicts are reported before installation.
 
-`tarlink installed --json` writes the stable, versioned installed-application
-machine contract used for Unix-style composition, including
-`tarlink installed --json | tarlink-data sync`. Generate local shell
-completion with `tarlink completion bash`, `zsh`, or `fish`.
+In the TUI, navigate with `↑`/`↓` or `j`/`k`, open details with `Enter`, and select
+applications with `Space`. Batch installs show the resolved set for confirmation.
+Use `tarlink --help` or the [CLI reference](cli/README.md) for all commands,
+including channels, pinning, registry maintenance, and static artifact mirrors.
+Generate shell completions with `tarlink completion <shell>`.
 
-`tarlink lock` writes a deterministic `tarlink.lock` snapshot of the currently
-installed TarLink applications. It records the exact Linux architecture,
-channel, version, and resolved-package fingerprint. Replaying it with
-`tarlink install -f tarlink.lock` resolves every entry again through the
-official catalog, rejects changed resolutions, converges only the listed
-applications, and never removes extra installed applications. Use
-`--output <path>` to write a different snapshot path; `--force-path` applies
-to every selected application when installing either explicit applications or
-a lock snapshot.
+### Snapshots and composition
 
-A lock snapshot contains no artifact URLs, checksums, or payloads. Replay is a
-catalog re-resolution workflow, not an offline backup or recovery guarantee: it
-cannot proceed when the validated registry metadata needed to resolve an entry
-is unavailable. It may use already available local bytes, but it does not
-replace the registry or retained application state.
+```sh
+tarlink lock
+tarlink install -f tarlink.lock
+tarlink installed --json | tarlink-data sync
+```
 
-In the TUI, use `↑`/`↓` or `j`/`k` to navigate and `Enter` to open details or
-review the current selection. `Space` selects applications by stable ID; move
-the cursor afterward without changing the selection. Confirming a batch shows
-the complete resolved set before mutation. Batch installs freeze each
-application's default channel and current version before mutation.
-
-## Applications
-
-The live catalog is maintained in the [official TarLink registry](https://github.com/drobilica/tarlink-registry),
-not in this README. It covers development tools, portable utilities, and game,
-emulator, and recompilation projects. Registry availability is platform-specific,
-so it depends on the Linux architecture published by each upstream.
+A lock records exact platforms, channels, versions, and package fingerprints.
+Replay resolves entries through the official catalog, rejects changed package
+identities, and leaves extra installed applications alone. It requires the
+approved registry metadata; it is not an offline backup.
+`tarlink installed --json` provides a versioned machine interface; `tarlink-data`
+is a separate application-data resolver.
 
 ## Security
 
-TarLink treats registry data, release downloads, archives, and local managed
-files as untrusted input. It accepts only the official registry and exact
-digest-verified artifact bytes, enforces HTTPS and resource limits, rejects
-unsafe archive structures, and validates ownership before changing or removing
-files. A digest proves that the bytes match trusted registry metadata; it does
-not authenticate the upstream publisher or the mutable registry. Exact
-platform and runtime-closure checks address compatibility, not isolation.
-TarLink does not sandbox applications after activation; they run with the
-user's permissions.
+The official registry approves artifact URLs and SHA-256 or SHA-512 digests.
+Downloads use HTTPS and exact-byte verification before safe, bounded extraction
+or opaque AppImage installation. Configured static repositories supply bytes
+only; they cannot approve applications. Lifecycle changes use ownership checks,
+locks, staging, and atomic publication. Manifests cannot run installation hooks
+or arbitrary commands.
 
-Read the [security model](docs/security-model.md), [threat model](docs/threat-model.md),
-and [security policy](SECURITY.md) for the complete boundaries and reporting
-process.
+Digests prove agreement with trusted metadata, not independent publisher
+authentication. The official registry and TarLink release channel remain trusted,
+publisher-controlled sources. TarLink does not sandbox applications: launched
+applications run with the user's permissions.
 
 ## Documentation
 
 | Topic | Guide |
 | --- | --- |
-| Architecture and lifecycle | [docs/architecture.md](docs/architecture.md) |
-| Enforced security guarantees and limits | [docs/security-model.md](docs/security-model.md) |
-| Trust boundaries and adversaries | [docs/threat-model.md](docs/threat-model.md) |
-| Manifest contract (schema v5) | [docs/manifest-v5.md](docs/manifest-v5.md) |
-| Owned filesystem paths | [docs/filesystem-layout.md](docs/filesystem-layout.md) |
-| Registry research workflow | [docs/registry-research.md](docs/registry-research.md) |
-| Exhaustive CLI reference | [cli/README.md](cli/README.md) |
-| Contributor workflow | [CONTRIBUTING.md](CONTRIBUTING.md) |
-| Vulnerability reporting | [SECURITY.md](SECURITY.md) |
-| Live application catalog | [tarlink-registry](https://github.com/drobilica/tarlink-registry) |
-| Releases | [GitHub Releases](https://github.com/drobilica/tarlink/releases) |
-| Issues | [GitHub Issues](https://github.com/drobilica/tarlink/issues) |
+| Architecture and lifecycle | [Architecture](docs/architecture.md) |
+| Enforced guarantees and limits | [Security model](docs/security-model.md) |
+| Trust boundaries and adversaries | [Threat model](docs/threat-model.md) |
+| Manifest contract | [Schema v5](docs/manifest-v5.md) |
+| Owned paths and static artifact repositories | [Filesystem layout](docs/filesystem-layout.md) |
+| Registry research and onboarding | [Registry research](docs/registry-research.md) |
+| Complete command tree | [CLI reference](cli/README.md) |
+| Development and validation | [Contributing](CONTRIBUTING.md) |
+| Vulnerability reporting | [Security policy](SECURITY.md) |
 
-## Project status
-
-TarLink is pre-1.0. Manifest and command interfaces may make clean breaking
-changes before the project reaches 1.0.
-
-## Future direction (planned, not implemented)
-
-An offline installation or recovery mode remains planned. It would require a
-validated local registry snapshot and would have to disable registry refresh and
-network repository sources; the current lock workflow is not that mode. Shared
-low-level cache primitives may be considered after real implementations show
-what should be shared, with possible reuse by other open-source tools. No cache
-transport—including OCI/ORAS—is selected or promised.
-The projects will continue to favor Unix-style composition and small, stable
-machine interfaces. Minor releases receive a source dead-code audit; routine
-patch releases do not require one.
+The live catalog is maintained in the
+[official registry](https://github.com/drobilica/tarlink-registry).
+Report other problems through [GitHub Issues](https://github.com/drobilica/tarlink/issues).
 
 ## License
 
-TarLink is licensed under [Apache-2.0](LICENSE). See [NOTICE](NOTICE) for
-attribution information.
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for attribution.

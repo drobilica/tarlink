@@ -22,11 +22,6 @@ type Selection struct {
 	Items []*manifest.Manifest
 }
 
-func Structural(root string) error {
-	_, err := registry.ValidateTree(root)
-	return err
-}
-
 // Select validates root once and selects the requested materialization set.
 // Keeping validation and selection together lets callers that need both avoid
 // reparsing every manifest (the registry checker is commonly run this way).
@@ -41,7 +36,7 @@ func Select(root, appID string, allArtifacts bool, oldRoot string) (Selection, e
 	case allArtifacts:
 		return allFromCatalog(catalog), nil
 	case oldRoot != "":
-		return changedFromCatalog(root, oldRoot, catalog)
+		return changedFromCatalog(oldRoot, catalog)
 	default:
 		return Selection{}, nil
 	}
@@ -72,14 +67,6 @@ func allFromCatalog(catalog *registry.Catalog) Selection {
 	return Selection{Items: items}
 }
 
-func App(root, id string) (Selection, error) {
-	catalog, err := registry.ValidateTree(root)
-	if err != nil {
-		return Selection{}, err
-	}
-	return appFromCatalog(catalog, id)
-}
-
 func appFromCatalog(catalog *registry.Catalog, id string) (Selection, error) {
 	all := allFromCatalog(catalog)
 	var items []*manifest.Manifest
@@ -97,17 +84,7 @@ func appFromCatalog(catalog *registry.Catalog, id string) (Selection, error) {
 	return Selection{}, fmt.Errorf("application %q is not in the registry", id)
 }
 
-// Changed selects new or materialization-affecting manifests. oldRoot is an
-// extracted tree from the comparison commit, not a YAML parser workaround.
-func Changed(root, oldRoot string) (Selection, error) {
-	catalog, err := registry.ValidateTree(root)
-	if err != nil {
-		return Selection{}, err
-	}
-	return changedFromCatalog(root, oldRoot, catalog)
-}
-
-func changedFromCatalog(_ string, oldRoot string, catalog *registry.Catalog) (Selection, error) {
+func changedFromCatalog(oldRoot string, catalog *registry.Catalog) (Selection, error) {
 	disabled := disabledApplications(catalog)
 	current := platformDefinitions(catalog, disabled)
 	previous, err := comparisonDefinitions(oldRoot, disabled)

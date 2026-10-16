@@ -1111,15 +1111,6 @@ func (m Manifest) ResolvedPackageFingerprint() (string, error) {
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }
 
-// Fingerprint is the resolved-package spelling kept convenient for callers
-// that already hold a validated ResolvedPackage.
-func (p ResolvedPackage) FingerprintValue() (string, error) {
-	if p.Fingerprint != "" {
-		return p.Fingerprint, nil
-	}
-	return p.Manifest.ResolvedPackageFingerprint()
-}
-
 func writeFingerprintInt(buffer *bytes.Buffer, value uint64) {
 	var data [8]byte
 	binary.BigEndian.PutUint64(data[:], value)
