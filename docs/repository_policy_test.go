@@ -14,8 +14,9 @@ import (
 func TestRequiredCheckRunsForEveryPullRequest(t *testing.T) {
 	var policy struct {
 		RequiredStatusChecks struct {
-			Strict bool `json:"strict"`
-			Checks []struct {
+			Strict   bool            `json:"strict"`
+			Contexts json.RawMessage `json:"contexts"`
+			Checks   []struct {
 				Context string `json:"context"`
 				AppID   int    `json:"app_id"`
 			} `json:"checks"`
@@ -44,6 +45,9 @@ func TestRequiredCheckRunsForEveryPullRequest(t *testing.T) {
 	}
 	if value, ok := workflow.On["pull_request"]; !ok || value != nil {
 		t.Fatal("required validation must run for every pull request without event, branch, or path filters")
+	}
+	if len(policy.RequiredStatusChecks.Contexts) != 0 {
+		t.Fatal("app-bound protection must use checks without legacy contexts")
 	}
 	if len(policy.RequiredStatusChecks.Checks) == 0 || !policy.RequiredStatusChecks.Strict {
 		t.Fatal("up-to-date PR checks are not required")
