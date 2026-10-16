@@ -13,6 +13,7 @@ summary: <short description>
 homepage: <HTTPS URL>
 categories: [utilities]
 requirements: [original-game-data] # optional
+enabled: true                  # optional application lifecycle toggle
 release:
   current: <version>                # omit for the expanded multi-channel form
   archive: tar.gz                   # omit when archives differ by artifact
@@ -93,6 +94,16 @@ resource references are rejected. Only XML's predefined/numeric character
 references are accepted; undefined entities fail parsing. Accepted SVG bytes are retained unchanged and
 installed in `hicolor/scalable/apps`; desktop entries continue to reference the
 themed icon name, not a filesystem path.
+
+`enabled` is the application lifecycle toggle. An omitted value, or an
+explicit `enabled: true`, keeps the application offered by the catalog. An
+explicit `enabled: false` temporarily disables it: the application is not
+offered by search or listing, cannot be installed, updated, or
+freshness-checked, and the registry checker never materializes it.
+Disabled applications remain ordinary, fully validated registry data and can
+be re-enabled by setting the flag back. Installation state that already
+exists for a disabled application remains manageable through uninstall and
+rollback.
 
 Schema v5 has no manifest-authored revision. TarLink derives a deterministic
 resolved-package fingerprint from the selected release artifact and all

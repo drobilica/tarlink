@@ -374,7 +374,7 @@ func (c *Catalog) SearchForPlatform(query, goos, goarch string) []*manifest.Mani
 	items := make(map[string]*manifest.Manifest)
 	platform := manifest.Platform{OS: goos, Arch: goarch}
 	for id, variants := range c.Variants {
-		if item, ok := variants[platform]; ok {
+		if item, ok := variants[platform]; ok && item.WantsEnabled() {
 			items[id] = item
 		}
 	}
