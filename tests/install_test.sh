@@ -249,23 +249,19 @@ occupied_home=$fixture/occupied-home
 mkdir -p "$occupied_home/.local/bin"
 printf '%s\n' 'user-owned' > "$occupied_home/.local/bin/tarlink"
 chmod 0755 "$occupied_home/.local/bin/tarlink"
-if HOME=$occupied_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$fixture/occupied.log "$installer" >"$fixture/occupied.stdout" 2>"$fixture/occupied.stderr"; then
-  printf '%s\n' 'unmarked canonical file unexpectedly replaced' >&2
-  exit 1
-fi
-test "$(cat "$occupied_home/.local/bin/tarlink")" = 'user-owned'
-test ! -e "$occupied_home/.local/state/tarlink/install.sha256"
-grep -F 'ownership marker' "$fixture/occupied.stderr" >/dev/null
+HOME=$occupied_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$fixture/occupied.log "$installer" >"$fixture/occupied.stdout" 2>"$fixture/occupied.stderr"
+assert_installed_binary "$occupied_home"
+test -f "$occupied_home/.local/state/tarlink/install.sha256"
+grep -F 'replacing unowned file' "$fixture/occupied.stderr" >/dev/null
+grep -F 'TarLink installed successfully.' "$fixture/occupied.stdout" >/dev/null
 
 occupied_file_home=$fixture/occupied-file-home
 mkdir -p "$occupied_file_home/.local/bin"
 printf '%s\n' 'user-owned-file' > "$occupied_file_home/.local/bin/tarlink"
-if HOME=$occupied_file_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$fixture/occupied-file.log "$installer" >"$fixture/occupied-file.stdout" 2>"$fixture/occupied-file.stderr"; then
-  printf '%s\n' 'unmarked canonical file unexpectedly replaced' >&2
-  exit 1
-fi
-test "$(cat "$occupied_file_home/.local/bin/tarlink")" = 'user-owned-file'
-test ! -e "$occupied_file_home/.local/state/tarlink/install.sha256"
+HOME=$occupied_file_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$fixture/occupied-file.log "$installer" >"$fixture/occupied-file.stdout" 2>"$fixture/occupied-file.stderr"
+assert_installed_binary "$occupied_file_home"
+test -f "$occupied_file_home/.local/state/tarlink/install.sha256"
+grep -F 'replacing unowned file' "$fixture/occupied-file.stderr" >/dev/null
 
 explicit_home=$fixture/explicit-home
 explicit_log=$fixture/explicit.log
@@ -346,12 +342,10 @@ printf 'owned-binary\n' > "$ownership_mismatch_home/.local/bin/tarlink"
 chmod 0755 "$ownership_mismatch_home/.local/bin/tarlink"
 write_marker "$ownership_mismatch_home"
 printf '%064d\n' 0 > "$ownership_mismatch_home/.local/state/tarlink/install.sha256"
-if HOME=$ownership_mismatch_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$ownership_mismatch_home.log" "$installer" >"$ownership_mismatch_home.stdout" 2>"$ownership_mismatch_home.stderr"; then
-  printf '%s\n' 'ownership mismatch unexpectedly succeeded' >&2
-  exit 1
-fi
-grep -F 'ownership marker does not match' "$ownership_mismatch_home.stderr" >/dev/null
-test ! -e "$ownership_mismatch_home.log"
+HOME=$ownership_mismatch_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG="$ownership_mismatch_home.log" "$installer" >"$ownership_mismatch_home.stdout" 2>"$ownership_mismatch_home.stderr"
+assert_installed_binary "$ownership_mismatch_home"
+test -f "$ownership_mismatch_home/.local/state/tarlink/install.sha256"
+grep -F 'replacing unowned file' "$ownership_mismatch_home.stderr" >/dev/null
 
 failed_home=$fixture/failed-home
 mkdir -p "$failed_home/.local/bin"
@@ -486,13 +480,11 @@ symlink_target_home=$fixture/symlink-target-home
 mkdir -p "$outside_target" "$symlink_target_home/.local/bin"
 printf 'outside\n' > "$outside_target/tarlink"
 ln -s "$outside_target/tarlink" "$symlink_target_home/.local/bin/tarlink"
-if HOME=$symlink_target_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$fixture/symlink-target.log "$installer" >"$fixture/symlink-target.stdout" 2>"$fixture/symlink-target.stderr"; then
-  printf '%s\n' 'symlinked target unexpectedly succeeded' >&2
-  exit 1
-fi
+HOME=$symlink_target_home PATH="$fake_bin:/sbin:/usr/bin:/bin" CURL_LOG=$fixture/symlink-target.log "$installer" >"$fixture/symlink-target.stdout" 2>"$fixture/symlink-target.stderr"
 test "$(cat "$outside_target/tarlink")" = outside
-test -L "$symlink_target_home/.local/bin/tarlink"
-grep -F 'must not be a symlink' "$fixture/symlink-target.stderr" >/dev/null
+test ! -L "$symlink_target_home/.local/bin/tarlink"
+assert_installed_binary "$symlink_target_home"
+grep -F 'replacing unowned file' "$fixture/symlink-target.stderr" >/dev/null
 
 unavailable_home=$fixture/unavailable-home
 mkdir -p "$unavailable_home/.local/bin"
