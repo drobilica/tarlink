@@ -64,7 +64,9 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]
   tarlink registry freshness <app> [--json]
   tarlink registry inspect <owner/repo | release-asset-url | https-artifact-url | manifest.yaml | directory> [--json] [--refresh]
-  tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]
+  tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path> | --registry <path>] [--executable <path>] [--icon <path> | --no-icon]
+  tarlink registry enable <app> --registry <path> [--dry-run] [--json]
+  tarlink registry disable <app> --registry <path> [--dry-run] [--json]
   tarlink registry candidates [--changed] [--json] [--markdown]
   tarlink registry candidates discover --catalog <adapter:source> --registry <path> [--changed] [--json|--markdown|--output-dir <path>]
   tarlink registry blockers [--capability <capability>] [--json]
@@ -116,7 +118,7 @@ func RegistryMaintainerCommand(arguments []string) bool {
 		return false
 	}
 	switch arguments[1] {
-	case "validate", "inspect", "add", "candidates", "blockers", "icons":
+	case "validate", "inspect", "add", "enable", "disable", "candidates", "blockers", "icons":
 		return true
 	default:
 		return false
@@ -925,16 +927,16 @@ func (r Runner) registryCommand() *cobra.Command {
 			return err
 		}
 		if len(args) != 0 {
-			return invalidCommand("usage: tarlink registry <validate|check|freshness|inspect|add|candidates|blockers|icons> ...")
+			return invalidCommand("usage: tarlink registry <validate|check|freshness|inspect|add|enable|disable|candidates|blockers|icons> ...")
 		}
 		_, err := io.WriteString(r.Stdout, registryHelp)
 		return err
 	}}
 	command.SetFlagErrorFunc(func(*cobra.Command, error) error {
-		return invalidCommand("usage: tarlink registry <validate|check|freshness|inspect|add|candidates|blockers|icons> ...")
+		return invalidCommand("usage: tarlink registry <validate|check|freshness|inspect|add|enable|disable|candidates|blockers|icons> ...")
 	})
 	command.SetHelpFunc(func(command *cobra.Command, _ []string) { _, _ = io.WriteString(command.OutOrStdout(), registryHelp) })
-	command.AddCommand(r.registryValidateCommand(), r.registryCheckCommand(), r.registryFreshnessCommand(), r.registryInspectCommand(), r.registryAddCommand(), r.registryCandidatesCommand(), r.registryBlockersCommand(), r.registryIconsCommand())
+	command.AddCommand(r.registryValidateCommand(), r.registryCheckCommand(), r.registryFreshnessCommand(), r.registryInspectCommand(), r.registryAddCommand(), r.registryEnabledCommand(true), r.registryEnabledCommand(false), r.registryCandidatesCommand(), r.registryBlockersCommand(), r.registryIconsCommand())
 	return command
 }
 
@@ -1084,12 +1086,12 @@ func (r Runner) registryInspectCommand() *cobra.Command {
 }
 
 func (r Runner) registryAddCommand() *cobra.Command {
-	usage := "usage: tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path>]"
+	usage := "usage: tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path> | --registry <path>] [--executable <path>] [--icon <path> | --no-icon]"
 	var options app.RegistryAddOptions
 	var jsonOutput, dryRun, createBinLink, noCreateBinLink bool
-	var output, categories string
+	var output, categories, registryRoot string
 	command := &cobra.Command{Use: "add <owner/repo | release-asset-url>", Short: "Construct a candidate manifest", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
-		if jsonOutput && !options.NonInteractive || dryRun && output != "" || createBinLink && noCreateBinLink {
+		if jsonOutput && !options.NonInteractive || dryRun && output != "" || output != "" && registryRoot != "" || createBinLink && noCreateBinLink || options.Icon != "" && options.NoIcon {
 			return invalidCommand(usage)
 		}
 		return nil
@@ -1123,26 +1125,41 @@ func (r Runner) registryAddCommand() *cobra.Command {
 				return err
 			}
 		}
-		if jsonOutput {
+		if value.Status == "needs-input" && jsonOutput {
 			if err := writeJSON(r.Stdout, value); err != nil {
 				return err
 			}
-			if value.Status == "needs-input" {
-				return &commandFailure{code: 2, err: errors.New("registry add needs input"), silent: true}
-			}
-			return nil
+			return &commandFailure{code: 2, err: errors.New("registry add needs input"), silent: true}
 		}
 		if value.Status == "needs-input" {
 			return fmt.Errorf("registry add needs input: %s", requiredFields(value.Required))
+		}
+		if registryRoot != "" {
+			if r.Registry.Editing == nil {
+				return errors.New("registry editing is unavailable")
+			}
+			report, err := r.Registry.Editing.EditRegistry(command.Context(), app.RegistryEditOptions{Root: registryRoot, Add: value.YAML, DryRun: dryRun})
+			if err != nil {
+				return err
+			}
+			value.Edit = &report
+		} else if output != "" {
+			if err := writeNewFile(output, value.YAML); err != nil {
+				return err
+			}
+			value.Output = output
+		}
+		if jsonOutput {
+			return writeJSON(r.Stdout, value)
+		}
+		if value.Edit != nil {
+			return r.printRegistryEdit(*value.Edit)
 		}
 		if dryRun {
 			_, err = fmt.Fprintf(r.Stdout, "Candidate manifest (dry run):\n%s", value.YAML)
 			return err
 		}
 		if output != "" {
-			if err := writeNewFile(output, value.YAML); err != nil {
-				return err
-			}
 			_, err = fmt.Fprintf(r.Stdout, "Wrote candidate manifest to %s\n", output)
 			return err
 		}
@@ -1158,10 +1175,59 @@ func (r Runner) registryAddCommand() *cobra.Command {
 	command.Flags().StringVar(&options.Summary, "summary", "", "application summary")
 	command.Flags().StringVar(&categories, "categories", "", "comma-separated categories")
 	command.Flags().StringVar(&output, "output", "", "output path")
+	command.Flags().StringVar(&registryRoot, "registry", "", "stage a new application in this local registry")
+	command.Flags().StringVar(&options.Executable, "executable", "", "select an inspected executable path")
+	command.Flags().StringVar(&options.Icon, "icon", "", "select an inspected archive icon path")
+	command.Flags().BoolVar(&options.NoIcon, "no-icon", false, "omit desktop integration")
 	command.Flags().BoolVar(&createBinLink, "create-bin-link", false, "create a command link")
 	command.Flags().BoolVar(&noCreateBinLink, "no-create-bin-link", false, "do not create a command link")
 	configureCommand(command, usage)
 	return command
+}
+
+func (r Runner) registryEnabledCommand(enabled bool) *cobra.Command {
+	action := "disable"
+	if enabled {
+		action = "enable"
+	}
+	usage := "usage: tarlink registry " + action + " <app> --registry <path> [--dry-run] [--json]"
+	var root string
+	var dryRun, jsonOutput bool
+	command := &cobra.Command{Use: action + " <app>", Short: "Set application catalog availability to " + action + "d", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
+		if root == "" {
+			return invalidCommand(usage)
+		}
+		return nil
+	}, RunE: func(command *cobra.Command, args []string) error {
+		if r.Registry.Editing == nil {
+			return errors.New("registry editing is unavailable")
+		}
+		report, err := r.Registry.Editing.EditRegistry(command.Context(), app.RegistryEditOptions{Root: root, ID: args[0], Enabled: &enabled, DryRun: dryRun})
+		if err != nil {
+			return err
+		}
+		if jsonOutput {
+			return writeJSON(r.Stdout, report)
+		}
+		return r.printRegistryEdit(report)
+	}}
+	command.Flags().StringVar(&root, "registry", "", "local registry checkout")
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "validate without changing the checkout")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "write JSON")
+	configureCommand(command, usage)
+	return command
+}
+
+func (r Runner) printRegistryEdit(report app.RegistryEditReport) error {
+	state := "unchanged"
+	if report.Changed {
+		state = "planned"
+	}
+	if report.Written {
+		state = "staged"
+	}
+	_, err := fmt.Fprintf(r.Stdout, "%s %s: %s (%s); registry checks and a pull-request merge remain required\n", report.Action, report.ID, report.Path, state)
+	return err
 }
 
 func (r Runner) registryCandidatesCommand() *cobra.Command {

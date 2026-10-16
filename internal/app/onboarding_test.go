@@ -185,3 +185,37 @@ func TestCompleteRegistryCandidateNonInteractiveReportsBinLinkPolicy(t *testing.
 		t.Fatalf("needs-input result = %#v", result)
 	}
 }
+
+func TestRegistrySelectionsResolveOnlyInspectedChoices(t *testing.T) {
+	candidate := RegistryCandidate{Repository: "owner/foo", Release: "v1.2.3", URL: "https://example.invalid/foo.zip", Platform: manifest.PlatformLinuxAMD64, Archive: "zip", SHA256: strings.Repeat("a", 64), Executables: []string{"bin/foo", "bin/helper"}, Icons: []string{"foo.svg", "other.svg"}}
+	required := []RegistryRequiredInput{{Field: "executable", Reason: "ambiguous_executables"}, {Field: "icon", Reason: "ambiguous_icons"}}
+	options := RegistryAddOptions{Categories: []string{"utilities"}, Executable: "bin/foo", Icon: "foo.svg", NonInteractive: true}
+	result, err := completeDerivedRegistryCandidate(candidate, required, options)
+	if err != nil || result.Status != "ready" || result.Candidate.Executable != "bin/foo" || result.Manifest.Desktop.Icon.Path != "foo.svg" {
+		t.Fatalf("result=%+v err=%v", result, err)
+	}
+	for _, kind := range []string{"executable", "icon", "conflicting-icon"} {
+		bad := options
+		switch kind {
+		case "executable":
+			bad.Executable = "../escape"
+		case "icon":
+			bad.Icon = "uninspected.svg"
+		case "conflicting-icon":
+			bad.NoIcon = true
+		}
+		if _, err := completeDerivedRegistryCandidate(candidate, required, bad); err == nil {
+			t.Fatalf("accepted %s", kind)
+		}
+	}
+	options.Icon, options.NoIcon = "", true
+	result, err = completeDerivedRegistryCandidate(candidate, required, options)
+	if err != nil || result.Status != "ready" || result.Manifest.Desktop != nil {
+		t.Fatalf("no icon result=%+v err=%v", result, err)
+	}
+	blocked := append(append([]RegistryRequiredInput{}, required...), RegistryRequiredInput{Field: "artifact", Reason: "unsupported_arch"})
+	result, err = completeDerivedRegistryCandidate(candidate, blocked, options)
+	if err != nil || result.Status != "needs-input" || !reflect.DeepEqual(result.Required, []RegistryRequiredInput{{Field: "artifact", Reason: "unsupported_arch"}}) {
+		t.Fatalf("mechanical blocker bypassed: %+v %v", result, err)
+	}
+}

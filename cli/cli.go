@@ -23,6 +23,7 @@ import (
 // application runtime (Service).
 type RegistryTools struct {
 	Validation app.RegistryValidationService
+	Editing    app.RegistryEditingService
 	Research   app.ResearchService
 	Onboarding app.RegistryOnboardingService
 	Candidates app.CandidateService

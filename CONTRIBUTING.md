@@ -31,6 +31,29 @@ maintainer must make that GHCR package public for anonymous pulls.
 The `CI` workflow runs full validation on Ubuntu 24.04. The exact change must
 pass `Canonical validation` before merge through a pull request.
 
+## Agent pull requests
+
+Agents use the same gate as other contributors: a pull request to `main`, an
+up-to-date branch, and successful `Canonical validation` from GitHub Actions.
+No human approval is required. Administrator enforcement applies; agents must
+not bypass checks or push directly to `main`.
+
+The desired protection is recorded in
+[`.github/branch-protection.json`](.github/branch-protection.json). A repository
+administrator can apply it with:
+
+```sh
+gh api --method PUT repos/drobilica/tarlink/branches/main/protection \
+  --input .github/branch-protection.json
+```
+
+Read the effective protection back after applying it. Before merging, read the
+PR's current head SHA and require its checks to be complete and successful;
+use `gh pr merge --squash --match-head-commit <sha> <number>` so a changed head
+cannot be merged accidentally. After merging, verify GitHub reports `MERGED`,
+fetch `origin/main`, confirm the intended content, and wait for checks on that
+exact main commit. Command success alone is not remote verification.
+
 ## Registry changes
 
 Use one strict v5 manifest at `apps/<id>/manifest.yaml`. Select official upstream
@@ -46,9 +69,12 @@ manifest-authored revision. See the [manifest contract](docs/manifest-v5.md).
 
 Run `tarlink registry icons . --fix` to discover missing icons and review
 unresolved candidates manually. Icons must be archive-contained or verified
-HTTPS PNG/SVG resources with exact lowercase SHA-256 digests. Then run
-`tarlink registry validate .` and the changed-artifact lifecycle check described
-in the [registry workflow](docs/registry-research.md) before review.
+HTTPS PNG/SVG resources with exact lowercase SHA-256 digests.
+
+Use `registry add --registry PATH` for new candidates and `registry disable` /
+`registry enable` for withdrawal/restoration. Each supports dry runs and JSON.
+Then validate the registry and changed artifacts as described in the
+[registry workflow](docs/registry-research.md) before review.
 
 ## Review
 
