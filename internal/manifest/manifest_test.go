@@ -471,6 +471,75 @@ func TestValidateHistoryUsesReleaseEffectiveExecutables(t *testing.T) {
 	}
 }
 
+// appImageRetainedManifest mirrors a packaging migration: the current release
+// is an AppImage that uses the shared declaration, while the retained zip
+// overrides the executable. History validation must resolve each release
+// against its own declaration even when the retained release is selected.
+const appImageRetainedManifest = `schema: 5
+id: tomba
+name: Tomba
+summary: Demo
+homepage: https://example.invalid/
+categories: [games]
+release:
+  current: "2.0.0"
+  verification:
+    algorithm: sha256
+  releases:
+    - version: "2.0.0"
+      artifacts:
+        linux-amd64:
+          url: https://example.invalid/app.AppImage
+          verification:
+            digest: "1111111111111111111111111111111111111111111111111111111111111111"
+            source: https://example.invalid/app.AppImage.sha256
+          archive: appimage
+    - version: "1.0.0"
+      executable:
+        path: legacy-game
+        create-bin-link: false
+      artifacts:
+        linux-amd64:
+          url: https://example.invalid/app.zip
+          verification:
+            digest: "2222222222222222222222222222222222222222222222222222222222222222"
+            source: https://example.invalid/app.zip.sha256
+          archive: zip
+application:
+  executable:
+    path: appimage
+    name: app
+    create-bin-link: false
+desktop:
+  working-directory: application-root
+  categories: [Game]
+`
+
+func TestSelectingOverridingReleaseKeepsSharedApplicationForHistory(t *testing.T) {
+	document, err := ParseBytes([]byte(appImageRetainedManifest))
+	if err != nil {
+		t.Fatalf("ParseBytes() error = %v", err)
+	}
+	resolved, err := document.ResolvePlatform(PlatformLinuxAMD64)
+	if err != nil {
+		t.Fatalf("ResolvePlatform() error = %v", err)
+	}
+	retained := resolved.SelectRelease(resolved.ReleaseHistory.Releases[1])
+	if got := retained.Application.Executables[0].Path; got != "legacy-game" {
+		t.Fatalf("retained executable path = %q", got)
+	}
+	if _, err := retained.ResolvedPackageFingerprint(); err != nil {
+		t.Fatalf("retained ResolvedPackageFingerprint() error = %v", err)
+	}
+	current := retained.SelectRelease(resolved.ReleaseHistory.Releases[0])
+	if got := current.Application.Executables[0].Path; got != "appimage" {
+		t.Fatalf("reselecting the shared release kept %q", got)
+	}
+	if _, err := current.ResolvedPackageFingerprint(); err != nil {
+		t.Fatalf("current ResolvedPackageFingerprint() error = %v", err)
+	}
+}
+
 func TestSelectReleaseSwapsEffectiveExecutables(t *testing.T) {
 	document, err := ParseBytes([]byte(twoReleaseManifest))
 	if err != nil {
