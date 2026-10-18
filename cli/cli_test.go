@@ -870,7 +870,7 @@ func TestRegistryCheckCommandPassesScopeAndPrintsMaterializationCount(t *testing
 	service := &registryCheckService{result: app.RegistryCheckResult{Materialized: 3}}
 	var out, errOut bytes.Buffer
 	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry", "--old-root", "/previous"})
-	if code != 0 || service.options.Root != "/registry" || service.options.OldRoot != "/previous" || service.options.App != "" || service.options.AllArtifacts || out.String() != "Registry is valid; materialized 3 artifact(s)\n" {
+	if code != 0 || service.options.Root != "/registry" || service.options.OldRoot != "/previous" || service.options.App != "" || service.options.AllArtifacts || len(service.options.Releases) != 0 || out.String() != "Registry is valid; materialized 3 artifact(s)\n" {
 		t.Fatalf("code=%d options=%+v stdout=%q stderr=%q", code, service.options, out.String(), errOut.String())
 	}
 }
@@ -881,6 +881,24 @@ func TestRegistryCheckCommandRejectsAmbiguousScope(t *testing.T) {
 	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry", "--app", "fixture", "--all-artifacts"})
 	if code == 0 || !bytes.Contains(errOut.Bytes(), []byte("usage: tarlink registry check")) {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryCheckCommandRequiresAppForRelease(t *testing.T) {
+	service := &registryCheckService{}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry", "--release", "1.0"})
+	if code == 0 || !bytes.Contains(errOut.Bytes(), []byte("usage: tarlink registry check")) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+}
+
+func TestRegistryCheckCommandForwardsReleases(t *testing.T) {
+	service := &registryCheckService{result: app.RegistryCheckResult{Materialized: 2}}
+	var out, errOut bytes.Buffer
+	code := (Runner{Service: service, Stdout: &out, Stderr: &errOut}).Run(context.Background(), []string{"registry", "check", "/registry", "--app", "fixture", "--release", "1.0", "--release", "1.1"})
+	if code != 0 || service.options.App != "fixture" || len(service.options.Releases) != 2 || service.options.Releases[0] != "1.0" || service.options.Releases[1] != "1.1" {
+		t.Fatalf("code=%d options=%+v stdout=%q stderr=%q", code, service.options, out.String(), errOut.String())
 	}
 }
 

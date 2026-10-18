@@ -203,7 +203,7 @@ func openDeclaredFile(root, relative string, limits Limits) (*os.File, error) {
 		return nil, fmt.Errorf("archive: declared file path: %w", err)
 	}
 	if clean != relative || strings.HasSuffix(relative, "/") {
-		return nil, fmt.Errorf("archive: declared file path: %w", ErrPath)
+		return nil, fmt.Errorf("archive: declared file path: %w", entryError(ErrPath, relative))
 	}
 	root, err = filepathAbsClean(root)
 	if err != nil {
@@ -727,38 +727,61 @@ func (x *extractor) countEntry() error {
 	return nil
 }
 
+// maxEntryNameBytes bounds the untrusted entry name included in an error. The
+// name is quoted with %q, which escapes control and non-printable bytes; the
+// bound only keeps a hostile name from flooding logs.
+const maxEntryNameBytes = 200
+
+// boundedEntryName truncates name to at most maxEntryNameBytes on a UTF-8 rune
+// boundary so an error can name the offending entry safely.
+func boundedEntryName(name string) string {
+	if len(name) <= maxEntryNameBytes {
+		return name
+	}
+	end := maxEntryNameBytes
+	for end > 0 && !utf8.RuneStart(name[end]) {
+		end--
+	}
+	return name[:end]
+}
+
+// entryError wraps err with the offending entry name, bounded and quoted.
+func entryError(err error, name string) error {
+	return fmt.Errorf("%w: %q", err, boundedEntryName(name))
+}
+
 func validatePath(name string, limits Limits) (string, error) {
 	if name == "" || !utf8.ValidString(name) || strings.IndexByte(name, 0) >= 0 || strings.Contains(name, "\\") {
-		return "", ErrPath
+		return "", entryError(ErrPath, name)
 	}
 	if strings.HasPrefix(name, "/") || (len(name) >= 2 && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z')) && name[1] == ':') {
-		return "", ErrPath
+		return "", entryError(ErrPath, name)
 	}
 	for _, character := range name {
 		if unicode.IsControl(character) {
-			return "", ErrPath
+			return "", entryError(ErrPath, name)
 		}
 	}
 	if len(name) > limits.MaxPathBytes {
-		return "", ErrLimit
+		return "", entryError(ErrLimit, name)
 	}
 	trailing := strings.HasSuffix(name, "/")
 	trimmed := strings.TrimSuffix(name, "/")
 	if trimmed == "" {
-		return "", ErrPath
+		return "", entryError(ErrPath, name)
 	}
 	parts := strings.Split(trimmed, "/")
 	if len(parts) > limits.MaxDepth {
-		return "", ErrLimit
+		return "", entryError(ErrLimit, name)
 	}
 	for _, p := range parts {
 		if p == "" || p == "." || p == ".." {
-			return "", ErrPath
+			return "", entryError(ErrPath, name)
 		}
 	}
 	clean := path.Join(parts...)
 	if clean == "." || strings.HasPrefix(clean, "../") || clean == ".." {
-		return "", ErrPath
+		return "", entryError(ErrPath, name)
 	}
 	if trailing {
 		return clean, nil

@@ -215,6 +215,8 @@ func researchFailure(err error) *ResearchFailure {
 			failure.ReasonCode = "REDIRECT_SECURITY_VIOLATION"
 		case research.APIErrorNetwork:
 			failure.ReasonCode = "NETWORK_FAILURE"
+		case research.APIErrorTagWithoutRelease:
+			failure.ReasonCode = "TAG_WITHOUT_RELEASE"
 		}
 	}
 	return failure

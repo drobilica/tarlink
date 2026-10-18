@@ -229,6 +229,33 @@ func TestDiscoveryGitHubRenameRedirectRetriesWithoutArtifactRequests(t *testing.
 	}
 }
 
+func TestDiscoverySurfacesRepositoryRelocation(t *testing.T) {
+	opts := discoveryFixture(t, []quiverApp{fixtureApp("a", "github", "owner/old")}, []quiverPlatformEntry{fixturePlatform("github", "owner/old", "v1", "Game.AppImage")}, []discoveryRegistryFixture{{"game", "github", "owner/new", "v1"}})
+	opts.ResolveIdentity = func(_ context.Context, _ string, repo string) (string, error) {
+		if repo == "owner/old" {
+			return "owner/new", nil
+		}
+		return repo, nil
+	}
+	report, err := Discover(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Entries) != 1 || report.Entries[0].Status != "registered-same" {
+		t.Fatalf("entry=%+v", report.Entries)
+	}
+	if report.Entries[0].RepositoryRelocatedTo != "owner/new" || len(report.Entries[0].RegistryMatches) != 1 {
+		t.Fatalf("relocation not surfaced: %+v", report.Entries[0])
+	}
+	var out bytes.Buffer
+	if err := RenderDiscovery(&out, report, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "repository relocated: owner/new") {
+		t.Fatalf("rendered report missing relocation: %q", out.String())
+	}
+}
+
 func TestDiscoverySharedApplicationsRetainSelectionsAndAllMatchesBeforeFiltering(t *testing.T) {
 	first, second := fixtureApp("a", "github", "owner/shared"), fixtureApp("b", "github", "owner/shared")
 	first.ReleaseAssetFilter, second.ReleaseAssetFilter = "FireRed", "LeafGreen"

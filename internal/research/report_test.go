@@ -53,6 +53,13 @@ func TestRenderCandidateReportMultiBlockerAndEvidence(t *testing.T) {
 	}
 }
 
+func TestRenderCandidateReportUnsafeArtifactLayoutGroup(t *testing.T) {
+	got := RenderCandidateReport(CandidateLedger{Candidates: []Candidate{reportCandidate("layout", "blocked", "UNSAFE_ARTIFACT_LAYOUT")}})
+	if !strings.Contains(got, "## Unsafe artifact layout") || strings.Contains(got, "## Other blocked") {
+		t.Fatalf("new blocker not grouped meaningfully: %s", got)
+	}
+}
+
 func TestRenderCandidateReportHeaderHasNoTimestamp(t *testing.T) {
 	got := RenderCandidateReport(CandidateLedger{})
 	if !strings.Contains(got, "Generated from `registry-research/candidates.yaml`.") || strings.Contains(got, "Generated:") {

@@ -25,14 +25,24 @@ type Selection struct {
 // Select validates root once and selects the requested materialization set.
 // Keeping validation and selection together lets callers that need both avoid
 // reparsing every manifest (the registry checker is commonly run this way).
-func Select(root, appID string, allArtifacts bool, oldRoot string) (Selection, error) {
+// When appID is set and releases is non-empty, only the app's projections for
+// those versions are selected so a single change can be validated without
+// materializing every retained release.
+func Select(root, appID string, releases []string, allArtifacts bool, oldRoot string) (Selection, error) {
 	catalog, err := registry.ValidateTree(root)
 	if err != nil {
 		return Selection{}, err
 	}
 	switch {
 	case appID != "":
-		return appFromCatalog(catalog, appID)
+		selection, err := appFromCatalog(catalog, appID)
+		if err != nil {
+			return Selection{}, err
+		}
+		if len(releases) == 0 {
+			return selection, nil
+		}
+		return scopeReleases(selection, appID, releases)
 	case allArtifacts:
 		return allFromCatalog(catalog), nil
 	case oldRoot != "":
@@ -40,6 +50,31 @@ func Select(root, appID string, allArtifacts bool, oldRoot string) (Selection, e
 	default:
 		return Selection{}, nil
 	}
+}
+
+// scopeReleases keeps the selected projections whose release version was
+// requested. A version that matches no projection for the application is an
+// error: silently checking nothing would mask a typo or a stale release
+// reference.
+func scopeReleases(selection Selection, appID string, releases []string) (Selection, error) {
+	wanted := make(map[string]bool, len(releases))
+	for _, version := range releases {
+		wanted[version] = true
+	}
+	var items []*manifest.Manifest
+	found := make(map[string]bool, len(releases))
+	for _, item := range selection.Items {
+		if wanted[item.Release.Version] {
+			items = append(items, item)
+			found[item.Release.Version] = true
+		}
+	}
+	for _, version := range releases {
+		if !found[version] {
+			return Selection{}, fmt.Errorf("application %q has no release %q", appID, version)
+		}
+	}
+	return Selection{Items: items}, nil
 }
 
 func allFromCatalog(catalog *registry.Catalog) Selection {
@@ -334,7 +369,7 @@ func (s *Session) Materialize(ctx context.Context, item *manifest.Manifest) erro
 	// registry-approved channel in the state record so the lifecycle check
 	// exercises the same tracking metadata as a real install.
 	if _, err := manager.InstallWithOptions(ctx, item, install.Options{Channel: item.Release.Channel}, nil); err != nil {
-		return fmt.Errorf("materialize %s %s/%s: %w", item.ID, item.Platform.OS, item.Platform.Arch, err)
+		return fmt.Errorf("materialize %s %s/%s release %q: %w", item.ID, item.Platform.OS, item.Platform.Arch, item.Release.Version, err)
 	}
 	if _, err := state.LoadForApp(s.layout, item.ID); err != nil {
 		return fmt.Errorf("verify materialized state for %s: %w", item.ID, err)
