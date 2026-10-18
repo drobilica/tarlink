@@ -55,7 +55,12 @@ type Manifest struct {
 	Release        Release        `json:"release"`
 	ReleaseHistory ReleaseHistory `json:"release_history"`
 	Application    Application    `json:"application"`
-	Desktop        Desktop        `json:"desktop"`
+	// sharedApplication is the registry-authored declaration before any
+	// selected release's optional executable override. Application holds the
+	// effective declaration for the selected release, so history validation
+	// and later selections need the shared view to resolve every release.
+	sharedApplication *Application
+	Desktop           Desktop `json:"desktop"`
 	// Runtime is resolved from the same immutable registry snapshot as the
 	// application. Nil preserves the self-contained application contract.
 	RuntimeRef *RuntimeReference `json:"runtime,omitempty"`
@@ -299,6 +304,8 @@ func (d *Document) resolvePlatform(platforms map[string]PlatformManifest, key st
 			result.Application.Executables[index].Name = path.Base(result.Application.Executables[index].Path)
 		}
 	}
+	shared := copyApplication(result.Application)
+	result.sharedApplication = &shared
 	var err error
 	result.Release, err = result.ReleaseHistory.ResolveDefault()
 	if err != nil {
@@ -532,10 +539,14 @@ type Release struct {
 // SelectRelease projects one normalized release into the lifecycle-facing
 // package view, including only the runtime resolved for that release.
 func (m Manifest) SelectRelease(release Release) Manifest {
-	m.Release = release
 	if release.Application != nil {
 		m.Application = copyApplication(*release.Application)
+	} else if m.Release.Application != nil && m.sharedApplication != nil {
+		// Leaving an overriding release restores the registry-authored
+		// declaration instead of leaking the previous release's executable.
+		m.Application = copyApplication(*m.sharedApplication)
 	}
+	m.Release = release
 	m.selectReleaseRuntime()
 	return m
 }
@@ -1435,8 +1446,14 @@ func (m Manifest) ValidateHistory() error {
 			}
 		}
 		effective := m
+		// Application is the selected release's effective declaration. When
+		// that release carries an override, use the retained shared view as
+		// the base for releases without their own override.
+		if m.Release.Application != nil && m.sharedApplication != nil {
+			effective.Application = copyApplication(*m.sharedApplication)
+		}
 		if release.Application != nil {
-			effective.Application = *release.Application
+			effective.Application = copyApplication(*release.Application)
 		}
 		if err := validateApplicationRelease(effective, release); err != nil {
 			return err
