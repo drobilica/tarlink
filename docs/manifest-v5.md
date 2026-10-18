@@ -103,10 +103,10 @@ references are accepted; undefined entities fail parsing. Accepted SVG bytes are
 installed in `hicolor/scalable/apps`; desktop entries continue to reference the
 themed icon name, not a filesystem path.
 
-When an extracted archive contains exactly one real top-level directory,
-TarLink treats it as packaging and strips it. Executable paths and bundled
-desktop icon paths are relative to that stripped application root, mirroring
-`normalizedApplicationRoot` in `internal/install/install.go`.
+When an extracted archive has exactly one top-level entry and that entry is a
+real directory, TarLink treats it as packaging and strips it. Executable paths
+and bundled desktop icon paths are relative to that stripped application root,
+mirroring `normalizedApplicationRoot` in `internal/install/install.go`.
 
 A release entry may optionally declare its own `executable` or `executables`.
 When present it is the exact executable set for that one release and replaces
