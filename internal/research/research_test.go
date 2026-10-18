@@ -274,6 +274,37 @@ func TestDiscoverReleaseUsesExactTagIncludingSlash(t *testing.T) {
 	}
 }
 
+func TestDiscoverReleaseDistinguishesRetainedTagFromMissingRelease(t *testing.T) {
+	t.Run("tag retained without release", func(t *testing.T) {
+		c := &Client{APIBase: "https://api.example", HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			switch r.URL.Path {
+			case "/repos/o/r/releases/tags/v1":
+				return response(404, `{}`), nil
+			case "/repos/o/r/git/ref/tags/v1":
+				return response(200, `{"ref":"refs/tags/v1","object":{"sha":"`+strings.Repeat("a", 40)+`","type":"commit"}}`), nil
+			default:
+				t.Fatalf("unexpected request %s", r.URL)
+				return nil, nil
+			}
+		})}}
+		_, err := c.DiscoverRelease(context.Background(), "o/r", "v1")
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Kind != APIErrorTagWithoutRelease {
+			t.Fatalf("err=%v", err)
+		}
+	})
+	t.Run("plain missing release", func(t *testing.T) {
+		c := &Client{APIBase: "https://api.example", HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+			return response(404, `{}`), nil
+		})}}
+		_, err := c.DiscoverRelease(context.Background(), "o/r", "v1")
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.Kind != APIErrorNotFound {
+			t.Fatalf("err=%v", err)
+		}
+	})
+}
+
 func TestEvaluateProvenanceRejectsReleaseRepositoryMismatch(t *testing.T) {
 	a := Asset{ID: 2, ReleaseID: 1, Repository: "o/r", State: "uploaded", Digest: "sha256:" + strings.Repeat("a", 64)}
 	p := EvaluateProvenance("o/r", Release{ID: 1, Repository: "other/repo"}, a)
@@ -1068,6 +1099,59 @@ func TestArchiveHardlinkAndSpecialFiles(t *testing.T) {
 		}
 	}
 }
+func TestInspectUnsafeArchiveLayoutBlocker(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		format archive.Format
+	}{{"zip", archive.FormatZip}, {"tar.gz", archive.FormatTarGz}} {
+		t.Run(test.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			if test.format == archive.FormatZip {
+				zw := zip.NewWriter(&buf)
+				header := &zip.FileHeader{Name: "./game", Method: zip.Store}
+				header.SetMode(0755)
+				writer, err := zw.CreateHeader(header)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := writer.Write([]byte{0x7f, 'E', 'L', 'F', 2}); err != nil {
+					t.Fatal(err)
+				}
+				if err := zw.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				gz := gzip.NewWriter(&buf)
+				tw := tar.NewWriter(gz)
+				body := []byte{0x7f, 'E', 'L', 'F', 2}
+				if err := tw.WriteHeader(&tar.Header{Name: "./game", Typeflag: tar.TypeReg, Mode: 0755, Size: int64(len(body))}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := tw.Write(body); err != nil {
+					t.Fatal(err)
+				}
+				if err := tw.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := gz.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := filepath.Join(testDir(t), "artifact")
+			if err := os.WriteFile(path, buf.Bytes(), 0600); err != nil {
+				t.Fatal(err)
+			}
+			result, err := Inspect(context.Background(), Artifact{Path: path, Size: int64(buf.Len())}, test.format, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Blockers) != 1 || result.Blockers[0] != "UNSAFE_ARTIFACT_LAYOUT" {
+				t.Fatalf("blockers=%#v", result.Blockers)
+			}
+		})
+	}
+}
+
 func TestMalformedAppImage(t *testing.T) {
 	d := testDir(t)
 	p := filepath.Join(d, "bad.AppImage")

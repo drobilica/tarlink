@@ -27,6 +27,14 @@ release:
       nested-archive:                # optional and release-specific
         path: <canonical relative path in outer output>
         archive: tar.gz | tar.xz | zip
+      # Optional release-specific executable set. When present it replaces the
+      # shared application declaration for this release only.
+      executable:
+        name: <optional logical command name>
+        path: <canonical relative path>
+        # or: paths: {linux-amd64: ..., linux-arm64: ...}
+      # the list form is the sibling key executables:
+      # executables: [...]
       artifacts:
         linux-amd64:
           url: <immutable HTTPS artifact URL>
@@ -94,6 +102,25 @@ resource references are rejected. Only XML's predefined/numeric character
 references are accepted; undefined entities fail parsing. Accepted SVG bytes are retained unchanged and
 installed in `hicolor/scalable/apps`; desktop entries continue to reference the
 themed icon name, not a filesystem path.
+
+When an extracted archive contains exactly one real top-level directory,
+TarLink treats it as packaging and strips it. Executable paths and bundled
+desktop icon paths are relative to that stripped application root, mirroring
+`normalizedApplicationRoot` in `internal/install/install.go`.
+
+A release entry may optionally declare its own `executable` or `executables`.
+When present it is the exact executable set for that one release and replaces
+the shared `application` declaration for that release; when absent the shared
+declaration applies. There is no merging, fallback ordering, or effect on any
+other release. This lets an application change its executable path (for example
+when migrating packaging or renaming a binary) while retained releases keep
+their original executable. Because the resolved package identity is per
+release, an application that migrates packaging must declare the release-level
+executable on the affected releases; otherwise the retained release's
+fingerprint changes, re-materialization uses the new path, and the retained
+release can no longer be materialized. The shared `application.executable` or
+`application.executables` declaration remains required and applies to every
+release that does not declare its own.
 
 `enabled` is the application lifecycle toggle. An omitted value, or an
 explicit `enabled: true`, keeps the application offered by the catalog. An

@@ -73,7 +73,8 @@ var capabilities = map[string]Capability{
 }
 var knownBlockers = map[string]bool{
 	"UNSUPPORTED_ARTIFACT": true, "UNSUPPORTED_ARCH": true,
-	"NO_EXECUTABLE": true, "APPIMAGE_METADATA_UNSUPPORTED": true,
+	"UNSAFE_ARTIFACT_LAYOUT": true,
+	"NO_EXECUTABLE":          true, "APPIMAGE_METADATA_UNSUPPORTED": true,
 	"NO_LINUX_ARTIFACT": true, "MUTABLE_ARTIFACT": true, "SYSTEM_INTEGRATION_REQUIRED": true,
 	"SETUP_SCRIPT_REQUIRED": true, "WINDOWS_ONLY": true, "SOURCE_ONLY": true,
 	"MISSING_RUNTIME_LIBS": true,

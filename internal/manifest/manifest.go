@@ -156,6 +156,11 @@ type ReleaseDefinition struct {
 	Runtime       *RuntimeReference   `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	Artifacts     map[string]Artifact `yaml:"artifacts" json:"artifacts"`
 	NestedArchive *NestedArchive      `yaml:"nested-archive,omitempty" json:"nested_archive,omitempty"`
+	// Executable and Executables optionally declare the exact executable set
+	// for this release only. When both are absent the shared application
+	// declaration applies.
+	Executable  *ExecutableDefinition  `yaml:"executable,omitempty" json:"executable,omitempty"`
+	Executables []ExecutableDefinition `yaml:"executables,omitempty" json:"executables,omitempty"`
 }
 
 // Artifact is the authoritative package input for one canonical platform.
@@ -299,6 +304,9 @@ func (d *Document) resolvePlatform(platforms map[string]PlatformManifest, key st
 	if err != nil {
 		return Manifest{}, err
 	}
+	if result.Release.Application != nil {
+		result.Application = copyApplication(*result.Release.Application)
+	}
 	result.selectReleaseRuntime()
 	return result, nil
 }
@@ -346,6 +354,10 @@ func (d *Document) derivedPlatforms() (map[string]PlatformManifest, error) {
 				return nil, fmt.Errorf("release %q artifact %s: %w", definition.Version, key, err)
 			}
 			release := Release{Channel: definition.Channel, Version: definition.Version, RuntimeRef: copyRuntimeReference(definition.Runtime), URL: artifact.URL, Verification: verification, Archive: archive}
+			release.Application, err = definition.resolveApplication(key)
+			if err != nil {
+				return nil, fmt.Errorf("release %q artifact %s: %w", definition.Version, key, err)
+			}
 			if definition.NestedArchive != nil {
 				release.NestedArchive = *definition.NestedArchive
 			}
@@ -411,24 +423,31 @@ func copyChannelHeads(values map[string]ChannelHead) map[string]ChannelHead {
 }
 
 func (d ApplicationDefinition) resolve(platform string) (Application, error) {
-	if (d.Executable == nil) == (len(d.Executables) == 0) {
-		return Application{}, errors.New("exactly one of application.executable or application.executables is required")
+	return resolveExecutableDefinitions(d.Executable, d.Executables, "application", platform)
+}
+
+// resolveExecutableDefinitions resolves one executable declaration for a single
+// platform. It is shared by the application-level and release-level forms so
+// both apply identical path, platform, and name-defaulting semantics.
+func resolveExecutableDefinitions(executable *ExecutableDefinition, executables []ExecutableDefinition, label, platform string) (Application, error) {
+	if (executable == nil) == (len(executables) == 0) {
+		return Application{}, fmt.Errorf("exactly one of %s.executable or %s.executables is required", label, label)
 	}
-	definitions := d.Executables
-	if d.Executable != nil {
-		definitions = []ExecutableDefinition{*d.Executable}
+	definitions := executables
+	if executable != nil {
+		definitions = []ExecutableDefinition{*executable}
 	}
 	result := Application{Executables: make([]Executable, 0, len(definitions))}
 	for _, definition := range definitions {
 		if (definition.Path == "") == (len(definition.Paths) == 0) {
-			return Application{}, errors.New("executable requires exactly one of path or paths")
+			return Application{}, fmt.Errorf("%s executable requires exactly one of path or paths", label)
 		}
 		resolvedPath := definition.Path
 		if resolvedPath == "" {
 			var ok bool
 			resolvedPath, ok = definition.Paths[platform]
 			if !ok {
-				return Application{}, fmt.Errorf("executable paths missing platform %q", platform)
+				return Application{}, fmt.Errorf("%s executable paths missing platform %q", label, platform)
 			}
 			for key := range definition.Paths {
 				if _, valid := ParsePlatformKey(key); !valid {
@@ -443,6 +462,19 @@ func (d ApplicationDefinition) resolve(platform string) (Application, error) {
 		result.Executables = append(result.Executables, Executable{Name: name, Path: resolvedPath, CreateBinLink: definition.CreateBinLink})
 	}
 	return result, nil
+}
+
+// resolveApplication returns the release-specific executable set for one
+// platform, or nil when the release does not declare its own executable form.
+func (d ReleaseDefinition) resolveApplication(platform string) (*Application, error) {
+	if d.Executable == nil && len(d.Executables) == 0 {
+		return nil, nil
+	}
+	application, err := resolveExecutableDefinitions(d.Executable, d.Executables, fmt.Sprintf("release %q", d.Version), platform)
+	if err != nil {
+		return nil, err
+	}
+	return &application, nil
 }
 
 func copyReleaseHistory(history ReleaseHistory) ReleaseHistory {
@@ -490,12 +522,20 @@ type Release struct {
 	Verification  Verification      `yaml:"verification" json:"verification"`
 	Archive       string            `yaml:"archive" json:"archive"`
 	NestedArchive NestedArchive     `yaml:"nested-archive,omitempty" json:"nested_archive,omitempty"`
+	// Application is the executable set resolved for this release when the
+	// release definition declared its own executable form. Nil means the
+	// shared application declaration applies. It is resolution state and is
+	// never serialized.
+	Application *Application `yaml:"-" json:"-"`
 }
 
 // SelectRelease projects one normalized release into the lifecycle-facing
 // package view, including only the runtime resolved for that release.
 func (m Manifest) SelectRelease(release Release) Manifest {
 	m.Release = release
+	if release.Application != nil {
+		m.Application = copyApplication(*release.Application)
+	}
 	m.selectReleaseRuntime()
 	return m
 }
@@ -753,7 +793,7 @@ func validateManifestShape(document *yaml.Node) error {
 		return errors.New("releases must be a non-empty sequence")
 	}
 	for index, value := range releases.Content {
-		entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"version", "artifacts"}, []string{"channel", "runtime", "nested-archive"})
+		entry, err := requiredMapping(value, fmt.Sprintf("release.releases[%d]", index), []string{"version", "artifacts"}, []string{"channel", "runtime", "nested-archive", "executable", "executables"})
 		if err != nil {
 			return err
 		}
@@ -765,6 +805,24 @@ func validateManifestShape(document *yaml.Node) error {
 		if nested, ok := entry["nested-archive"]; ok {
 			if _, err := requiredMapping(nested, "release.releases.nested-archive", []string{"archive", "path"}, nil); err != nil {
 				return err
+			}
+		}
+		if executable, ok := entry["executable"]; ok {
+			if _, both := entry["executables"]; both {
+				return fmt.Errorf("releases[%d] must not declare both executable and executables", index)
+			}
+			if err := validateExecutableDefinition(executable, fmt.Sprintf("release.releases[%d].executable", index)); err != nil {
+				return err
+			}
+		}
+		if executables, ok := entry["executables"]; ok {
+			if executables.Kind != yaml.SequenceNode || len(executables.Content) == 0 {
+				return fmt.Errorf("release.releases[%d].executables must be a non-empty sequence", index)
+			}
+			for executableIndex, executable := range executables.Content {
+				if err := validateExecutableDefinition(executable, fmt.Sprintf("release.releases[%d].executables[%d]", index, executableIndex)); err != nil {
+					return err
+				}
 			}
 		}
 		artifacts := entry["artifacts"]
@@ -794,26 +852,6 @@ func validateManifestShape(document *yaml.Node) error {
 	}
 	if (app["executable"] == nil) == (app["executables"] == nil) {
 		return errors.New("application must declare exactly one of executable or executables")
-	}
-	validateExecutableDefinition := func(node *yaml.Node, label string) error {
-		fields, err := requiredMapping(node, label, nil, []string{"name", "path", "paths", "create-bin-link"})
-		if err != nil {
-			return err
-		}
-		if (fields["path"] == nil) == (fields["paths"] == nil) {
-			return fmt.Errorf("%s must declare exactly one of path or paths", label)
-		}
-		if paths := fields["paths"]; paths != nil {
-			if paths.Kind != yaml.MappingNode || len(paths.Content) == 0 {
-				return fmt.Errorf("%s.paths must be a non-empty mapping", label)
-			}
-			for i := 0; i < len(paths.Content); i += 2 {
-				if paths.Content[i].Kind != yaml.ScalarNode || paths.Content[i].Value != PlatformLinuxAMD64 && paths.Content[i].Value != PlatformLinuxARM64 {
-					return fmt.Errorf("%s.paths contains unsupported platform", label)
-				}
-			}
-		}
-		return nil
 	}
 	if executable := app["executable"]; executable != nil {
 		if err := validateExecutableDefinition(executable, "application.executable"); err != nil {
@@ -888,6 +926,29 @@ func requiredMapping(node *yaml.Node, label string, required, optional []string)
 		}
 	}
 	return values, nil
+}
+
+// validateExecutableDefinition applies the shared executable shape rules to one
+// application-level or release-level executable node.
+func validateExecutableDefinition(node *yaml.Node, label string) error {
+	fields, err := requiredMapping(node, label, nil, []string{"name", "path", "paths", "create-bin-link"})
+	if err != nil {
+		return err
+	}
+	if (fields["path"] == nil) == (fields["paths"] == nil) {
+		return fmt.Errorf("%s must declare exactly one of path or paths", label)
+	}
+	if paths := fields["paths"]; paths != nil {
+		if paths.Kind != yaml.MappingNode || len(paths.Content) == 0 {
+			return fmt.Errorf("%s.paths must be a non-empty mapping", label)
+		}
+		for i := 0; i < len(paths.Content); i += 2 {
+			if paths.Content[i].Kind != yaml.ScalarNode || paths.Content[i].Value != PlatformLinuxAMD64 && paths.Content[i].Value != PlatformLinuxARM64 {
+				return fmt.Errorf("%s.paths contains unsupported platform", label)
+			}
+		}
+	}
+	return nil
 }
 
 func (m Manifest) Validate() error {
@@ -1373,7 +1434,11 @@ func (m Manifest) ValidateHistory() error {
 				return fmt.Errorf("release %q runtime reference: %w", release.Version, err)
 			}
 		}
-		if err := validateApplicationRelease(m, release); err != nil {
+		effective := m
+		if release.Application != nil {
+			effective.Application = *release.Application
+		}
+		if err := validateApplicationRelease(effective, release); err != nil {
 			return err
 		}
 	}

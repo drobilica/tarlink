@@ -957,9 +957,12 @@ func (r Runner) registryValidateCommand() *cobra.Command {
 }
 
 func (r Runner) registryCheckCommand() *cobra.Command {
-	usage := "usage: tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]"
+	usage := "usage: tarlink registry check <path> [--app <id> [--release <version> ...] | --old-root <path> | --all-artifacts]"
 	var options app.RegistryCheckOptions
 	command := &cobra.Command{Use: "check <path>", Short: "Check registry artifacts", Args: exactArgs(1, usage), PreRunE: func(*cobra.Command, []string) error {
+		if len(options.Releases) > 0 && options.App == "" {
+			return invalidCommand(usage)
+		}
 		selected := 0
 		if options.App != "" {
 			selected++
@@ -992,6 +995,7 @@ func (r Runner) registryCheckCommand() *cobra.Command {
 		return err
 	}}
 	command.Flags().StringVar(&options.App, "app", "", "check one application")
+	command.Flags().StringSliceVar(&options.Releases, "release", nil, "check only the given release version(s) of --app (repeatable)")
 	command.Flags().StringVar(&options.OldRoot, "old-root", "", "previous registry tree")
 	command.Flags().BoolVar(&options.AllArtifacts, "all-artifacts", false, "materialize all artifacts")
 	configureCommand(command, usage)

@@ -45,6 +45,18 @@ func TestValidateLedger(t *testing.T) {
 	}
 }
 
+func TestValidateLedgerUnsafeArtifactLayoutBlocker(t *testing.T) {
+	l := validLedger()
+	l.Candidates[0].Blockers = []string{"UNSAFE_ARTIFACT_LAYOUT"}
+	if err := ValidateLedger(l); err != nil {
+		t.Fatalf("blocked candidate with new blocker rejected: %v", err)
+	}
+	l.Candidates[0].Status = "ready"
+	if err := ValidateLedger(l); err == nil {
+		t.Fatal("ready candidate carrying the new blocker accepted")
+	}
+}
+
 func TestValidateLedgerEvidenceLinks(t *testing.T) {
 	l := validLedger()
 	l.Candidates[0].EvidenceLinks = []EvidenceLink{{Label: "issue", URL: "https://example.com/issue/1"}}
