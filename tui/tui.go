@@ -786,8 +786,14 @@ func applicationMarker(selected, cursor, color bool) string {
 }
 
 func (m model) reviewLines() []string {
+	var lines []string
+	// The tab bar stays in the shell on every screen, so the detail context
+	// moves into the workspace instead of replacing navigation.
+	if breadcrumb := m.breadcrumb(); breadcrumb != "" {
+		lines = append(lines, m.theme.muted.Render(fit(breadcrumb, max(1, viewWidth(m.width)-2))), "")
+	}
 	if len(m.selectedIDs) > 0 {
-		lines := []string{m.theme.panel.Render("Review selection"), fmt.Sprintf("%d applications selected", len(m.selectedIDs))}
+		lines = append(lines, m.theme.panel.Render("Review selection"), fmt.Sprintf("%d applications selected", len(m.selectedIDs)))
 		if len(m.batchTargets) > 0 {
 			lines = append(lines, "Versions locked for this operation:")
 			for _, target := range m.batchTargets {
@@ -805,7 +811,7 @@ func (m model) reviewLines() []string {
 		return []string{"Select an application to review."}
 	}
 	if m.screen == screenVersions {
-		lines := []string{m.theme.panel.Render(detailName(m.detail)), "Version history"}
+		lines = append(lines, m.theme.panel.Render(detailName(m.detail)), "Version history")
 		if len(m.versions) == 0 {
 			return append(lines, "", "No versions available.")
 		}
@@ -819,7 +825,7 @@ func (m model) reviewLines() []string {
 		}
 		return lines
 	}
-	lines := []string{m.theme.panel.Render(m.detail.Name)}
+	lines = append(lines, m.theme.panel.Render(m.detail.Name))
 	state := applicationStatus(*m.detail)
 	if m.detail.UpdateAvailable && !m.detail.Pinned {
 		state = "Update"
@@ -960,25 +966,23 @@ func (m model) headerLine() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(viewWidth(m.width)-measure.String(right)).Render(left), right)
 }
 
+// navigationScreen returns the top-level tab that owns the current screen.
+// Detail, version, and confirmation screens keep the tab that opened them
+// marked so the top navigation never disappears while they are active.
+func (m model) navigationScreen() screen {
+	if m.isListScreen() {
+		return m.screen
+	}
+	switch m.returnTo {
+	case screenInstalled, screenNotInstalled, screenUpdates:
+		return m.returnTo
+	}
+	return screenAvailable
+}
+
 func (m model) tabsLine() string {
 	if m.searching {
 		return fit("Search  "+m.searchInput.View(), m.width)
-	}
-	if m.screen == screenDetails || m.screen == screenVersions {
-		name := detailName(m.detail)
-		root := "Browse"
-		switch m.returnTo {
-		case screenInstalled:
-			root = "Installed"
-		case screenNotInstalled:
-			root = "Not installed"
-		case screenUpdates:
-			root = "Updates"
-		}
-		if m.screen == screenVersions {
-			return fit(root+" › "+name+" › Versions", m.width)
-		}
-		return fit(root+" › "+name, m.width)
 	}
 	installedCount, updatesCount := "", ""
 	if m.dataLoaded {
@@ -995,8 +999,9 @@ func (m model) tabsLine() string {
 		{screenUpdates, "Updates" + updatesCount},
 	}
 	parts := make([]string, len(labels))
+	active := m.navigationScreen()
 	for index, tab := range labels {
-		parts[index] = m.navigationLabel(tab.label, m.screen == tab.screen)
+		parts[index] = m.navigationLabel(tab.label, active == tab.screen)
 	}
 	var rows []string
 	row := ""
@@ -1041,6 +1046,29 @@ func (m model) navigationLabel(label string, active bool) string {
 	return lipgloss.NewStyle().Padding(0, 2).Render(rendered)
 }
 func (m model) separator() string { return strings.Repeat("─", viewWidth(m.width)) }
+
+// breadcrumb locates the detail workspace inside the active top-level tab.
+// It is rendered in the workspace because the shell tab bar stays constant.
+func (m model) breadcrumb() string {
+	if m.detail == nil || (m.screen != screenDetails && m.screen != screenVersions) {
+		return ""
+	}
+	root := "Browse"
+	switch m.returnTo {
+	case screenInstalled:
+		root = "Installed"
+	case screenNotInstalled:
+		root = "Not installed"
+	case screenUpdates:
+		root = "Updates"
+	}
+	value := root + " › " + detailName(m.detail)
+	if m.screen == screenVersions {
+		value += " › Versions"
+	}
+	return value
+}
+
 func detailName(value *app.Application) string {
 	if value == nil {
 		return ""

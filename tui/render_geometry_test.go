@@ -191,10 +191,16 @@ func TestEmptyColorTableHasNoSelectedPlaceholder(t *testing.T) {
 	if !strings.Contains(view, "No updates available") || strings.Contains(view, "\x1b[7m") {
 		t.Fatalf("empty table has selected row: %q", view)
 	}
-	for _, binding := range m.actionBindings() {
-		if binding.Help().Key == "↑↓" || binding.Help().Key == "Enter" {
-			t.Fatalf("empty list advertises unavailable action: %s", binding.Help().Key)
+	// Empty lists keep the fixed shell footer instead of dropping navigation
+	// actions. Updates omits only Space, which has no batch action there.
+	help := ansi.Strip(m.helpView())
+	for _, action := range []string{"↑↓ Navigate", "←/→ Tabs", "Enter Details", "? Help", "/ Search", "q Quit"} {
+		if !strings.Contains(help, action) {
+			t.Fatalf("empty list footer missing %q: %q", action, help)
 		}
+	}
+	if strings.Contains(help, "Space Toggle") {
+		t.Fatalf("empty updates footer advertises unsupported selection: %q", help)
 	}
 }
 

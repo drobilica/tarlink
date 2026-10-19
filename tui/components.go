@@ -179,13 +179,17 @@ func (m model) contextualActions() []contextualAction {
 		if len(m.selectedIDs) > 0 {
 			enterLabel = "Enter Review"
 		}
-		values := m.visibleApplications()
-		actions := make([]contextualAction, 0)
-		if len(values) > 0 {
-			actions = append(actions, action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, enterLabel))
+		// The list footer is a fixed shell legend: navigation, tabs, Enter,
+		// selection, search, help, and quit stay in place on every list tab,
+		// including empty ones. Space selection is omitted on Updates, where
+		// batch operations are unsupported.
+		actions := []contextualAction{
+			action(actionUp, b.Up, "Navigate"),
+			action(actionDown, b.Down, "Navigate"),
+			action(actionTabs, b.Tabs, "←/→ Tabs"),
+			action(actionEnter, b.Enter, enterLabel),
 		}
-		actions = append(actions, action(actionTabs, b.Tabs, "←/→ Tabs"))
-		if len(values) > 0 && (m.screen == screenAvailable || m.screen == screenInstalled || m.screen == screenNotInstalled) {
+		if m.screen != screenUpdates {
 			toggle := keypkg.NewBinding(keypkg.WithKeys("space"), keypkg.WithHelp("Space", "Select"))
 			actions = append(actions, action(actionToggle, toggle, "Space Toggle"))
 		}
@@ -244,11 +248,10 @@ func (m model) helpView() string {
 		helper = newHelp(m.color)
 	}
 	bindings := m.actionBindings()
-	// The list screens have the most bindings and the tab mnemonics are
-	// redundant with the arrow keys, so only their primary actions and help
-	// discovery stay in the short footer. Other screens expose few actions,
-	// so they keep every eligible binding — including destructive ones such
-	// as Uninstall — visible in policy order.
+	// List screens share one fixed shell legend so switching tabs or
+	// emptying a list never changes the footer. Up, Down, and Enter stay in
+	// the legend even with no rows, matching the keyboard policy. Help
+	// discovery and quit remain at the end.
 	if m.isListScreen() {
 		bindings = prioritizeListBindings(bindings)
 	}
@@ -261,7 +264,7 @@ func prioritizeListBindings(bindings []keypkg.Binding) []keypkg.Binding {
 		return bindings
 	}
 	prioritized := make([]keypkg.Binding, 0, len(bindings))
-	for _, want := range []string{"↑↓", "←/→", "Enter", "Space", "?", "Esc", "/", "q"} {
+	for _, want := range []string{"↑↓", "←/→", "Enter", "Space", "?", "/", "q"} {
 		for _, binding := range bindings {
 			if binding.Help().Key == want {
 				prioritized = append(prioritized, binding)
