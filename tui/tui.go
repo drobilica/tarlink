@@ -1178,6 +1178,12 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		m.searchInput.SetValue(m.query)
 		m.searchInput.Focus()
+	case m.matchesAction(message, actionTabs):
+		delta := -1
+		if keypkg.Matches(message, bindings.Right) {
+			delta = 1
+		}
+		m.switchAdjacentTab(delta)
 	case m.matchesAction(message, actionBrowse):
 		m.switchTab(screenAvailable)
 	case m.matchesAction(message, actionInstalled):
@@ -1932,6 +1938,18 @@ func (m *model) switchTab(target screen) {
 	m.detail = nil
 	m.screen = target
 	m.clampSelection()
+}
+
+func (m *model) switchAdjacentTab(delta int) {
+	tabs := [...]screen{screenAvailable, screenInstalled, screenNotInstalled, screenUpdates}
+	index := 0
+	for candidate, target := range tabs {
+		if target == m.screen {
+			index = candidate
+			break
+		}
+	}
+	m.switchTab(tabs[(index+delta+len(tabs))%len(tabs)])
 }
 
 func (m model) selectedID() string {
