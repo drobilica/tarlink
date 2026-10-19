@@ -301,6 +301,63 @@ func TestRejectUnsafeTarPaths(t *testing.T) {
 	}
 }
 
+func TestRejectedEntryErrorNamesOffendingEntry(t *testing.T) {
+	// A leading "./" is a real upstream archive layout that stays rejected;
+	// the error must name the offending entry so the failure is diagnosable.
+	for _, tc := range []struct {
+		name   string
+		format Format
+		data   func(t *testing.T, entry string) []byte
+	}{
+		{"tar", FormatTarGz, func(t *testing.T, entry string) []byte {
+			return tarFixture(t, []tar.Header{{Name: entry, Mode: 0o644, Size: 1, Typeflag: tar.TypeReg}})
+		}},
+		{"zip", FormatZip, func(t *testing.T, entry string) []byte {
+			return zipFixture(t, entry)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, entry := range []string{"./Game", "./Play.sh"} {
+				err := Extract(context.Background(), bytes.NewReader(tc.data(t, entry)), t.TempDir(), tc.format, Limits{})
+				if !errors.Is(err, ErrPath) {
+					t.Fatalf("entry %q error = %v, want ErrPath", entry, err)
+				}
+				if !strings.Contains(err.Error(), entry) {
+					t.Fatalf("entry %q error %q does not name the entry", entry, err)
+				}
+			}
+		})
+	}
+}
+
+func TestRejectedEntryErrorBoundsAndEscapesHostileName(t *testing.T) {
+	control := "bad\x01name\n"
+	data := tarFixture(t, []tar.Header{{Name: control, Mode: 0o644, Size: 1, Typeflag: tar.TypeReg}})
+	err := Extract(context.Background(), bytes.NewReader(data), t.TempDir(), FormatTarGz, Limits{})
+	if !errors.Is(err, ErrPath) {
+		t.Fatalf("control-character entry error = %v, want ErrPath", err)
+	}
+	message := err.Error()
+	for i := 0; i < len(message); i++ {
+		if message[i] < 0x20 || message[i] == 0x7f {
+			t.Fatalf("error %q contains raw control byte %#x", message, message[i])
+		}
+	}
+	if !strings.Contains(message, `\x01`) {
+		t.Fatalf("error %q does not escape the control byte", message)
+	}
+
+	long := strings.Repeat("a", 300) + "\x01"
+	data = tarFixture(t, []tar.Header{{Name: long, Mode: 0o644, Size: 1, Typeflag: tar.TypeReg}})
+	err = Extract(context.Background(), bytes.NewReader(data), t.TempDir(), FormatTarGz, Limits{})
+	if !errors.Is(err, ErrPath) {
+		t.Fatalf("long entry error = %v, want ErrPath", err)
+	}
+	if strings.Contains(err.Error(), strings.Repeat("a", maxEntryNameBytes+1)) {
+		t.Fatalf("error %q was not length-bounded", err)
+	}
+}
+
 func TestRejectUnsafeTarTypesAndCollisions(t *testing.T) {
 	for _, tc := range []struct {
 		name string

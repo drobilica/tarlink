@@ -98,8 +98,12 @@ type DiscoveryEntry struct {
 	SelectionRevision  int                      `json:"selection_revision"`
 	ReleaseAssetFilter string                   `json:"release_asset_filter,omitempty"`
 	RegistryMatches    []DiscoveryRegistryMatch `json:"registry_matches"`
-	Status             string                   `json:"status"`
-	Reasons            []string                 `json:"reasons,omitempty"`
+	// RepositoryRelocatedTo records the provider's canonical owner/repo when it
+	// differs from the requested catalog repository. It is metadata-only and
+	// never weakens the exact or alias matching decision.
+	RepositoryRelocatedTo string   `json:"repository_relocated_to,omitempty"`
+	Status                string   `json:"status"`
+	Reasons               []string `json:"reasons,omitempty"`
 }
 type DiscoveryAssetGroup struct {
 	Format string   `json:"format"`
@@ -535,6 +539,7 @@ func discoverQuiver(ctx context.Context, rd catalogReader, source, registryRoot 
 			canonical, lookup := lookupIdentity(repo)
 			unresolved := lookup != nil || canonical == ""
 			if !unresolved && canonical != repo {
+				e.RepositoryRelocatedTo = canonical
 				matches := registryMatches(reg, provider, canonical)
 				e.RegistryMatches = appendRegistryMatches(e.RegistryMatches, matches)
 			}
@@ -1046,10 +1051,14 @@ func appText(e DiscoveryEntry) string {
 	return name + " [" + identity + "]"
 }
 func statusText(e DiscoveryEntry) string {
-	if len(e.Reasons) == 0 {
+	reasons := e.Reasons
+	if e.RepositoryRelocatedTo != "" {
+		reasons = append(append([]string(nil), reasons...), "repository relocated: "+e.RepositoryRelocatedTo)
+	}
+	if len(reasons) == 0 {
 		return e.Status
 	}
-	return e.Status + " (" + strings.Join(e.Reasons, "; ") + ")"
+	return e.Status + " (" + strings.Join(reasons, "; ") + ")"
 }
 func revisionText(v string) string {
 	if v == "" {

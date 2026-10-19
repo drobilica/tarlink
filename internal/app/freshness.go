@@ -34,6 +34,13 @@ func (core *Core) Freshness(ctx context.Context, appID string) (freshness.Report
 	if err != nil {
 		return freshness.Report{}, classify("registry freshness", err)
 	}
+	if !item.WantsEnabled() {
+		return freshness.Report{}, &Error{
+			Code: CodeInvalidArguments,
+			Op:   "registry freshness",
+			Err:  fmt.Errorf("application %q is disabled", appID),
+		}
+	}
 	channels := make([]string, 0, len(item.ReleaseHistory.Channels))
 	for channel := range item.ReleaseHistory.Channels {
 		channels = append(channels, channel)

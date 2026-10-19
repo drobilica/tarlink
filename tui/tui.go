@@ -917,11 +917,6 @@ func (m model) overlayLines() []string {
 	return lines
 }
 
-func (m model) renderCard(content []string, width int) string {
-	contentWidth, bounded := m.modalContent(content, width)
-	return m.theme.modal.Width(contentWidth).Render(strings.Join(bounded, "\n"))
-}
-
 func (m model) modalContent(content []string, width int) (int, []string) {
 	available := max(1, width-8)
 	contentWidth := min(72, available)

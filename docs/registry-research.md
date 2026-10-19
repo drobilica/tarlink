@@ -83,16 +83,20 @@ directories, and searches at most two levels for `manifest.yaml`; it does not
 download artifacts or replace `registry check`. JSON is a stable summary with
 one result per manifest.
 
-`registry add` consumes the same derived facts and writes nothing by default:
-it prints schema-v5 YAML suitable for review. `--output PATH` creates a new
-file only and refuses to overwrite an existing path; `--dry-run` prints the
-candidate without writing. The interactive command asks only for semantic
-metadata (normally a category and, for games/recompilations, bin-link policy)
-or a genuinely ambiguous executable/icon selection. Use `--non-interactive`
-for automation. It emits `status: needs-input` with stable field/reason codes
-when decisions remain; provide reviewed values with `--categories`, and, when
-needed, `--create-bin-link` or `--no-create-bin-link`. This tool does not
-modify `tarlink-registry`, run Git, or approve an application.
+`registry add` prints schema-v5 YAML for review by default. `--output PATH`
+creates a new file and refuses to overwrite it, including with `--json`.
+`--registry PATH` instead stages a new `apps/<id>/manifest.yaml` in an explicitly
+selected local registry, after validating the complete proposed tree. Existing
+applications are never overwritten. `--dry-run` previews without changing the
+checkout; `--output` and `--registry` are mutually exclusive.
+
+Use `--non-interactive --json` for agents. Unresolved decisions return
+`status: needs-input`, stable field/reason codes, and exit 2 without writing.
+Supply reviewed categories and bin-link policy with `--categories` and
+`--create-bin-link`/`--no-create-bin-link`. Choose among inspected paths with
+`--executable` and `--icon`; `--no-icon` explicitly omits desktop integration.
+These choices cannot bypass platform, artifact, digest, or extraction blockers.
+The interactive command asks for the same semantic decisions.
 
 The official registry review remains the approval boundary. `registry inspect`
 explains facts, `registry add` constructs a candidate, `registry validate`
@@ -102,8 +106,54 @@ materializes artifacts through the lifecycle.
 Metadata used by `registry inspect` and `registry add` is cached for 24 hours under
 `$XDG_CACHE_HOME/tarlink/registry-research/discovery` (or the corresponding
 `$HOME/.cache` location). `--refresh` bypasses discovery metadata but does not
-turn the command into an updater. No command here edits manifests, commits
-changes, executes application binaries, or automatically accepts a release.
+turn the command into an updater. Explicit local edits never commit, publish,
+execute application binaries, or automatically accept a release.
+
+## Agent registry changes
+
+Start from a clean registry task branch based on current `origin/main` and
+record its starting SHA. The research backlog remains optional; adding an app
+does not require a ledger entry.
+
+```text
+tarlink registry add OWNER/REPO --non-interactive --categories utilities \
+  --registry ../tarlink-registry --dry-run --json
+```
+
+Review the resolved choices, then repeat without `--dry-run`. The JSON `edit`
+object reports the path, action, whether a change is needed, and whether bytes
+were written. A ready candidate is still unapproved until its registry PR
+passes checks and merges.
+
+Withdraw or restore an application with:
+
+```text
+tarlink registry disable <app> --registry ../tarlink-registry --dry-run --json
+tarlink registry enable <app> --registry ../tarlink-registry --dry-run --json
+```
+
+Repeat without `--dry-run` to apply. Withdrawal sets `enabled: false`; it keeps
+approved releases and runtime references, and does not uninstall anything.
+Restoration sets `enabled: true`. Repeating the requested state is a no-op.
+Edits preserve unrelated manifest bytes and comments. They lock the selected
+registry directory, reject symlinked paths, validate a private staged tree,
+and publish the completed file or new app directory atomically. Separate
+agents should use separate Git worktrees; direct edits by other tools are not
+coordinated by this lock.
+
+From the TarLink checkout, validate against the recorded starting SHA:
+
+```text
+./scripts/check-registry.sh ../tarlink-registry --changed-from <starting-sha>
+```
+
+This wrapper snapshots both `apps/` and `runtimes/` from that exact commit and
+runs full structural and changed-artifact lifecycle validation. It does not
+execute application binaries. Commit only the intended manifest changes, open
+a registry PR, and require its exact `structural` and `artifacts` checks before
+merging. No human approval is mandatory; agents must verify the current PR head
+and use `--match-head-commit` when merging. Follow the
+[remote verification steps](../CONTRIBUTING.md#agent-pull-requests) afterward.
 
 ## Candidate tools are optional
 

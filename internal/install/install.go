@@ -1081,7 +1081,7 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 	}
 	for _, executable := range item.Application.Executables {
 		if err := validateExecutable(applicationRoot, executable.Path); err != nil {
-			return materializedArtifact{}, err
+			return materializedArtifact{}, fmt.Errorf("application %s release %q (%s/%s) executable %q: %w", item.ID, item.Release.Version, item.Platform.OS, item.Platform.Arch, executable.Name, err)
 		}
 	}
 	if !item.Desktop.Icon.IsZero() {
@@ -1438,7 +1438,7 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	}
 	for _, executable := range installed.Executables {
 		if err := validateExecutable(retained, executable.Path); err != nil {
-			return Outcome{}, err
+			return Outcome{}, fmt.Errorf("application %s release %q executable %q: %w", appID, installed.Previous, executable.Name, err)
 		}
 	}
 	spec, err := manager.integrationSpec(installed, "", nil)

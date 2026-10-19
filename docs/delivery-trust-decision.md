@@ -55,23 +55,19 @@ registry history, publishing a new identity through the independent trust-root
 channels, and issuing a clearly documented recovery release. Existing installed
 bytes cannot be retroactively authenticated by replacing a checksum.
 
-## Pending repository settings
+## Agent-compatible repository protection
 
-The settings proposal is unapplied. Apply it in this order:
+The merge gate requires a pull request and successful GitHub Actions checks on
+an up-to-date branch. Agents may merge without a human approval. Administrators
+are subject to the gate; force-pushes and branch deletion are disallowed.
+TarLink's desired configuration is stored in
+[branch-protection.json](../.github/branch-protection.json), with application and
+verification instructions in [Contributing](../CONTRIBUTING.md#agent-pull-requests).
+The registry uses its existing `structural` and `artifacts` check names; TarLink
+uses `Canonical validation`. Require the exact checks only after confirming
+that their workflows emit them on every pull request. Read back the effective
+protection after changing settings.
 
-1. Confirm the exact checks run on pull requests: `Canonical validation` in
-   TarLink, and `structural` plus `artifacts` in the registry.
-2. Protect TarLink `main` with pull requests required, one approving review,
-   stale approval dismissal, and `Canonical validation` required; enforce it
-   for administrators, disallow force-push/deletion, and configure no bypass
-   actors. Keep the registry's existing `structural`/`artifacts` requirements,
-   then add the same review and bypass restrictions.
-3. Restrict `v*` tag creation, update, and deletion to the release-maintainer
-   identity, disallow force updates, and review the effective release workflow
-   token permissions. The draft/publish jobs retain write access; remote
-   verification remains read-only.
-4. Read back both repositories' effective rulesets/protection and verify a
-   normal pull request cannot merge without the named checks.
-
-No live repository settings, branch protection, bypass, release control, or tag
-control was changed by this task.
+Release tag restrictions, identity custody, and independent signing remain
+separate proposals. This merge policy does not change the registry or release
+trust authorities.

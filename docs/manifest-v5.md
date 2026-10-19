@@ -13,6 +13,7 @@ summary: <short description>
 homepage: <HTTPS URL>
 categories: [utilities]
 requirements: [original-game-data] # optional
+enabled: true                  # optional application lifecycle toggle
 release:
   current: <version>                # omit for the expanded multi-channel form
   archive: tar.gz                   # omit when archives differ by artifact
@@ -26,6 +27,14 @@ release:
       nested-archive:                # optional and release-specific
         path: <canonical relative path in outer output>
         archive: tar.gz | tar.xz | zip
+      # Optional release-specific executable set. When present it replaces the
+      # shared application declaration for this release only.
+      executable:
+        name: <optional logical command name>
+        path: <canonical relative path>
+        # or: paths: {linux-amd64: ..., linux-arm64: ...}
+      # the list form is the sibling key executables:
+      # executables: [...]
       artifacts:
         linux-amd64:
           url: <immutable HTTPS artifact URL>
@@ -93,6 +102,35 @@ resource references are rejected. Only XML's predefined/numeric character
 references are accepted; undefined entities fail parsing. Accepted SVG bytes are retained unchanged and
 installed in `hicolor/scalable/apps`; desktop entries continue to reference the
 themed icon name, not a filesystem path.
+
+When an extracted archive has exactly one top-level entry and that entry is a
+real directory, TarLink treats it as packaging and strips it. Executable paths
+and bundled desktop icon paths are relative to that stripped application root,
+mirroring `normalizedApplicationRoot` in `internal/install/install.go`.
+
+A release entry may optionally declare its own `executable` or `executables`.
+When present it is the exact executable set for that one release and replaces
+the shared `application` declaration for that release; when absent the shared
+declaration applies. There is no merging, fallback ordering, or effect on any
+other release. This lets an application change its executable path (for example
+when migrating packaging or renaming a binary) while retained releases keep
+their original executable. Because the resolved package identity is per
+release, an application that migrates packaging must declare the release-level
+executable on the affected releases; otherwise the retained release's
+fingerprint changes, re-materialization uses the new path, and the retained
+release can no longer be materialized. The shared `application.executable` or
+`application.executables` declaration remains required and applies to every
+release that does not declare its own.
+
+`enabled` is the application lifecycle toggle. An omitted value, or an
+explicit `enabled: true`, keeps the application offered by the catalog. An
+explicit `enabled: false` temporarily disables it: the application is not
+offered by search or listing, cannot be installed, updated, or
+freshness-checked, and the registry checker never materializes it.
+Disabled applications remain ordinary, fully validated registry data and can
+be re-enabled by setting the flag back. Installation state that already
+exists for a disabled application remains manageable through uninstall and
+rollback.
 
 Schema v5 has no manifest-authored revision. TarLink derives a deterministic
 resolved-package fingerprint from the selected release artifact and all

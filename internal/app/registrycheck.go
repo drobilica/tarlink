@@ -14,6 +14,7 @@ import (
 type RegistryCheckOptions struct {
 	Root         string
 	App          string
+	Releases     []string
 	OldRoot      string
 	AllArtifacts bool
 }
@@ -36,6 +37,9 @@ type RegistryCheckService interface {
 func (core *Core) CheckRegistry(ctx context.Context, options RegistryCheckOptions) (RegistryCheckResult, error) {
 	if options.Root == "" {
 		return RegistryCheckResult{}, classify("registry check", errors.New("registry path is required"))
+	}
+	if len(options.Releases) > 0 && options.App == "" {
+		return RegistryCheckResult{}, classify("registry check", errors.New("registry check release selection requires an application"))
 	}
 	selected := 0
 	if options.App != "" {
@@ -61,7 +65,7 @@ func (core *Core) CheckRegistry(ctx context.Context, options RegistryCheckOption
 			return RegistryCheckResult{}, classify("registry check", err)
 		}
 	}
-	selection, err := registrycheck.Select(root, options.App, options.AllArtifacts, oldRoot)
+	selection, err := registrycheck.Select(root, options.App, options.Releases, options.AllArtifacts, oldRoot)
 	if err != nil {
 		return RegistryCheckResult{}, classify("registry check", err)
 	}

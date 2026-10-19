@@ -202,6 +202,10 @@ const (
 	APIErrorMalformed   = "malformed_response"
 	APIErrorRedirect    = "redirect_security_violation"
 	APIErrorNetwork     = "network_failure"
+	// APIErrorTagWithoutRelease distinguishes a retained git tag whose release
+	// object or assets were removed from a plain missing release. The git tag
+	// is a separate, durable namespace and outlives its release.
+	APIErrorTagWithoutRelease = "tag_without_release"
 )
 
 func (e *APIError) Error() string { return e.Message }
@@ -445,6 +449,15 @@ func (c *Client) DiscoverRelease(ctx context.Context, raw, tag string) (Release,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// A retained git tag can outlive its release object. Probe the tag only
+		// on an exact 404 so the caller can tell a removed release apart from a
+		// repository or tag that never existed. Any probe failure falls back to
+		// the original response classification.
+		if resp.StatusCode == http.StatusNotFound {
+			if exists, probeErr := c.gitTagExists(ctx, repo, tag); probeErr == nil && exists {
+				return Release{}, &APIError{Status: http.StatusNotFound, Kind: APIErrorTagWithoutRelease, Message: fmt.Sprintf("GitHub tag %q exists but its release is not available", tag)}
+			}
+		}
 		return Release{}, classifyStatus(resp)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
@@ -963,6 +976,44 @@ func (c *Client) FetchRepositoryFile(ctx context.Context, file RepositoryFile) (
 	return data, nil
 }
 
+// gitTagExists reports whether an exact git tag reference still exists. It is
+// consulted only after GitHub returns 404 for an exact release-by-tag lookup,
+// using the same bounded, same-origin read path as other metadata calls. A
+// nonexistent tag (or an empty repository) reports false; probe failures are
+// returned so the caller can fall back to the original classification.
+func (c *Client) gitTagExists(ctx context.Context, repo Repository, tag string) (bool, error) {
+	endpoint := c.repositoryAPIURL(repo) + "/git/ref/tags/" + url.PathEscape(tag)
+	resp, err := c.apiGet(ctx, endpoint)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound, http.StatusConflict:
+		return false, nil
+	default:
+		return false, classifyStatus(resp)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return false, &APIError{Kind: APIErrorNetwork, Message: fmt.Sprintf("read GitHub tag reference: %v", err), Cause: err}
+	}
+	if int64(len(body)) > maxResponseBytes {
+		return false, &APIError{Kind: APIErrorMalformed, Message: "GitHub tag reference response exceeds size limit"}
+	}
+	var reference apiGitReference
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(&reference); err != nil {
+		return false, &APIError{Kind: APIErrorMalformed, Message: fmt.Sprintf("decode GitHub tag reference: %v", err)}
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return false, &APIError{Kind: APIErrorMalformed, Message: "trailing GitHub tag reference response data"}
+	}
+	return reference.Ref == "refs/tags/"+tag, nil
+}
+
 func classifyStatus(resp *http.Response) error {
 	kind := APIErrorServer
 	switch resp.StatusCode {
@@ -1403,6 +1454,13 @@ func inspectVerified(ctx context.Context, artifact Artifact, format archive.Form
 	if err := archive.Extract(ctx, f, root, format, archive.DefaultLimits()); err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return Inspection{}, &InspectError{Kind: InspectErrorCanceled, Cause: err}
+		}
+		// A structurally valid archive whose member paths cannot satisfy
+		// TarLink's extraction policy is a distinct installability problem from
+		// an unsupported or malformed artifact. Only the message text changes
+		// upstream; detection relies on the sentinel error.
+		if errors.Is(err, archive.ErrPath) {
+			return Inspection{ArtifactType: string(format), ComputedDigests: inspection.ComputedDigests, Blockers: []string{"UNSAFE_ARTIFACT_LAYOUT"}}, nil
 		}
 		return Inspection{ArtifactType: string(format), ComputedDigests: inspection.ComputedDigests, Blockers: []string{"UNSUPPORTED_ARTIFACT"}}, nil
 	}

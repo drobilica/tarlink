@@ -110,7 +110,7 @@ func checkerMaterializeManifest(server *httptest.Server, data []byte, executable
 }
 
 func TestAppSelectsExactArchitectures(t *testing.T) {
-	selection, err := App(writeCheckerRegistry(t, checkerDualPlatform()), "fixture")
+	selection, err := Select(writeCheckerRegistry(t, checkerDualPlatform()), "fixture", nil, false, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,12 +121,36 @@ func TestAppSelectsExactArchitectures(t *testing.T) {
 
 func TestAppProjectsEveryApprovedHistoricalRelease(t *testing.T) {
 	body := strings.Replace(checkerManifest, "application:\n", "    - version: \"0.9\"\n      artifacts:\n        linux-amd64:\n          url: https://example.com/fixture-0.9.tar.gz\n          verification:\n            digest: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789\n            source: https://example.com/SHA256SUMS-0.9\napplication:\n", 1)
-	selection, err := App(writeCheckerRegistry(t, body), "fixture")
+	selection, err := Select(writeCheckerRegistry(t, body), "fixture", nil, false, "")
 	if err != nil || len(selection.Items) != 2 {
 		t.Fatalf("selection = %#v, error = %v", selection.Items, err)
 	}
 	if selection.Items[0].Release.Version != "0.9" || selection.Items[1].Release.Version != "1.0" {
 		t.Fatalf("release projections = %#v", selection.Items)
+	}
+}
+
+func TestAppScopesSelectedReleases(t *testing.T) {
+	body := strings.Replace(checkerManifest, "application:\n", "    - version: \"0.9\"\n      artifacts:\n        linux-amd64:\n          url: https://example.com/fixture-0.9.tar.gz\n          verification:\n            digest: abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789\n            source: https://example.com/SHA256SUMS-0.9\napplication:\n", 1)
+	root := writeCheckerRegistry(t, body)
+
+	selection, err := Select(root, "fixture", []string{"0.9"}, false, "")
+	if err != nil {
+		t.Fatalf("release scoping error = %v", err)
+	}
+	if len(selection.Items) != 1 || selection.Items[0].Release.Version != "0.9" {
+		t.Fatalf("release-scoped selection = %#v", selection.Items)
+	}
+
+	selection, err = Select(root, "fixture", []string{"0.9", "1.0"}, false, "")
+	if err != nil || len(selection.Items) != 2 {
+		t.Fatalf("multi-release selection = %#v, error = %v", selection.Items, err)
+	}
+
+	if _, err := Select(root, "fixture", []string{"9.9"}, false, ""); err == nil {
+		t.Fatal("unknown release unexpectedly accepted")
+	} else if !strings.Contains(err.Error(), "fixture") || !strings.Contains(err.Error(), "9.9") {
+		t.Fatalf("unknown release error = %v", err)
 	}
 }
 
@@ -233,7 +257,7 @@ func TestChangedFingerprintAndMetadataBehavior(t *testing.T) {
 		"source":  strings.Replace(checkerManifest, "https://example.com/SHA256SUMS", "https://example.com/other-source", 1),
 		"digest":  strings.Replace(checkerManifest, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", 1),
 	} {
-		selection, err := Changed(writeCheckerRegistry(t, body), oldRoot)
+		selection, err := Select(writeCheckerRegistry(t, body), "", nil, false, oldRoot)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -247,7 +271,7 @@ func TestChangedFingerprintAndMetadataBehavior(t *testing.T) {
 	}
 	archive := strings.Replace(checkerManifest, "archive: tar.gz", "archive: appimage", 1)
 	archive = strings.Replace(archive, "path: fixture", "path: appimage", 1)
-	if selection, err := Changed(writeCheckerRegistry(t, archive), oldRoot); err != nil || len(selection.Items) != 1 {
+	if selection, err := Select(writeCheckerRegistry(t, archive), "", nil, false, oldRoot); err != nil || len(selection.Items) != 1 {
 		t.Fatalf("archive change selection = %#v, error = %v", selection.Items, err)
 	}
 }
@@ -256,24 +280,71 @@ func TestChangedHistoryAndPlatformLifecycle(t *testing.T) {
 	oldRoot := writeCheckerRegistry(t, checkerManifest)
 	changed := strings.Replace(checkerManifest, "  current: \"1.0\"", "  current: \"2.0\"", 1)
 	changed = strings.Replace(changed, "application:\n", "    - version: \"2.0\"\n      artifacts:\n        linux-amd64:\n          url: https://example.com/fixture-2.0.tar.gz\n          verification:\n            digest: 1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef\n            source: https://example.com/SHA256SUMS-2.0\napplication:\n", 1)
-	selection, err := Changed(writeCheckerRegistry(t, changed), oldRoot)
+	selection, err := Select(writeCheckerRegistry(t, changed), "", nil, false, oldRoot)
 	if err != nil || len(selection.Items) != 1 || selection.Items[0].Release.Version != "2.0" {
 		t.Fatalf("history selection = %#v, error = %v", selection.Items, err)
 	}
 
 	dual := checkerDualPlatform()
-	selection, err = Changed(writeCheckerRegistry(t, dual), writeCheckerRegistry(t, checkerManifest))
+	selection, err = Select(writeCheckerRegistry(t, dual), "", nil, false, writeCheckerRegistry(t, checkerManifest))
 	if err != nil || len(selection.Items) != 1 || selection.Items[0].Platform.Arch != "arm64" {
 		t.Fatalf("new platform selection = %#v, error = %v", selection.Items, err)
 	}
-	if _, err := Changed(writeCheckerRegistry(t, checkerManifest), writeCheckerRegistry(t, dual)); err == nil {
+	if _, err := Select(writeCheckerRegistry(t, checkerManifest), "", nil, false, writeCheckerRegistry(t, dual)); err == nil {
 		t.Fatal("removed approved platform unexpectedly accepted")
 	}
 }
 
 func TestStructuralRejectsSchemaV4(t *testing.T) {
 	legacy := strings.Replace(checkerManifest, "schema: 5", "schema: 4", 1)
-	if err := Structural(writeCheckerRegistry(t, legacy)); err == nil {
+	if _, err := Select(writeCheckerRegistry(t, legacy), "", nil, false, ""); err == nil {
 		t.Fatal("schema v4 unexpectedly accepted")
+	}
+}
+
+func TestDisabledApplicationIsNotSelectedForCheck(t *testing.T) {
+	disabled := strings.Replace(checkerManifest, "categories: [utilities]", "categories: [utilities]\nenabled: false", 1)
+	if selection, err := Select(writeCheckerRegistry(t, disabled), "fixture", nil, false, ""); err == nil {
+		t.Fatalf("disabled application unexpectedly selected: %#v", selection.Items)
+	} else if !strings.Contains(err.Error(), "is disabled") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestDisabledApplicationsAreNotMaterialized(t *testing.T) {
+	disabled := strings.Replace(checkerManifest, "categories: [utilities]", "categories: [utilities]\nenabled: false", 1)
+	selection, err := Select(writeCheckerRegistry(t, disabled), "", nil, true, "")
+	if err != nil {
+		t.Fatalf("ValidateTree() error = %v", err)
+	}
+	if len(selection.Items) != 0 {
+		t.Fatalf("disabled application must not be selected, got %#v", selection.Items)
+	}
+}
+
+func TestDisabledTransitionIsNotChecked(t *testing.T) {
+	oldRoot := writeCheckerRegistry(t, checkerManifest)
+	disabled := strings.Replace(checkerManifest, "categories: [utilities]", "categories: [utilities]\nenabled: false", 1)
+	currentRoot := writeCheckerRegistry(t, disabled)
+	selection, err := Select(currentRoot, "", nil, false, oldRoot)
+	if err != nil {
+		t.Fatalf("changed selection error = %v", err)
+	}
+	if len(selection.Items) != 0 {
+		t.Fatalf("disabled application must not be checked, got %#v", selection.Items)
+	}
+}
+
+func TestEnabledTransitionIsChecked(t *testing.T) {
+	disabled := strings.Replace(checkerManifest, "categories: [utilities]", "categories: [utilities]\nenabled: false", 1)
+	enabled := strings.Replace(disabled, "enabled: false", "enabled: true", 1)
+	oldRoot := writeCheckerRegistry(t, disabled)
+	currentRoot := writeCheckerRegistry(t, enabled)
+	selection, err := Select(currentRoot, "", nil, false, oldRoot)
+	if err != nil {
+		t.Fatalf("changed selection error = %v", err)
+	}
+	if len(selection.Items) == 0 {
+		t.Fatal("re-enabled application must be checked")
 	}
 }

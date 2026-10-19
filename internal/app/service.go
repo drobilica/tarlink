@@ -416,6 +416,13 @@ func (core *Core) CheckInstallPath(appID string) ([]integration.PathConflict, er
 	if err != nil {
 		return nil, err
 	}
+	if !item.WantsEnabled() {
+		return nil, &Error{
+			Code: CodeInvalidArguments,
+			Op:   "check install path",
+			Err:  fmt.Errorf("application %q is disabled", appID),
+		}
+	}
 	if err := core.checkManifestPlatform(item); err != nil {
 		return nil, err
 	}
@@ -772,6 +779,13 @@ func (core *Core) resolveSelector(ctx context.Context, value string, sink Progre
 			return selector, nil, catalog, &Error{Code: CodeUnsupportedPlatform, Op: "resolve application", Err: err}
 		}
 		return selector, nil, catalog, &Error{Code: CodeNotFound, Op: "resolve application", Err: err}
+	}
+	if !item.WantsEnabled() {
+		return selector, nil, catalog, &Error{
+			Code: CodeInvalidArguments,
+			Op:   "resolve application",
+			Err:  fmt.Errorf("application %q is disabled", selector.App),
+		}
 	}
 	return selector, item, catalog, nil
 }

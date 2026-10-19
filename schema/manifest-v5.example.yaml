@@ -1,12 +1,15 @@
 # Canonical manifest v5 example. Values are intentionally reviewed Helm
 # 4.2.4 Linux releases; this file is documentation, not a second registry source.
 # Optional desktop icons may be bundled paths or SHA-256-pinned remote PNG/SVG.
+# enabled=false temporarily disables an application from the catalog
+# lifecycle; the default is enabled.
 schema: 5
 id: helm
 name: Helm
 summary: Package manager for Kubernetes
 homepage: https://helm.sh/
 categories: [development, utilities]
+enabled: true
 release:
   current: "4.2.4"
   archive: tar.gz

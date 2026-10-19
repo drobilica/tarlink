@@ -22,35 +22,68 @@ type Selection struct {
 	Items []*manifest.Manifest
 }
 
-func Structural(root string) error {
-	_, err := registry.ValidateTree(root)
-	return err
-}
-
 // Select validates root once and selects the requested materialization set.
 // Keeping validation and selection together lets callers that need both avoid
 // reparsing every manifest (the registry checker is commonly run this way).
-func Select(root, appID string, allArtifacts bool, oldRoot string) (Selection, error) {
+// When appID is set and releases is non-empty, only the app's projections for
+// those versions are selected so a single change can be validated without
+// materializing every retained release.
+func Select(root, appID string, releases []string, allArtifacts bool, oldRoot string) (Selection, error) {
 	catalog, err := registry.ValidateTree(root)
 	if err != nil {
 		return Selection{}, err
 	}
 	switch {
 	case appID != "":
-		return appFromCatalog(catalog, appID)
+		selection, err := appFromCatalog(catalog, appID)
+		if err != nil {
+			return Selection{}, err
+		}
+		if len(releases) == 0 {
+			return selection, nil
+		}
+		return scopeReleases(selection, appID, releases)
 	case allArtifacts:
 		return allFromCatalog(catalog), nil
 	case oldRoot != "":
-		return changedFromCatalog(root, oldRoot, catalog)
+		return changedFromCatalog(oldRoot, catalog)
 	default:
 		return Selection{}, nil
 	}
+}
+
+// scopeReleases keeps the selected projections whose release version was
+// requested. A version that matches no projection for the application is an
+// error: silently checking nothing would mask a typo or a stale release
+// reference.
+func scopeReleases(selection Selection, appID string, releases []string) (Selection, error) {
+	wanted := make(map[string]bool, len(releases))
+	for _, version := range releases {
+		wanted[version] = true
+	}
+	var items []*manifest.Manifest
+	found := make(map[string]bool, len(releases))
+	for _, item := range selection.Items {
+		if wanted[item.Release.Version] {
+			items = append(items, item)
+			found[item.Release.Version] = true
+		}
+	}
+	for _, version := range releases {
+		if !found[version] {
+			return Selection{}, fmt.Errorf("application %q has no release %q", appID, version)
+		}
+	}
+	return Selection{Items: items}, nil
 }
 
 func allFromCatalog(catalog *registry.Catalog) Selection {
 	var items []*manifest.Manifest
 	for _, variants := range catalog.Variants {
 		for _, item := range variants {
+			if !item.WantsEnabled() {
+				continue
+			}
 			items = append(items, releaseProjections(item)...)
 		}
 	}
@@ -69,14 +102,6 @@ func allFromCatalog(catalog *registry.Catalog) Selection {
 	return Selection{Items: items}
 }
 
-func App(root, id string) (Selection, error) {
-	catalog, err := registry.ValidateTree(root)
-	if err != nil {
-		return Selection{}, err
-	}
-	return appFromCatalog(catalog, id)
-}
-
 func appFromCatalog(catalog *registry.Catalog, id string) (Selection, error) {
 	all := allFromCatalog(catalog)
 	var items []*manifest.Manifest
@@ -88,22 +113,16 @@ func appFromCatalog(catalog *registry.Catalog, id string) (Selection, error) {
 	if len(items) > 0 {
 		return Selection{Items: items}, nil
 	}
+	if isDisabled(catalog, id) {
+		return Selection{}, fmt.Errorf("application %q is disabled", id)
+	}
 	return Selection{}, fmt.Errorf("application %q is not in the registry", id)
 }
 
-// Changed selects new or materialization-affecting manifests. oldRoot is an
-// extracted tree from the comparison commit, not a YAML parser workaround.
-func Changed(root, oldRoot string) (Selection, error) {
-	catalog, err := registry.ValidateTree(root)
-	if err != nil {
-		return Selection{}, err
-	}
-	return changedFromCatalog(root, oldRoot, catalog)
-}
-
-func changedFromCatalog(_ string, oldRoot string, catalog *registry.Catalog) (Selection, error) {
-	current := platformDefinitions(catalog)
-	previous, err := comparisonDefinitions(oldRoot)
+func changedFromCatalog(oldRoot string, catalog *registry.Catalog) (Selection, error) {
+	disabled := disabledApplications(catalog)
+	current := platformDefinitions(catalog, disabled)
+	previous, err := comparisonDefinitions(oldRoot, disabled)
 	if err != nil {
 		return Selection{}, err
 	}
@@ -175,12 +194,15 @@ func releaseProjections(item *manifest.Manifest) []*manifest.Manifest {
 	return result
 }
 
-func platformDefinitions(catalog *registry.Catalog) map[string]*manifest.Manifest {
+func platformDefinitions(catalog *registry.Catalog, disabled map[string]bool) map[string]*manifest.Manifest {
 	result := make(map[string]*manifest.Manifest)
 	if catalog == nil {
 		return result
 	}
 	for id, variants := range catalog.Variants {
+		if disabled[id] {
+			continue
+		}
 		for platform, item := range variants {
 			result[platformIdentity(id, platform)] = item
 		}
@@ -188,7 +210,7 @@ func platformDefinitions(catalog *registry.Catalog) map[string]*manifest.Manifes
 	return result
 }
 
-func comparisonDefinitions(root string) (map[string]*manifest.Manifest, error) {
+func comparisonDefinitions(root string, disabled map[string]bool) (map[string]*manifest.Manifest, error) {
 	if root == "" {
 		return map[string]*manifest.Manifest{}, nil
 	}
@@ -196,7 +218,31 @@ func comparisonDefinitions(root string) (map[string]*manifest.Manifest, error) {
 	if err != nil {
 		return nil, fmt.Errorf("validate previous schema-v5 registry: %w", err)
 	}
-	return platformDefinitions(catalog), nil
+	return platformDefinitions(catalog, disabled), nil
+}
+
+// disabledApplications reports the application IDs this catalog disables.
+// The set is derived from the current tree only: an application that becomes
+// disabled is skipped by the comparison instead of looking removed, and an
+// application that becomes enabled again is selected as a new one.
+func disabledApplications(catalog *registry.Catalog) map[string]bool {
+	result := make(map[string]bool)
+	if catalog == nil {
+		return result
+	}
+	for id, variants := range catalog.Variants {
+		for _, item := range variants {
+			if !item.WantsEnabled() {
+				result[id] = true
+				break
+			}
+		}
+	}
+	return result
+}
+
+func isDisabled(catalog *registry.Catalog, id string) bool {
+	return disabledApplications(catalog)[id]
 }
 
 func platformIdentity(id string, platform manifest.Platform) string {
@@ -323,7 +369,7 @@ func (s *Session) Materialize(ctx context.Context, item *manifest.Manifest) erro
 	// registry-approved channel in the state record so the lifecycle check
 	// exercises the same tracking metadata as a real install.
 	if _, err := manager.InstallWithOptions(ctx, item, install.Options{Channel: item.Release.Channel}, nil); err != nil {
-		return fmt.Errorf("materialize %s %s/%s: %w", item.ID, item.Platform.OS, item.Platform.Arch, err)
+		return fmt.Errorf("materialize %s %s/%s release %q: %w", item.ID, item.Platform.OS, item.Platform.Arch, item.Release.Version, err)
 	}
 	if _, err := state.LoadForApp(s.layout, item.ID); err != nil {
 		return fmt.Errorf("verify materialized state for %s: %w", item.ID, err)
