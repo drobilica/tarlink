@@ -31,6 +31,7 @@ type screen uint8
 const (
 	screenAvailable screen = iota
 	screenInstalled
+	screenNotInstalled
 	screenUpdates
 	screenDetails
 	screenVersions
@@ -40,14 +41,6 @@ const (
 	screenInstallConfirm
 	screenInstallChannel
 	screenUninstallConflictConfirm
-)
-
-type applicationFilter uint8
-
-const (
-	filterAll applicationFilter = iota
-	filterInstalled
-	filterNotInstalled
 )
 
 type loadedMsg struct {
@@ -127,7 +120,6 @@ type model struct {
 	installed           []app.Application
 	dataLoaded          bool
 	loading             bool
-	applicationFilter   applicationFilter
 	versions            []app.Version
 	selected            int
 	cursorID            string
@@ -393,7 +385,9 @@ func (m model) bodyLines() []string {
 	if m.width > 0 && m.height > 0 && (m.width < 30 || m.height < 10) {
 		return []string{fit("TarLink — enlarge terminal", m.width)}
 	}
-	lines := []string{m.headerLine(), m.tabsLine(), m.separator()}
+	lines := []string{m.headerLine()}
+	lines = append(lines, strings.Split(m.tabsLine(), "\n")...)
+	lines = append(lines, m.separator())
 	add := func(value string) {
 		for _, part := range strings.Split(value, "\n") {
 			lines = append(lines, fit(part, m.width))
@@ -517,11 +511,7 @@ func (m model) workspaceLinesFor(budget int) ([]string, int) {
 		if !m.tableConfigured || m.tableWidth != tableWidth || m.tableHeight != tableHeight {
 			m.configureApplicationTable(values, tableWidth, tableHeight)
 		}
-		lines := []string{m.theme.panel.Render("Applications")}
-		if m.screen == screenAvailable {
-			lines = append(lines, m.filterView())
-		}
-		lines = append(lines, strings.Split(strings.TrimSuffix(m.applicationTable.View(), "\n"), "\n")...)
+		lines := strings.Split(strings.TrimSuffix(m.applicationTable.View(), "\n"), "\n")
 		if previewRows > 0 {
 			lines = append(lines, "")
 			lines = append(lines, m.previewLines(values)...)
@@ -543,7 +533,8 @@ func (m model) reviewViewport(height int) viewport.Model {
 }
 
 func (m model) workspaceHeight() int {
-	// Header, navigation, separator, and contextual help consume four rows.
+	// The header, navigation, separator, and contextual help consume three
+	// rows plus however many lines the responsive navigation needs.
 	feedback := 0
 	if m.status != "" {
 		feedback++
@@ -551,7 +542,8 @@ func (m model) workspaceHeight() int {
 	if m.err != nil {
 		feedback += 2
 	}
-	return max(3, max(1, m.height)-4-feedback)
+	navigationRows := strings.Count(m.tabsLine(), "\n") + 1
+	return max(3, max(1, m.height)-(3+navigationRows)-feedback)
 }
 
 func (m model) hasPreview(values []app.Application) bool {
@@ -641,10 +633,12 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 	}
 	if len(rows) == 0 {
 		placeholder := "No applications."
-		if m.query != "" {
+		if m.query != "" && (m.screen == screenAvailable || m.screen == screenNotInstalled) {
 			placeholder = "No matches for \"" + truncate(m.query, 24, "…") + "\"."
 		} else if m.screen == screenInstalled {
 			placeholder = "No installed applications."
+		} else if m.screen == screenNotInstalled {
+			placeholder = "No applications available to install."
 		} else if m.screen == screenUpdates {
 			placeholder = "No updates available."
 		}
@@ -708,6 +702,10 @@ func (m *model) configureApplicationTable(values []app.Application, width, heigh
 	if m.applicationTable.Cursor() != max(0, cursor) {
 		m.applicationTable.SetCursor(max(0, cursor))
 	}
+	// SetCursor updates the rendered row window but does not always move the
+	// viewport offset. A restored cursor at the end of a long list can otherwise
+	// sit just below the visible rows after switching back from a short tab.
+	m.applicationTable.MoveDown(0)
 	m.tableConfigured = true
 	m.tableWidth = max(1, width)
 	m.tableHeight = max(2, height)
@@ -732,10 +730,7 @@ func (m *model) rebuildApplicationTable() {
 // configuration and view-time layout share this single owner so the configured
 // table geometry and the rendered layout cannot drift apart.
 func (m model) applicationTableSize(values []app.Application, budget int) (width, height, previewRows int) {
-	headingRows := 1
-	if m.screen == screenAvailable {
-		headingRows++
-	}
+	headingRows := 0
 	if m.hasPreview(values) && budget >= headingRows+8 {
 		previewRows = 3
 	}
@@ -972,9 +967,12 @@ func (m model) tabsLine() string {
 	if m.screen == screenDetails || m.screen == screenVersions {
 		name := detailName(m.detail)
 		root := "Browse"
-		if m.returnTo == screenInstalled {
+		switch m.returnTo {
+		case screenInstalled:
 			root = "Installed"
-		} else if m.returnTo == screenUpdates {
+		case screenNotInstalled:
+			root = "Not installed"
+		case screenUpdates:
 			root = "Updates"
 		}
 		if m.screen == screenVersions {
@@ -982,29 +980,63 @@ func (m model) tabsLine() string {
 		}
 		return fit(root+" › "+name, m.width)
 	}
-	labels := []string{"Browse", "Installed", "Updates"}
+	installedCount, updatesCount := "", ""
 	if m.dataLoaded {
-		labels[1] = fmt.Sprintf("Installed %d", len(m.installed))
-		labels[2] = fmt.Sprintf("Updates %d", len(updates(m.installed)))
+		installedCount = fmt.Sprintf(" %d", len(m.installed))
+		updatesCount = fmt.Sprintf(" %d", len(updates(m.installed)))
 	}
-	active := 0
-	if m.screen == screenInstalled {
-		active = 1
-	}
-	if m.screen == screenUpdates {
-		active = 2
+	labels := []struct {
+		screen screen
+		label  string
+	}{
+		{screenAvailable, "Browse"},
+		{screenInstalled, "Installed" + installedCount},
+		{screenNotInstalled, "Not installed"},
+		{screenUpdates, "Updates" + updatesCount},
 	}
 	parts := make([]string, len(labels))
-	for i, label := range labels {
-		if i == active {
-			parts[i] = m.theme.controlSelected.Render("[ " + label + " ]")
+	for index, tab := range labels {
+		parts[index] = m.navigationLabel(tab.label, m.screen == tab.screen)
+	}
+	var rows []string
+	row := ""
+	for _, part := range parts {
+		candidate := part
+		if row != "" {
+			candidate = row + "   " + part
+		}
+		if row != "" && (displaywidth.Options{ControlSequences: true}).String(candidate) > viewWidth(m.width) {
+			rows = append(rows, row)
+			row = part
 		} else {
-			parts[i] = m.theme.control.Render(label)
+			row = candidate
 		}
 	}
-	return fit(strings.Join(parts, "   "), m.width)
+	if row != "" {
+		rows = append(rows, row)
+	}
+	return strings.Join(rows, "\n")
 }
 
+// navigationLabel renders one top-bar tab with its keyboard mnemonic
+// underlined. The mnemonic stays underlined on inactive tabs so the B/I/N/U
+// shortcuts remain discoverable without opening Help.
+func (m model) navigationLabel(label string, active bool) string {
+	style := m.theme.control
+	if active {
+		style = m.theme.controlSelected
+	}
+	var rendered string
+	if label != "" {
+		rendered = style.Underline(true).Render(label[:1]) + style.Render(label[1:])
+	} else {
+		rendered = style.Render(label)
+	}
+	if active {
+		return style.Render("[ ") + rendered + style.Render(" ]")
+	}
+	return rendered
+}
 func (m model) separator() string { return strings.Repeat("─", viewWidth(m.width)) }
 func detailName(value *app.Application) string {
 	if value == nil {
@@ -1014,7 +1046,7 @@ func detailName(value *app.Application) string {
 }
 
 func (m model) isListScreen() bool {
-	return m.screen == screenAvailable || m.screen == screenInstalled || m.screen == screenUpdates
+	return m.screen == screenAvailable || m.screen == screenInstalled || m.screen == screenNotInstalled || m.screen == screenUpdates
 }
 
 func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -1136,16 +1168,6 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.moveSelection(1)
 		}
-	case m.matchesAction(message, actionFilter) && keypkg.Matches(message, bindings.Left):
-		if m.screen == screenAvailable {
-			m.clearFeedback()
-			m.changeFilter(-1)
-		}
-	case m.matchesAction(message, actionFilter) && keypkg.Matches(message, bindings.Right):
-		if m.screen == screenAvailable {
-			m.clearFeedback()
-			m.changeFilter(1)
-		}
 	case m.matchesAction(message, actionSearch):
 		m.clearFeedback()
 		m.searchFrom = m.screen
@@ -1156,16 +1178,14 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		m.searchInput.SetValue(m.query)
 		m.searchInput.Focus()
+	case m.matchesAction(message, actionBrowse):
+		m.switchTab(screenAvailable)
 	case m.matchesAction(message, actionInstalled):
-		m.clearFeedback()
-		m.selectedIDs = nil
-		m.screen = screenInstalled
-		m.selected = 0
+		m.switchTab(screenInstalled)
+	case m.matchesAction(message, actionNotInstalled):
+		m.switchTab(screenNotInstalled)
 	case m.matchesAction(message, actionUpdates):
-		m.clearFeedback()
-		m.selectedIDs = nil
-		m.screen = screenUpdates
-		m.selected = 0
+		m.switchTab(screenUpdates)
 	case m.matchesAction(message, actionCancel):
 		m.clearFeedback()
 		if m.screen == screenUninstall {
@@ -1275,7 +1295,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.screen == screenDetails {
 			if len(m.selectedIDs) > 0 {
-				if m.screen == screenDetails && m.returnTo == screenAvailable {
+				if m.screen == screenDetails && (m.returnTo == screenAvailable || m.returnTo == screenNotInstalled) {
 					if len(m.batchTargets) > 0 {
 						m.busy = "Installing selected applications"
 						m.startOperation()
@@ -1884,45 +1904,34 @@ func (m model) visibleApplications() []app.Application {
 	switch m.screen {
 	case screenInstalled:
 		return m.installed
+	case screenNotInstalled:
+		visible := make([]app.Application, 0, len(m.available))
+		for _, value := range m.available {
+			if value.InstalledVersion == "" {
+				visible = append(visible, value)
+			}
+		}
+		return visible
 	case screenUpdates:
 		return updates(m.installed)
 	}
-	if m.applicationFilter == filterAll {
-		return m.available
-	}
-	visible := make([]app.Application, 0, len(m.available))
-	for _, value := range m.available {
-		installed := value.InstalledVersion != ""
-		if (m.applicationFilter == filterInstalled && installed) ||
-			(m.applicationFilter == filterNotInstalled && !installed) {
-			visible = append(visible, value)
-		}
-	}
-	return visible
+	return m.available
 }
 
-func (m model) filterView() string {
-	labels := [...]string{"All", "Installed", "Not installed"}
-	var parts []string
-	for index, label := range labels {
-		if applicationFilter(index) == m.applicationFilter {
-			parts = append(parts, m.theme.controlSelected.Render("[ "+label+" ]"))
-		} else {
-			parts = append(parts, m.theme.control.Render(label))
-		}
+// switchTab moves the list workspace to another top-level tab. It keeps the
+// stable cursor ID when the target list contains it and clamps the previous
+// index otherwise. Batch selections and any stale detail belong to the old
+// list and are cleared.
+func (m *model) switchTab(target screen) {
+	if m.screen == target {
+		return
 	}
-	return strings.Join(parts, "  ")
-}
-
-func (m *model) changeFilter(delta int) {
-	value := int(m.applicationFilter) + delta
-	if value < 0 {
-		value = int(filterNotInstalled)
-	} else if value > int(filterNotInstalled) {
-		value = int(filterAll)
-	}
-	m.applicationFilter = applicationFilter(value)
-	m.selected = 0
+	m.clearFeedback()
+	m.selectedIDs = nil
+	m.batchIDs, m.batchTargets = nil, nil
+	m.detail = nil
+	m.screen = target
+	m.clampSelection()
 }
 
 func (m model) selectedID() string {

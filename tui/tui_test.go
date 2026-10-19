@@ -232,12 +232,12 @@ func TestApplicationTableResizePreservesLayoutAndCursor(t *testing.T) {
 func TestEmptyListTransitionDoesNotPanic(t *testing.T) {
 	values := []app.Application{{ID: "one", Name: "One"}, {ID: "two", Name: "Two"}}
 	m := model{screen: screenAvailable, available: values, installed: nil, width: 100, height: 20}
-	updated, command := m.Update(key("right"))
+	updated, command := m.Update(key("i"))
 	if command != nil {
-		t.Fatalf("right returned command: %v", command)
+		t.Fatalf("installed tab returned command: %v", command)
 	}
 	view := updated.(model).View().Content
-	if !strings.Contains(view, "No applications.") {
+	if !strings.Contains(view, "No installed applications.") {
 		t.Fatalf("empty view missing placeholder: %q", view)
 	}
 	for _, header := range []string{"STATUS", "INSTALLED", "AVAILABLE", "CHANNEL"} {
@@ -253,11 +253,11 @@ func TestEmptyListTransitionDoesNotPanic(t *testing.T) {
 func TestEmptyListReverseTransitionRestoresTable(t *testing.T) {
 	values := []app.Application{{ID: "one", Name: "One"}, {ID: "two", Name: "Two"}}
 	m := model{screen: screenAvailable, available: values, installed: nil, width: 100, height: 20}
-	updated, _ := m.Update(key("right"))
-	if view := updated.(model).View().Content; !strings.Contains(view, "No applications.") {
+	updated, _ := m.Update(key("i"))
+	if view := updated.(model).View().Content; !strings.Contains(view, "No installed applications.") {
 		t.Fatalf("empty view missing placeholder: %q", view)
 	}
-	updated, _ = updated.(model).Update(key("left"))
+	updated, _ = updated.(model).Update(key("b"))
 	view := updated.(model).View().Content
 	for _, header := range []string{"APPLICATION", "STATUS", "INSTALLED", "AVAILABLE", "CHANNEL"} {
 		if !strings.Contains(view, header) {
@@ -417,22 +417,27 @@ func runeAtDisplayColumn(value string, column int) rune {
 	return 0
 }
 
-func TestSelectionTracksApplicationIDAcrossFiltering(t *testing.T) {
+func TestTabSwitchKeepsStableCursorAndClearsBatchSelection(t *testing.T) {
 	values := []app.Application{
 		{ID: "available", Name: "Available"},
 		{ID: "installed", Name: "Installed", InstalledVersion: "1.0"},
 	}
-	m := model{screen: screenAvailable, available: values, width: 100, height: 20}
+	m := model{screen: screenAvailable, available: values, installed: values[1:], dataLoaded: true, width: 100, height: 20}
 	updated, _ := m.Update(key("down"))
 	updated, _ = updated.(model).Update(tea.KeyPressMsg{Code: tea.KeySpace})
 	m = updated.(model)
 	if !m.selectedIDs["installed"] {
 		t.Fatalf("selection did not use stable ID: %#v", m.selectedIDs)
 	}
-	updated, _ = m.Update(key("left"))
+	updated, _ = m.Update(key("i"))
 	m = updated.(model)
-	if !m.selectedIDs["installed"] || m.selectedIDs["available"] {
-		t.Fatalf("filter transferred selection: %#v", m.selectedIDs)
+	if m.screen != screenInstalled || m.selectedID() != "installed" || len(m.selectedIDs) != 0 {
+		t.Fatalf("installed tab selection=%q screen=%d selectedIDs=%#v", m.selectedID(), m.screen, m.selectedIDs)
+	}
+	updated, _ = m.Update(key("b"))
+	m = updated.(model)
+	if m.screen != screenAvailable || m.selectedID() != "installed" {
+		t.Fatalf("browse tab lost stable cursor: screen=%d id=%q", m.screen, m.selectedID())
 	}
 }
 
