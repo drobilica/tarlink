@@ -44,6 +44,82 @@ func underlinedMnemonic(value, mnemonic string) bool {
 	return false
 }
 
+func TestTopBarStaysVisibleAcrossEveryScreen(t *testing.T) {
+	available, installed := navigationApplications()
+	detail := installed[0]
+	for _, test := range []struct {
+		name     string
+		screen   screen
+		returnTo screen
+		active   string
+	}{
+		{"browse", screenAvailable, screenAvailable, "[ Browse ]"},
+		{"installed", screenInstalled, screenInstalled, "[ Installed 1 ]"},
+		{"not installed", screenNotInstalled, screenNotInstalled, "[ Not installed ]"},
+		{"updates", screenUpdates, screenUpdates, "[ Updates 1 ]"},
+		{"details", screenDetails, screenInstalled, "[ Installed 1 ]"},
+		{"versions", screenVersions, screenUpdates, "[ Updates 1 ]"},
+		{"uninstall", screenUninstall, screenNotInstalled, "[ Not installed ]"},
+		{"rollback", screenRollback, screenAvailable, "[ Browse ]"},
+		{"upgrade", screenUpgrade, screenInstalled, "[ Installed 1 ]"},
+		{"install confirm", screenInstallConfirm, screenUpdates, "[ Updates 1 ]"},
+	} {
+		m := model{screen: test.screen, returnTo: test.returnTo, available: available, installed: installed, detail: &detail, dataLoaded: true, width: 100, height: 24, theme: newTheme(false)}
+		tab := ansi.Strip(m.tabsLine())
+		for _, label := range []string{"Browse", "Installed 1", "Not installed", "Updates 1"} {
+			if !strings.Contains(tab, label) {
+				t.Fatalf("%s top bar missing %q: %q", test.name, label, tab)
+			}
+		}
+		if !strings.Contains(tab, test.active) {
+			t.Fatalf("%s top bar active tab missing %q: %q", test.name, test.active, tab)
+		}
+		rows := strings.Split(strings.TrimSuffix(m.View().Content, "\n"), "\n")
+		if len(rows) < 2 || ansi.Strip(rows[1]) != tab {
+			t.Fatalf("%s tab bar moved or changed in the shell: %q", test.name, m.View().Content)
+		}
+	}
+	details := model{screen: screenDetails, returnTo: screenInstalled, detail: &detail, width: 100, height: 24, theme: newTheme(false)}
+	if got := ansi.Strip(details.View().Content); !strings.Contains(got, "Installed › One") {
+		t.Fatalf("details breadcrumb left the workspace: %q", got)
+	}
+	versions := model{screen: screenVersions, returnTo: screenUpdates, detail: &detail, width: 100, height: 24, theme: newTheme(false)}
+	if got := ansi.Strip(versions.View().Content); !strings.Contains(got, "Updates › One › Versions") {
+		t.Fatalf("versions breadcrumb left the workspace: %q", got)
+	}
+}
+
+func TestListFooterStaysConstantAcrossTabs(t *testing.T) {
+	available, installed := navigationApplications()
+	for _, populated := range []bool{true, false} {
+		modelFor := func(target screen) model {
+			m := model{screen: target, width: 120, height: 24, theme: newTheme(false)}
+			if populated {
+				m.available, m.installed, m.dataLoaded = available, installed, true
+			}
+			return m
+		}
+		var want string
+		for _, target := range []screen{screenAvailable, screenInstalled, screenNotInstalled} {
+			got := ansi.Strip(modelFor(target).helpView())
+			if want == "" {
+				want = got
+			} else if got != want {
+				t.Fatalf("populated=%v footer changed on screen %d: %q != %q", populated, target, got, want)
+			}
+		}
+		for _, action := range []string{"↑↓ Navigate", "←/→ Tabs", "Enter Details", "Space Toggle", "? Help", "/ Search", "q Quit"} {
+			if !strings.Contains(want, action) {
+				t.Fatalf("populated=%v footer missing %q: %q", populated, action, want)
+			}
+		}
+		updates := ansi.Strip(modelFor(screenUpdates).helpView())
+		if updates != strings.Replace(want, "  Space Toggle", "", 1) {
+			t.Fatalf("populated=%v updates footer = %q, want the shared footer without Space: %q", populated, updates, want)
+		}
+	}
+}
+
 func TestUnifiedTopBarCountsAndRemovesSecondaryFilterRow(t *testing.T) {
 	available, installed := navigationApplications()
 	m := model{screen: screenAvailable, available: available, installed: installed, dataLoaded: true, width: 100, height: 24, theme: newTheme(false)}
@@ -209,10 +285,10 @@ func TestArrowKeysCycleTopLevelTabs(t *testing.T) {
 
 func TestArrowTabHintAndInputPrecedence(t *testing.T) {
 	m := model{screen: screenAvailable, width: 100, height: 24}
-	if help := strings.Join(m.helpOverlayLines(), "\n"); !strings.Contains(help, "←/→ Tabs") {
+	if help := strings.Join(strings.Fields(strings.Join(m.helpOverlayLines(), "\n")), " "); !strings.Contains(help, "←/→ Tabs") {
 		t.Fatalf("arrow tab shortcut missing from Help: %q", help)
 	}
-	if help := m.helpView(); !strings.Contains(help, "←/→ Tabs") {
+	if help := strings.Join(strings.Fields(m.helpView()), " "); !strings.Contains(help, "←/→ Tabs") {
 		t.Fatalf("arrow tab shortcut missing from footer: %q", help)
 	}
 
