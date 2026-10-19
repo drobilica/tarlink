@@ -179,7 +179,7 @@ jobs:
           ref: ${{ github.sha }}
 
       - name: Download built binaries
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: tarlink-linux-*
           path: dist
@@ -254,13 +254,13 @@ jobs:
           persist-credentials: false
 
       - name: Download structured release notes
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-notes
           path: release-notes
 
       - name: Download exact assembled assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-assets
           path: dist
@@ -385,7 +385,7 @@ jobs:
       # stage job. It never queries the GitHub release API: the bridge bytes
       # are already the download-verified draft contents.
       - name: Download verified bridge assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bridge
           path: remote
@@ -458,7 +458,7 @@ jobs:
           persist-credentials: false
 
       - name: Download verified bridge assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-bridge
           path: expected-assets
