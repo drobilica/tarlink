@@ -244,21 +244,31 @@ func (m model) helpView() string {
 		helper = newHelp(m.color)
 	}
 	bindings := m.actionBindings()
-	// Short help gives the primary action and help discovery first. The full
-	// reference retains every eligible binding in the same policy order.
-	if len(bindings) > 0 {
-		prioritized := make([]keypkg.Binding, 0, len(bindings))
-		for _, want := range []string{"↑↓", "←/→", "Enter", "Space", "?", "Esc", "/", "q"} {
-			for _, binding := range bindings {
-				if binding.Help().Key == want {
-					prioritized = append(prioritized, binding)
-				}
-			}
-		}
-		bindings = prioritized
+	// The list screens have the most bindings and the tab mnemonics are
+	// redundant with the arrow keys, so only their primary actions and help
+	// discovery stay in the short footer. Other screens expose few actions,
+	// so they keep every eligible binding — including destructive ones such
+	// as Uninstall — visible in policy order.
+	if m.isListScreen() {
+		bindings = prioritizeListBindings(bindings)
 	}
 	helper.SetWidth(max(1, viewWidth(m.width)))
 	return helper.ShortHelpView(bindings)
+}
+
+func prioritizeListBindings(bindings []keypkg.Binding) []keypkg.Binding {
+	if len(bindings) == 0 {
+		return bindings
+	}
+	prioritized := make([]keypkg.Binding, 0, len(bindings))
+	for _, want := range []string{"↑↓", "←/→", "Enter", "Space", "?", "Esc", "/", "q"} {
+		for _, binding := range bindings {
+			if binding.Help().Key == want {
+				prioritized = append(prioritized, binding)
+			}
+		}
+	}
+	return prioritized
 }
 
 // actionBindings keeps every action legend, including modal legends, tied to

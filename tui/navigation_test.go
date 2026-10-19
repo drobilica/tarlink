@@ -83,6 +83,28 @@ func TestTopBarMarksTheActiveTab(t *testing.T) {
 	}
 }
 
+func TestTopBarKeepsLabelPositionsWhenSelectionMoves(t *testing.T) {
+	_, installed := navigationApplications()
+	columns := map[string][]int{}
+	for _, screen := range []screen{screenAvailable, screenInstalled, screenNotInstalled, screenUpdates} {
+		m := model{screen: screen, installed: installed, dataLoaded: true, width: 100, theme: newTheme(false)}
+		line := ansi.Strip(m.tabsLine())
+		if strings.Contains(line, "\n") {
+			t.Fatalf("screen %d top bar wrapped at width 100: %q", screen, line)
+		}
+		for _, label := range []string{"Browse", "Installed 1", "Not installed", "Updates 1"} {
+			columns[label] = append(columns[label], strings.Index(line, label))
+		}
+	}
+	for label, positions := range columns {
+		for _, position := range positions[1:] {
+			if position != positions[0] {
+				t.Fatalf("label %q shifted between selections: columns %v", label, positions)
+			}
+		}
+	}
+}
+
 func TestTopBarUnderlinesMnemonicsEvenWhenInactive(t *testing.T) {
 	_, installed := navigationApplications()
 	for _, color := range []bool{false, true} {

@@ -72,6 +72,13 @@ func TestNoColorSelectionHasVisibleMarkerAndStyledMnemonic(t *testing.T) {
 	}
 }
 
+func TestDetailsFooterShowsUninstallForInstalledApp(t *testing.T) {
+	m := model{screen: screenDetails, returnTo: screenInstalled, detail: &app.Application{ID: "one", Name: "One", InstalledVersion: "1"}, width: 100, height: 24, theme: newTheme(false)}
+	if help := m.helpView(); !strings.Contains(help, "Uninstall") {
+		t.Fatalf("details footer hides Uninstall: %q", help)
+	}
+}
+
 func TestExpandedHelpFitsAndKeepsSelection(t *testing.T) {
 	values := []app.Application{{ID: "one", Name: "One"}, {ID: "two", Name: "Two"}}
 	for _, size := range [][2]int{{80, 24}, {60, 18}, {40, 12}} {

@@ -68,6 +68,56 @@ func TestListSelectionRemainsVisibleWhileScrollingUp(t *testing.T) {
 	}
 }
 
+func TestListNavigationWrapsAtBothEnds(t *testing.T) {
+	values := listFixture(30)
+	m := model{screen: screenAvailable, available: values, dataLoaded: true, width: 80, height: 15, theme: newTheme(false)}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m = updated.(model)
+
+	// Up from the first row wraps to the last and keeps it visible.
+	updated, _ = m.Update(key("up"))
+	m = updated.(model)
+	if m.selected != len(values)-1 || m.selectedID() != values[len(values)-1].ID {
+		t.Fatalf("up from top selected %d (%q), want last row", m.selected, m.selectedID())
+	}
+	if view := ansi.Strip(m.View().Content); !noColorSelectionVisible(view, values[len(values)-1].Name) {
+		t.Fatalf("wrapped selection not visible: %q", view)
+	}
+
+	// Down from the last row wraps back to the first and keeps it visible.
+	updated, _ = m.Update(key("down"))
+	m = updated.(model)
+	if m.selected != 0 || m.selectedID() != values[0].ID {
+		t.Fatalf("down from bottom selected %d (%q), want first row", m.selected, m.selectedID())
+	}
+	if view := ansi.Strip(m.View().Content); !noColorSelectionVisible(view, values[0].Name) {
+		t.Fatalf("wrapped selection not visible: %q", view)
+	}
+}
+
+func TestListNavigationWrapKeepsColorSelectionVisible(t *testing.T) {
+	values := listFixture(30)
+	m := model{screen: screenAvailable, available: values, dataLoaded: true, width: 80, height: 15, color: true, theme: newTheme(true)}
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	m = updated.(model)
+	updated, _ = m.Update(key("up"))
+	m = updated.(model)
+	if m.selected != len(values)-1 {
+		t.Fatalf("up from top selected %d, want last row", m.selected)
+	}
+	if !strings.Contains(m.View().Content, values[len(values)-1].Name) {
+		t.Fatalf("wrapped color selection not visible: %q", m.View().Content)
+	}
+	updated, _ = m.Update(key("down"))
+	m = updated.(model)
+	if m.selected != 0 {
+		t.Fatalf("down from bottom selected %d, want first row", m.selected)
+	}
+	if !strings.Contains(m.View().Content, values[0].Name) {
+		t.Fatalf("wrapped color selection not visible: %q", m.View().Content)
+	}
+}
+
 func TestListSelectionHighlightRemainsVisibleInColorMode(t *testing.T) {
 	values := listFixture(30)
 	m := model{screen: screenAvailable, available: values, dataLoaded: true, width: 80, height: 15, color: true, theme: newTheme(true)}
