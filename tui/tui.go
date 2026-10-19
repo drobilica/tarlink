@@ -1035,7 +1035,10 @@ func (m model) navigationLabel(label string, active bool) string {
 	if active {
 		return style.Render("[ ") + rendered + style.Render(" ]")
 	}
-	return rendered
+	// The active tab wraps its label in brackets. Reserve the same two columns
+	// on each side for inactive tabs so neither the label nor its neighbors
+	// shift when the selection moves between tabs.
+	return lipgloss.NewStyle().Padding(0, 2).Render(rendered)
 }
 func (m model) separator() string { return strings.Repeat("─", viewWidth(m.width)) }
 func detailName(value *app.Application) string {
@@ -1406,11 +1409,36 @@ func (m *model) moveSelection(delta int) {
 		m.selected = 0
 		return
 	}
-	previous := m.selected
+	previous := m.applicationTable.Cursor()
+	count := len(values)
+	target := previous
 	if delta < 0 {
-		m.applicationTable.MoveUp(-delta)
+		if previous <= 0 {
+			// Wrap from the first row to the last.
+			target = count - 1
+		} else {
+			target = previous - 1
+		}
 	} else {
-		m.applicationTable.MoveDown(delta)
+		if previous >= count-1 {
+			// Wrap from the last row to the first.
+			target = 0
+		} else {
+			target = previous + 1
+		}
+	}
+	if target == previous {
+		return
+	}
+	switch {
+	case delta < 0 && target > previous:
+		m.applicationTable.GotoBottom()
+	case delta > 0 && target < previous:
+		m.applicationTable.GotoTop()
+	case delta < 0:
+		m.applicationTable.MoveUp(previous - target)
+	default:
+		m.applicationTable.MoveDown(target - previous)
 	}
 	m.selected = m.applicationTable.Cursor()
 	if m.selected >= 0 && m.selected < len(values) {
