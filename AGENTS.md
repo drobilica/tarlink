@@ -39,6 +39,16 @@ narrow architecture, trust model, and security boundaries.
 * Before `v1.0.0`, prefer clean breaking changes over compatibility code.
 * Do not add migrations, deprecated aliases, compatibility filenames, legacy schema support, or fallback behavior unless explicitly requested.
 
+## Releases
+
+Routine task changes are published as a patch release. After the task pull
+request passes `Canonical validation` and merges, the orchestrator creates the
+next `v<major>.<minor>.<patch>` tag on `main` and lets the Release workflow
+build, validate, and publish the assets. The release must be verified remotely:
+the tag peels to the intended commit and the release exists with the canonical
+assets and checksum file. Do not release when the task explicitly defers or
+declines it.
+
 ## Git
 
 Task changes use a branch and pull request. The TarLink pull request must pass
@@ -53,7 +63,7 @@ are claimed or changed by this task.
 * For validated pre-1.0 changes, the orchestrator commits all and only task-created changes before successful completion.
 * All changes use task branches and pull requests; no direct `main` push is part of this policy proposal.
 * Never include unrelated pre-existing changes.
-* Do not bump versions, create tags, or publish releases unless explicitly requested.
+* Routine task changes get a patch release per the Releases section; do not bump major/minor versions or publish releases outside that policy.
 
 ### Remote write verification
 
