@@ -312,15 +312,23 @@ func TestConfirmationOverlaysHaveOneResponsiveFrame(t *testing.T) {
 		for _, m := range variants {
 			m.width, m.height, m.color = width, 24, false
 			m.theme = newTheme(false)
-			card := m.renderCard(m.overlayLines(), width)
+			card := m.View().Content
 			lines := strings.Split(card, "\n")
-			if len(lines) < 3 || ansi.StringWidth(ansi.Strip(lines[0])) != ansi.StringWidth(ansi.Strip(lines[len(lines)-1])) {
-				t.Fatalf("width %d screen %d has unbalanced frame: %q", width, m.screen, card)
-			}
+			var top, bottom string
 			for _, line := range lines {
+				plain := strings.TrimSpace(ansi.Strip(line))
+				if strings.HasPrefix(plain, "╭") {
+					top = plain
+				}
+				if strings.HasPrefix(plain, "╰") {
+					bottom = plain
+				}
 				if ansi.StringWidth(ansi.Strip(line)) > width {
 					t.Fatalf("width %d screen %d line exceeds terminal: %q", width, m.screen, line)
 				}
+			}
+			if top == "" || bottom == "" || ansi.StringWidth(top) != ansi.StringWidth(bottom) {
+				t.Fatalf("width %d screen %d has unbalanced frame: %q", width, m.screen, card)
 			}
 			if strings.Count(card, "╭") != 1 || strings.Count(card, "╰") != 1 || strings.Contains(card, "[ Cancel ]") {
 				t.Fatalf("width %d screen %d has nested/manual frame: %q", width, m.screen, card)

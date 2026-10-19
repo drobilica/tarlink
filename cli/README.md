@@ -19,6 +19,8 @@ Generated from Cobra. Regenerate with `./scripts/update-cli-readme.sh`.
     - `tarlink registry candidates [flags]` — Review registry research candidates
       - `tarlink registry candidates discover [flags]` — Compare an external catalog with a local registry
     - `tarlink registry check <path> [flags]` — Check registry artifacts
+    - `tarlink registry disable <app> [flags]` — Set application catalog availability to disabled
+    - `tarlink registry enable <app> [flags]` — Set application catalog availability to enabled
     - `tarlink registry freshness <app> [flags]` — Inspect upstream release freshness
     - `tarlink registry icons <path> [flags]` — Audit registry desktop icons
     - `tarlink registry inspect <target> [flags]` — Inspect an upstream artifact

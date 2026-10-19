@@ -114,10 +114,38 @@ verify_owned_target() {
 	installed_hash=$target_digest
 }
 
+is_owned_target() {
+	target_path=$1
+	marker_path=$2
+	test ! -L "$target_path" || return 1
+	test -f "$target_path" || return 1
+	test -x "$target_path" || return 1
+	test -f "$marker_path" || return 1
+	test ! -L "$marker_path" || return 1
+	marker_size=$(wc -c < "$marker_path" 2>/dev/null | awk '{print $1}') || return 1
+	test "$marker_size" = 65 || return 1
+	marker_digest=$(awk '
+		NR == 1 { value = $0; next }
+		{ invalid = 1 }
+		END {
+			if (invalid || length(value) != 64 || value !~ /^[0-9a-f]+$/) exit 1
+			print value
+		}
+	' "$marker_path" 2>/dev/null) || return 1
+	target_digest=$(sha256sum "$target_path" 2>/dev/null | awk '{print $1}') || return 1
+	test "$target_digest" = "$marker_digest" || return 1
+	return 0
+}
+
 if [ -e "$target" ] || [ -L "$target" ]; then
-	verify_owned_target "$target" "$marker"
+	if is_owned_target "$target" "$marker"; then
+		installed_hash=$(sha256sum "$target" | awk '{print $1}')
+	else
+		printf 'install.sh: replacing unowned file at %s\n' "$target" >&2
+		installed_hash=
+	fi
 elif [ -e "$marker" ] || [ -L "$marker" ]; then
-	fail "TarLink ownership marker exists without its canonical binary: $marker"
+	printf 'install.sh: replacing orphan ownership marker at %s\n' "$marker" >&2
 fi
 
 usage() {
@@ -225,7 +253,7 @@ rollback_publish() {
 		fi
 	fi
 	if [ "$previous_target_moved" -eq 1 ]; then
-		if [ "$rollback_ok" -eq 1 ] && [ -e "$previous_binary" ] && [ ! -L "$previous_binary" ] && [ ! -e "$target" ] && [ ! -L "$target" ]; then
+		if [ "$rollback_ok" -eq 1 ] && { [ -e "$previous_binary" ] || [ -L "$previous_binary" ]; } && [ ! -e "$target" ] && [ ! -L "$target" ]; then
 			if ! mv "$previous_binary" "$target"; then
 				rollback_ok=0
 			fi
@@ -323,7 +351,14 @@ chmod 0600 "$marker_tmp" || fail 'could not secure the ownership marker'
 publish_started=1
 previous_binary="$tmp_dir/previous-$asset"
 if [ -e "$target" ] || [ -L "$target" ]; then
-	verify_owned_target "$target" "$marker"
+	if [ ! -L "$target" ] && [ ! -f "$target" ]; then
+		fail "refusing to replace non-regular file at $target"
+	fi
+	if ! is_owned_target "$target" "$marker"; then
+		printf 'install.sh: replacing unowned file at %s\n' "$target" >&2
+	else
+		verify_owned_target "$target" "$marker"
+	fi
 	mv "$target" "$previous_binary" || fail "could not stage the previous $target"
 	previous_target_moved=1
 fi

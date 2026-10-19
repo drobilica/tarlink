@@ -270,6 +270,61 @@ func TestLifecycleInstallUpdateRollbackUninstall(t *testing.T) {
 	}
 }
 
+func TestInstallMissingExecutableErrorNamesApplicationAndRelease(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	spec := server.manifest("v1")
+	spec.Application.Executables = []manifest.Executable{{Name: "missing", Path: "bin/missing"}}
+
+	_, err := manager.InstallWithOptions(context.Background(), spec, Options{Channel: "stable"}, nil)
+	if err == nil {
+		t.Fatal("install with a missing declared executable unexpectedly succeeded")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("error = %v, want to wrap os.ErrNotExist", err)
+	}
+	for _, want := range []string{"fixture", `"v1"`, "linux/amd64", `"missing"`, "declared executable does not exist"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed install left an application root: %v", statErr)
+	}
+}
+
+func TestRollbackMissingExecutableErrorNamesApplicationAndRetainedRelease(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	if _, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	packages, err := filepath.Glob(filepath.Join(layout.Apps, "fixture", "v1", ".tarlink-package-*"))
+	if err != nil || len(packages) != 1 {
+		t.Fatalf("retained v1 package lookup = %v, %v", packages, err)
+	}
+	if err := os.Remove(filepath.Join(packages[0], "bin", "run")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = manager.Rollback(context.Background(), "fixture", nil)
+	if err == nil {
+		t.Fatal("rollback with a missing retained executable unexpectedly succeeded")
+	}
+	for _, want := range []string{"fixture", `"v1"`, `"run"`, "declared executable does not exist"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not contain %q", err, want)
+		}
+	}
+}
+
 func TestInstallReusesCanonicalVerifiedArtifactCache(t *testing.T) {
 	layout := testLayout(t)
 	data := fixtureArchive(t, "shared")

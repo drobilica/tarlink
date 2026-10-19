@@ -20,7 +20,7 @@ func RenderCandidateReport(ledger CandidateLedger) string {
 	}
 	order := []string{
 		"Ready / Potential candidates", "Deferred / Needs investigation",
-		"Missing runtime libraries", "Windows only", "No Linux artifact", "Source only",
+		"Missing runtime libraries", "Windows only", "No Linux artifact", "Unsafe artifact layout", "Source only",
 		"Setup script required", "System integration required", "Other blocked",
 		"Rejected / Out of scope",
 	}
@@ -62,6 +62,7 @@ var blockerGroupOrder = []blockerGroup{
 	{"MISSING_RUNTIME_LIBS", "Missing runtime libraries"},
 	{"WINDOWS_ONLY", "Windows only"},
 	{"NO_LINUX_ARTIFACT", "No Linux artifact"},
+	{"UNSAFE_ARTIFACT_LAYOUT", "Unsafe artifact layout"},
 	{"SOURCE_ONLY", "Source only"},
 	{"SETUP_SCRIPT_REQUIRED", "Setup script required"},
 	{"SYSTEM_INTEGRATION_REQUIRED", "System integration required"},
