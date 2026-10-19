@@ -38,10 +38,10 @@ func (t tuiTheme) render(value string, valueTone tone) string {
 }
 
 type tuiKeyMap struct {
-	Up, Down, Enter, Search                  keypkg.Binding
-	Browse, Installed, NotInstalled, Updates keypkg.Binding
-	Upgrade, Versions, Rollback, Uninstall   keypkg.Binding
-	Cancel, Quit, CtrlC, Help                keypkg.Binding
+	Up, Down, Left, Right, Tabs, Enter, Search keypkg.Binding
+	Browse, Installed, NotInstalled, Updates   keypkg.Binding
+	Upgrade, Versions, Rollback, Uninstall     keypkg.Binding
+	Cancel, Quit, CtrlC, Help                  keypkg.Binding
 }
 
 type contextualActionID uint8
@@ -52,6 +52,7 @@ const (
 	actionToggle
 	actionEnter
 	actionSearch
+	actionTabs
 	actionBrowse
 	actionInstalled
 	actionNotInstalled
@@ -76,6 +77,9 @@ func newKeyMap() tuiKeyMap {
 	return tuiKeyMap{
 		Up:           keypkg.NewBinding(keypkg.WithKeys("up", "k"), keypkg.WithHelp("↑/k", "Navigate")),
 		Down:         keypkg.NewBinding(keypkg.WithKeys("down", "j"), keypkg.WithHelp("↓/j", "Navigate")),
+		Left:         keypkg.NewBinding(keypkg.WithKeys("left")),
+		Right:        keypkg.NewBinding(keypkg.WithKeys("right")),
+		Tabs:         keypkg.NewBinding(keypkg.WithKeys("left", "right"), keypkg.WithHelp("←/→", "Switch tab")),
 		Enter:        keypkg.NewBinding(keypkg.WithKeys("enter"), keypkg.WithHelp("Enter", "Details")),
 		Search:       keypkg.NewBinding(keypkg.WithKeys("/"), keypkg.WithHelp("/", "Search")),
 		Browse:       keypkg.NewBinding(keypkg.WithKeys("b", "B"), keypkg.WithHelp("b", "Browse")),
@@ -180,6 +184,7 @@ func (m model) contextualActions() []contextualAction {
 		if len(values) > 0 {
 			actions = append(actions, action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, enterLabel))
 		}
+		actions = append(actions, action(actionTabs, b.Tabs, "←/→ Tabs"))
 		if len(values) > 0 && (m.screen == screenAvailable || m.screen == screenInstalled || m.screen == screenNotInstalled) {
 			toggle := keypkg.NewBinding(keypkg.WithKeys("space"), keypkg.WithHelp("Space", "Select"))
 			actions = append(actions, action(actionToggle, toggle, "Space Toggle"))
@@ -243,7 +248,7 @@ func (m model) helpView() string {
 	// reference retains every eligible binding in the same policy order.
 	if len(bindings) > 0 {
 		prioritized := make([]keypkg.Binding, 0, len(bindings))
-		for _, want := range []string{"↑↓", "Enter", "Space", "?", "Esc", "/", "q"} {
+		for _, want := range []string{"↑↓", "←/→", "Enter", "Space", "?", "Esc", "/", "q"} {
 			for _, binding := range bindings {
 				if binding.Help().Key == want {
 					prioritized = append(prioritized, binding)

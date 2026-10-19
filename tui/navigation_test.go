@@ -160,6 +160,63 @@ func TestMnemonicKeysSwitchTabsCaseInsensitively(t *testing.T) {
 	}
 }
 
+func TestArrowKeysCycleTopLevelTabs(t *testing.T) {
+	available, installed := navigationApplications()
+	for _, test := range []struct {
+		from screen
+		key  rune
+		want screen
+	}{
+		{screenAvailable, tea.KeyLeft, screenUpdates},
+		{screenAvailable, tea.KeyRight, screenInstalled},
+		{screenInstalled, tea.KeyLeft, screenAvailable},
+		{screenInstalled, tea.KeyRight, screenNotInstalled},
+		{screenNotInstalled, tea.KeyLeft, screenInstalled},
+		{screenNotInstalled, tea.KeyRight, screenUpdates},
+		{screenUpdates, tea.KeyLeft, screenNotInstalled},
+		{screenUpdates, tea.KeyRight, screenAvailable},
+	} {
+		m := model{screen: test.from, available: available, installed: installed, dataLoaded: true, width: 80, height: 24}
+		updated, _ := m.Update(tea.KeyPressMsg{Code: test.key})
+		got := updated.(model)
+		if got.screen != test.want {
+			t.Errorf("screen %d + key %v = screen %d, want %d", test.from, test.key, got.screen, test.want)
+		}
+	}
+}
+
+func TestArrowTabHintAndInputPrecedence(t *testing.T) {
+	m := model{screen: screenAvailable, width: 100, height: 24}
+	if help := strings.Join(m.helpOverlayLines(), "\n"); !strings.Contains(help, "←/→ Tabs") {
+		t.Fatalf("arrow tab shortcut missing from Help: %q", help)
+	}
+	if help := m.helpView(); !strings.Contains(help, "←/→ Tabs") {
+		t.Fatalf("arrow tab shortcut missing from footer: %q", help)
+	}
+
+	searching := model{screen: screenAvailable, searching: true, width: 80, height: 24}
+	searching.initComponents()
+	searching.searchInput.SetValue("query")
+	searching.searchInput.Focus()
+	updated, _ := searching.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+	got := updated.(model)
+	if !got.searching || got.screen != screenAvailable || got.searchInput.Value() != "query" {
+		t.Fatalf("right arrow escaped search input: screen=%d searching=%v query=%q", got.screen, got.searching, got.searchInput.Value())
+	}
+
+	for _, state := range []model{
+		{screen: screenAvailable, helpOverlay: true, width: 80, height: 24},
+		{screen: screenAvailable, busy: "Working", width: 80, height: 24},
+		{screen: screenUninstall, width: 80, height: 24},
+	} {
+		updated, _ := state.Update(tea.KeyPressMsg{Code: tea.KeyRight})
+		got := updated.(model)
+		if got.screen != state.screen || got.helpOverlay != state.helpOverlay {
+			t.Errorf("right arrow escaped focused state %#v: screen=%d help=%v", state, got.screen, got.helpOverlay)
+		}
+	}
+}
+
 func TestSearchInputKeepsMnemonicKeys(t *testing.T) {
 	available, installed := navigationApplications()
 	for _, text := range []string{"b", "I", "n", "U"} {
