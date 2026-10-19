@@ -13,8 +13,8 @@ import (
 
 func TestRenderedShellGeometry(t *testing.T) {
 	application := app.Application{ID: "wide", Name: "Éditeur 界 é very long application name", Summary: "A useful application with a long description that should wrap inside the workspace without hiding controls.", InstalledVersion: "5.2.0-long-version", RegistryVersion: "5.2.1-long-version", DefaultChannel: "stable", UpdateAvailable: true, Categories: []string{"graphics", "game-development"}, Homepage: "https://example.test/a/very/long/path/that/should/remain/reachable"}
-	for _, size := range [][2]int{{120, 40}, {100, 30}, {80, 24}, {60, 18}, {29, 9}, {0, 0}} {
-		for _, screen := range []screen{screenAvailable, screenInstalled, screenUpdates, screenDetails, screenVersions, screenUninstall} {
+	for _, size := range [][2]int{{120, 40}, {100, 30}, {80, 24}, {60, 18}, {40, 18}, {30, 18}, {29, 9}, {0, 0}} {
+		for _, screen := range []screen{screenAvailable, screenInstalled, screenNotInstalled, screenUpdates, screenDetails, screenVersions, screenUninstall} {
 			m := model{screen: screen, returnTo: screenUpdates, available: []app.Application{application}, installed: []app.Application{application}, detail: &application, versions: []app.Version{{Version: application.InstalledVersion, Status: "installed", Channel: "stable"}}, dataLoaded: true, width: size[0], height: size[1], theme: newTheme(false)}
 			content := strings.TrimSuffix(m.View().Content, "\n")
 			if (size[0] == 80 || size[0] == 120) && (screen == screenAvailable || screen == screenDetails || screen == screenVersions) {
@@ -57,14 +57,17 @@ func TestSearchPrintableHelpKeyStaysInInput(t *testing.T) {
 	}
 }
 
-func TestNoColorSelectionHasVisibleMarkerWithoutANSI(t *testing.T) {
+func TestNoColorSelectionHasVisibleMarkerAndStyledMnemonic(t *testing.T) {
 	m := model{screen: screenAvailable, available: []app.Application{{ID: "one", Name: "One"}}, dataLoaded: true, width: 80, height: 24, theme: newTheme(false)}
 	view := m.View().Content
-	if strings.Contains(view, "\x1b") || !strings.Contains(view, ">   One") {
+	if !strings.Contains(ansi.Strip(view), ">   One") {
 		t.Fatalf("no-color selection=%q", view)
 	}
+	if !underlinedMnemonic(m.tabsLine(), "B") {
+		t.Fatalf("no-color mnemonic is not actually underlined: %q", m.tabsLine())
+	}
 	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeySpace})
-	if !strings.Contains(updated.(model).View().Content, ">✓") {
+	if !strings.Contains(ansi.Strip(updated.(model).View().Content), ">✓") {
 		t.Fatal("selected cursor lost its selection marker")
 	}
 }
@@ -83,13 +86,13 @@ func TestExpandedHelpFitsAndKeepsSelection(t *testing.T) {
 	}
 }
 
-func TestFilterKeepsHighlightedRowAndEnterTargetTogether(t *testing.T) {
+func TestTabKeepsHighlightedRowAndEnterTargetTogether(t *testing.T) {
 	values := []app.Application{{ID: "a", Name: "A"}, {ID: "b", Name: "B", InstalledVersion: "1"}, {ID: "c", Name: "C", InstalledVersion: "1"}}
 	m := model{screen: screenAvailable, available: values, installed: values[1:], dataLoaded: true, selected: 2, cursorID: "c", width: 80, height: 24, theme: newTheme(false)}
-	updated, _ := m.Update(key("right"))
+	updated, _ := m.Update(key("i"))
 	m = updated.(model)
 	if m.selected != 1 || m.applicationTable.Cursor() != 1 || m.selectedID() != "c" {
-		t.Fatalf("filter selected index=%d cursor=%d id=%s", m.selected, m.applicationTable.Cursor(), m.selectedID())
+		t.Fatalf("tab selected index=%d cursor=%d id=%s", m.selected, m.applicationTable.Cursor(), m.selectedID())
 	}
 	updated, _ = m.Update(key("enter"))
 	if got := updated.(model).detail; got == nil || got.ID != "c" {
@@ -115,19 +118,29 @@ func TestChannelInstallFeedbackUsesCanonicalAppID(t *testing.T) {
 }
 
 func TestSpaceSelectionIsEligibleOnlyOnBatchLists(t *testing.T) {
-	value := app.Application{ID: "one", Name: "One", InstalledVersion: "1", UpdateAvailable: true}
+	available := app.Application{ID: "one", Name: "One"}
+	installed := app.Application{ID: "one", Name: "One", InstalledVersion: "1", UpdateAvailable: true}
 	space := tea.KeyPressMsg{Code: tea.KeySpace}
-	for _, screen := range []screen{screenAvailable, screenInstalled} {
-		m := model{screen: screen, available: []app.Application{value}, installed: []app.Application{value}, width: 80, height: 24}
+	cases := []struct {
+		screen    screen
+		available []app.Application
+		installed []app.Application
+	}{
+		{screenAvailable, []app.Application{available}, []app.Application{installed}},
+		{screenNotInstalled, []app.Application{available}, []app.Application{installed}},
+		{screenInstalled, []app.Application{available}, []app.Application{installed}},
+	}
+	for _, tc := range cases {
+		m := model{screen: tc.screen, available: tc.available, installed: tc.installed, width: 80, height: 24}
 		if !strings.Contains(strings.Join(m.helpOverlayLines(), "\n"), "Toggle") {
-			t.Fatalf("screen %d hides Space selection", screen)
+			t.Fatalf("screen %d hides Space selection", tc.screen)
 		}
 		updated, _ := m.Update(space)
 		if !updated.(model).selectedIDs["one"] {
-			t.Fatalf("screen %d ignored Space", screen)
+			t.Fatalf("screen %d ignored Space", tc.screen)
 		}
 	}
-	m := model{screen: screenUpdates, installed: []app.Application{value}, width: 80, height: 24}
+	m := model{screen: screenUpdates, installed: []app.Application{installed}, width: 80, height: 24}
 	updated, _ := m.Update(space)
 	if len(updated.(model).selectedIDs) != 0 || strings.Contains(strings.Join(m.helpOverlayLines(), "\n"), "Toggle") {
 		t.Fatal("Updates accepted unsupported batch selection")
@@ -268,7 +281,7 @@ func TestRepeatedResizeKeepsScreensWithinBounds(t *testing.T) {
 func TestListAggregateCountsAppearOnce(t *testing.T) {
 	value := app.Application{ID: "one", Name: "One", InstalledVersion: "1", RegistryVersion: "2", UpdateAvailable: true}
 	m := model{screen: screenUpdates, installed: []app.Application{value}, dataLoaded: true, width: 80, height: 24}
-	view := m.View().Content
+	view := ansi.Strip(m.View().Content)
 	if strings.Count(view, "Installed 1") != 1 || strings.Count(view, "Updates 1") != 1 {
 		t.Fatalf("aggregate counters duplicated: %q", view)
 	}

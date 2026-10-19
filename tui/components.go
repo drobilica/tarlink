@@ -38,9 +38,10 @@ func (t tuiTheme) render(value string, valueTone tone) string {
 }
 
 type tuiKeyMap struct {
-	Up, Down, Left, Right, Enter, Search, Installed, Updates keypkg.Binding
-	Upgrade, Versions, Rollback, Uninstall                   keypkg.Binding
-	Cancel, Quit, CtrlC, Help                                keypkg.Binding
+	Up, Down, Enter, Search                  keypkg.Binding
+	Browse, Installed, NotInstalled, Updates keypkg.Binding
+	Upgrade, Versions, Rollback, Uninstall   keypkg.Binding
+	Cancel, Quit, CtrlC, Help                keypkg.Binding
 }
 
 type contextualActionID uint8
@@ -48,11 +49,12 @@ type contextualActionID uint8
 const (
 	actionUp contextualActionID = iota
 	actionDown
-	actionFilter
 	actionToggle
 	actionEnter
 	actionSearch
+	actionBrowse
 	actionInstalled
+	actionNotInstalled
 	actionUpdates
 	actionUpgrade
 	actionVersions
@@ -72,22 +74,22 @@ type contextualAction struct {
 
 func newKeyMap() tuiKeyMap {
 	return tuiKeyMap{
-		Up:        keypkg.NewBinding(keypkg.WithKeys("up", "k"), keypkg.WithHelp("↑/k", "Navigate")),
-		Down:      keypkg.NewBinding(keypkg.WithKeys("down", "j"), keypkg.WithHelp("↓/j", "Navigate")),
-		Left:      keypkg.NewBinding(keypkg.WithKeys("left", "h"), keypkg.WithHelp("←/h", "Filter")),
-		Right:     keypkg.NewBinding(keypkg.WithKeys("right")),
-		Enter:     keypkg.NewBinding(keypkg.WithKeys("enter"), keypkg.WithHelp("Enter", "Details")),
-		Search:    keypkg.NewBinding(keypkg.WithKeys("/"), keypkg.WithHelp("/", "Search")),
-		Installed: keypkg.NewBinding(keypkg.WithKeys("i"), keypkg.WithHelp("i", "Installed")),
-		Updates:   keypkg.NewBinding(keypkg.WithKeys("u"), keypkg.WithHelp("u", "Updates")),
-		Upgrade:   keypkg.NewBinding(keypkg.WithKeys("U"), keypkg.WithHelp("U", "Upgrade TarLink")),
-		Versions:  keypkg.NewBinding(keypkg.WithKeys("v"), keypkg.WithHelp("v", "Versions")),
-		Rollback:  keypkg.NewBinding(keypkg.WithKeys("r"), keypkg.WithHelp("r", "Rollback")),
-		Uninstall: keypkg.NewBinding(keypkg.WithKeys("x", "d", "delete"), keypkg.WithHelp("x", "Uninstall")),
-		Cancel:    keypkg.NewBinding(keypkg.WithKeys("esc"), keypkg.WithHelp("Esc", "Back")),
-		Quit:      keypkg.NewBinding(keypkg.WithKeys("q"), keypkg.WithHelp("q", "Quit")),
-		CtrlC:     keypkg.NewBinding(keypkg.WithKeys("ctrl+c")),
-		Help:      keypkg.NewBinding(keypkg.WithKeys("?"), keypkg.WithHelp("?", "Help")),
+		Up:           keypkg.NewBinding(keypkg.WithKeys("up", "k"), keypkg.WithHelp("↑/k", "Navigate")),
+		Down:         keypkg.NewBinding(keypkg.WithKeys("down", "j"), keypkg.WithHelp("↓/j", "Navigate")),
+		Enter:        keypkg.NewBinding(keypkg.WithKeys("enter"), keypkg.WithHelp("Enter", "Details")),
+		Search:       keypkg.NewBinding(keypkg.WithKeys("/"), keypkg.WithHelp("/", "Search")),
+		Browse:       keypkg.NewBinding(keypkg.WithKeys("b", "B"), keypkg.WithHelp("b", "Browse")),
+		Installed:    keypkg.NewBinding(keypkg.WithKeys("i", "I"), keypkg.WithHelp("i", "Installed")),
+		NotInstalled: keypkg.NewBinding(keypkg.WithKeys("n", "N"), keypkg.WithHelp("n", "Not installed")),
+		Updates:      keypkg.NewBinding(keypkg.WithKeys("u", "U"), keypkg.WithHelp("u", "Updates")),
+		Upgrade:      keypkg.NewBinding(keypkg.WithKeys("g"), keypkg.WithHelp("g", "Upgrade TarLink")),
+		Versions:     keypkg.NewBinding(keypkg.WithKeys("v"), keypkg.WithHelp("v", "Versions")),
+		Rollback:     keypkg.NewBinding(keypkg.WithKeys("r"), keypkg.WithHelp("r", "Rollback")),
+		Uninstall:    keypkg.NewBinding(keypkg.WithKeys("x", "d", "delete"), keypkg.WithHelp("x", "Uninstall")),
+		Cancel:       keypkg.NewBinding(keypkg.WithKeys("esc"), keypkg.WithHelp("Esc", "Back")),
+		Quit:         keypkg.NewBinding(keypkg.WithKeys("q"), keypkg.WithHelp("q", "Quit")),
+		CtrlC:        keypkg.NewBinding(keypkg.WithKeys("ctrl+c")),
+		Help:         keypkg.NewBinding(keypkg.WithKeys("?"), keypkg.WithHelp("?", "Help")),
 	}
 }
 
@@ -141,7 +143,7 @@ func (m model) contextualActions() []contextualAction {
 	if m.screen == screenDetails {
 		enterLabel := "Enter Apply"
 		if len(m.selectedIDs) > 0 {
-			if m.returnTo == screenAvailable {
+			if m.returnTo == screenAvailable || m.returnTo == screenNotInstalled {
 				enterLabel = "Enter Install selected"
 			}
 			if m.returnTo == screenInstalled {
@@ -173,21 +175,27 @@ func (m model) contextualActions() []contextualAction {
 		if len(m.selectedIDs) > 0 {
 			enterLabel = "Enter Review"
 		}
+		values := m.visibleApplications()
 		actions := make([]contextualAction, 0)
-		if len(m.visibleApplications()) > 0 {
+		if len(values) > 0 {
 			actions = append(actions, action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, enterLabel))
 		}
-		if len(m.visibleApplications()) > 0 && (m.screen == screenAvailable || m.screen == screenInstalled) {
+		if len(values) > 0 && (m.screen == screenAvailable || m.screen == screenInstalled || m.screen == screenNotInstalled) {
 			toggle := keypkg.NewBinding(keypkg.WithKeys("space"), keypkg.WithHelp("Space", "Select"))
 			actions = append(actions, action(actionToggle, toggle, "Space Toggle"))
 		}
-		if m.screen == screenAvailable {
-			filter := keypkg.NewBinding(keypkg.WithKeys("left", "right"))
-			actions = append(actions, action(actionFilter, filter, "←/→ Filter"), action(actionSearch, b.Search, "/ Search"), action(actionInstalled, b.Installed, "i Installed"), action(actionUpdates, b.Updates, "u Updates"))
-		} else if m.screen == screenInstalled {
-			actions = append(actions, action(actionSearch, b.Search, "/ Search"), action(actionUpdates, b.Updates, "u Updates"))
-		} else {
-			actions = append(actions, action(actionSearch, b.Search, "/ Search"), action(actionInstalled, b.Installed, "i Installed"))
+		actions = append(actions, action(actionSearch, b.Search, "/ Search"))
+		if m.screen != screenAvailable {
+			actions = append(actions, action(actionBrowse, b.Browse, "b Browse"))
+		}
+		if m.screen != screenInstalled {
+			actions = append(actions, action(actionInstalled, b.Installed, "i Installed"))
+		}
+		if m.screen != screenNotInstalled {
+			actions = append(actions, action(actionNotInstalled, b.NotInstalled, "n Not installed"))
+		}
+		if m.screen != screenUpdates {
+			actions = append(actions, action(actionUpdates, b.Updates, "u Updates"))
 		}
 		if m.screen != screenAvailable {
 			actions = append(actions, action(actionCancel, b.Cancel, "Esc Browse"))
@@ -196,7 +204,7 @@ func (m model) contextualActions() []contextualAction {
 			actions = append(actions, action(actionVersions, b.Versions, "v Versions"))
 		}
 		if m.upgradeAvailable {
-			actions = append([]contextualAction{action(actionUpgrade, b.Upgrade, "U Upgrade")}, actions...)
+			actions = append([]contextualAction{action(actionUpgrade, b.Upgrade, "g Upgrade")}, actions...)
 		}
 		actions = append(actions, action(actionQuit, b.Quit, "q Quit"))
 		return actions
