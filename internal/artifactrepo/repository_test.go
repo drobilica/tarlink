@@ -274,6 +274,12 @@ func TestRequiredIncludesResolvedRemoteDesktopIcon(t *testing.T) {
 }
 
 func TestNormalizeSourcePreservesOrderedGlobalInputs(t *testing.T) {
+	for _, input := range []string{"/tmp/repository", "/tmp/nested/../repository"} {
+		got, err := NormalizeSource(input, "/different/working-directory")
+		if err != nil || got != "/tmp/repository" {
+			t.Fatalf("absolute source %q became %q: %v", input, got, err)
+		}
+	}
 	cwd := filepath.Join(t.TempDir(), "working")
 	if err := os.MkdirAll(cwd, 0700); err != nil {
 		t.Fatal(err)

@@ -156,7 +156,35 @@ staged backup and reports the path. State is never rewritten, preserving the
 pin, channel, runtime reference, and rollback identity. The previous payload
 is neither repaired nor recreated. Required runtimes use normal immutable
 deployment validation/acquisition; repair does not replace a damaged existing
-shared runtime. This is explicit application recovery, not an offline mode.
+shared runtime. Repair also supports the explicit offline mode below.
+
+## Offline acquisition
+
+`--offline` is a startup option for `install` and `repair` only. The CLI rejects
+other operations before invoking their services, including the TUI, refresh,
+self-update and maintainer discovery. The core reads only the validated local
+official catalog, even when stale, and never bootstraps or refreshes missing or
+invalid metadata. Its successful checked-at value stays unchanged. Advisory
+release checks are suppressed; explicit refresh and self-upgrade are blocked
+at the core boundary as well.
+
+The download client permits verified cache objects and configured filesystem
+repositories, skips HTTPS repositories, and blocks all HTTP entry points before
+requests or destination publication. Local sources remain byte suppliers;
+only official metadata selects URLs, algorithms and digests.
+
+Offline preflight resolves lock entries before mutation and verifies each
+selected application's complete artifact/runtime/remote-icon closure into the
+disposable cache. Shared objects are checked once per algorithm, digest and
+consumer size limit during a batch preflight. Metadata errors and unavailable
+resources are reported before the first selected application is installed;
+no runtime deployment is published while a required artifact is unavailable.
+Installation and repair recheck their closure and use the normal verified
+materializer, so preflight never substitutes for verification on use. Cache
+population/repair and lock creation can occur during preflight. Subsequent
+extraction, ownership or I/O failures retain the existing per-application
+failure guarantees; batch installation is not a cross-application transaction.
+No alternate catalog source or registry-import format is introduced.
 
 ## Removal flow
 

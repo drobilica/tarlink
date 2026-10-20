@@ -278,13 +278,39 @@ func (core *Core) InstallLock(ctx context.Context, input string, forcePath bool,
 	if lock.Platform != expected {
 		return BatchResult{}, fmt.Errorf("lock platform %q does not match host %q", lock.Platform, expected)
 	}
+	var offlineItems []*manifest.Manifest
+	if core.offline() {
+		var failures []error
+		for _, entry := range lock.Applications {
+			item, err := core.resolveExactLock(ctx, entry)
+			if err != nil {
+				failures = append(failures, fmt.Errorf("%s: %w", entry.ID, err))
+			}
+			offlineItems = append(offlineItems, item)
+		}
+		if err := ctx.Err(); err != nil {
+			return BatchResult{}, err
+		}
+		if len(failures) > 0 {
+			return BatchResult{}, fmt.Errorf("offline metadata preflight failed before application changes: %w", errors.Join(failures...))
+		}
+		if err := core.installer.PreflightOffline(ctx, offlineItems); err != nil {
+			return BatchResult{}, classify("offline install preflight", err)
+		}
+	}
 	result := BatchResult{Failed: map[string]string{}, FailureCodes: map[string]ErrorCode{}}
 	for i, entry := range lock.Applications {
 		if err := ctx.Err(); err != nil {
 			result.Canceled = true
 			return result, err
 		}
-		item, err := core.resolveExactLock(ctx, entry)
+		var item *manifest.Manifest
+		var err error
+		if core.offline() {
+			item = offlineItems[i]
+		} else {
+			item, err = core.resolveExactLock(ctx, entry)
+		}
 		if err != nil {
 			result.Failed[entry.ID] = err.Error()
 			result.FailureCodes[entry.ID] = CodeOf(err)

@@ -20,7 +20,10 @@ import (
 const help = `TarLink manages verified portable Linux applications.
 
 Usage:
-  tarlink <command> [options]
+  tarlink [--offline] <command> [options]
+
+Offline:
+  --offline    Install or repair using the validated local catalog and local artifacts
 
 Discover applications:
   list         List available applications
@@ -180,12 +183,26 @@ func (r Runner) Run(ctx context.Context, arguments []string) int {
 }
 
 func (r Runner) rootCommand(progress *progressRenderer, tuiStdout, tuiStderr io.Writer) *cobra.Command {
-	var versionFlag bool
+	var versionFlag, offlineFlag bool
 	root := &cobra.Command{
 		Use:           "tarlink",
 		Short:         "Manage verified portable Linux applications",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(command *cobra.Command, _ []string) error {
+			if !offlineFlag {
+				return nil
+			}
+			if command.Name() != "install" && command.Name() != "repair" {
+				return invalidCommand("--offline supports only install and repair")
+			}
+			service, ok := r.Service.(interface{ EnableOffline() })
+			if !ok {
+				return errors.New("offline mode is unavailable")
+			}
+			service.EnableOffline()
+			return nil
+		},
 		RunE: func(command *cobra.Command, args []string) error {
 			if len(args) != 0 {
 				return invalidCommand("unknown command; run `tarlink help`")
@@ -206,6 +223,7 @@ func (r Runner) rootCommand(progress *progressRenderer, tuiStdout, tuiStderr io.
 	root.SetHelpFunc(func(command *cobra.Command, _ []string) { _, _ = io.WriteString(command.OutOrStdout(), help) })
 	root.SetFlagErrorFunc(func(*cobra.Command, error) error { return invalidCommand("unknown command; run `tarlink help`") })
 	root.Flags().BoolVarP(&versionFlag, "version", "v", false, "show TarLink version")
+	root.PersistentFlags().BoolVar(&offlineFlag, "offline", false, "install or repair using local catalog and artifacts only")
 	root.CompletionOptions.DisableDefaultCmd = true
 
 	root.AddCommand(
@@ -524,7 +542,7 @@ func (r Runner) searchCommand() *cobra.Command {
 }
 
 func (r Runner) installCommand(progress *progressRenderer) *cobra.Command {
-	usage := "usage: tarlink install <app>... [--force-path] | tarlink install -f <path> [--force-path]"
+	usage := "usage: tarlink install <app>... [--force-path] [--offline] | tarlink install -f <path> [--force-path] [--offline]"
 	var file string
 	var forcePath bool
 	command := &cobra.Command{Use: "install <app>...", Short: "Install applications", Args: func(_ *cobra.Command, args []string) error {
@@ -672,7 +690,7 @@ func (r Runner) updateCommand(progress *progressRenderer) *cobra.Command {
 }
 
 func (r Runner) repairCommand(progress *progressRenderer) *cobra.Command {
-	usage := "usage: tarlink repair <app>"
+	usage := "usage: tarlink repair <app> [--offline]"
 	command := &cobra.Command{Use: "repair <app>", Short: "Restore an exact installed package and missing integration", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {

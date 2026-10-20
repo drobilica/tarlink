@@ -79,6 +79,31 @@ Use `tarlink --help` or the [CLI reference](cli/README.md) for all commands,
 including channels, pinning, registry maintenance, and static artifact mirrors.
 Generate shell completions with `tarlink completion <shell>`.
 
+### Offline installation and repair
+
+```sh
+tarlink --offline install <app>
+tarlink --offline install -f tarlink.lock
+tarlink --offline repair <app>
+```
+
+Prepare the machine's official catalog with `tarlink refresh` while online.
+Application, exact runtime, and remote icon artifacts must already be in the
+verified cache or a configured filesystem repository. To prepare a local
+repository, use `repository init`, `repository sync`, and `repository add` as
+described in the [repository guide](docs/filesystem-layout.md#static-artifact-repositories).
+
+Offline mode accepts the validated local catalog regardless of age, without
+refreshing it or advancing its check time. It skips HTTPS repositories and
+blocks upstream downloads and advisory version checks. All selected artifacts
+are verified before applications change; missing or corrupt resources are
+reported by application, resource kind, algorithm, and digest. Preflight may
+populate or repair the disposable cache from local repositories. The normal
+ownership, extraction, atomic activation, and rollback checks still apply.
+The flag supports only `install` and `repair`, including batch/lock installs;
+other operations are rejected. A local mirror alone cannot replace missing
+approved catalog metadata.
+
 ### Snapshots and composition
 
 ```sh
@@ -90,7 +115,8 @@ tarlink installed --json | tarlink-data sync
 A lock records exact platforms, channels, versions, and package fingerprints.
 Replay resolves entries through the official catalog, rejects changed package
 identities, and leaves extra installed applications alone. It requires the
-approved registry metadata; it is not an offline backup.
+approved registry metadata, including in offline mode; the lock itself is not
+an artifact or metadata backup.
 `tarlink installed --json` provides a versioned machine interface; `tarlink-data`
 is a separate application-data resolver.
 

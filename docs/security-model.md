@@ -35,9 +35,18 @@ truncation, size, and digest failures are ordinary source failures and fall
 through to the next source; cancellation and destination-write failures stop
 the operation. A malformed optional `repositories.json` is retained as an
 acquisition error rather than being partially or silently used, while local
-lifecycle commands can still start. No offline installation or recovery mode is
-implemented. A future offline mode would have to prohibit both registry refresh
-and every network repository source.
+lifecycle commands can still start. Explicit `--offline` installation and
+repair require the validated local official catalog and verify the complete
+selected artifact/runtime/icon closure from cache or filesystem repositories
+before application changes. Stale valid metadata remains usable without
+advancing checked-at; missing/invalid metadata cannot bootstrap. HTTPS sources
+are skipped, and every download HTTP entry point rejects requests. Advisory
+version checks are suppressed, and the core also refuses explicit registry
+refresh and self-upgrade. The CLI rejects other operations with this flag.
+Preflight can populate the disposable cache and create locks, but cannot approve
+metadata or bypass digest, resource-limit, ownership or extraction controls.
+Materialization verifies again on use, including after preflight. See
+[Offline acquisition](architecture.md#offline-acquisition).
 
 The official registry is the artifact-approval boundary. Schema-v5
 `verification.source` records an official upstream release or artifact origin

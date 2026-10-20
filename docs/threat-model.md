@@ -47,6 +47,7 @@ This page describes the implemented trust boundaries and controls.
 | Alternate registry substitution | Exact compiled HTTPS source, bounded staged archive, direct manifest validation, normalized immutable generation |
 | Static repository tree confusion | Exact descriptor, `v1` algorithm directories, digest-named regular objects, and narrowly allowlisted sync transients; public extras and links are rejected |
 | Repository source failure | Body-read, truncation, size, and digest failures fall through ordered sources; cancellation and destination writes remain terminal |
+| Offline traffic or incomplete local closure | Explicit install/repair mode, validated local metadata, HTTP acquisition rejection, suppressed discovery, and complete selected artifact preflight before application changes |
 | Offline or failed refresh | Previously validated official-registry cache remains active; absent/invalid cache cannot fall back |
 | Zip-slip / tar traversal | UTF-8 canonical relative paths with depth and length limits |
 | Symlink or hardlink escape | Hardlinks rejected; symlinks confined to same-directory regular-file chains; parent `lstat`; exclusive creation |

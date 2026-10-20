@@ -58,6 +58,9 @@ func (core *Core) InstallBatchWithOptions(ctx context.Context, ids []string, for
 	if err != nil {
 		return BatchResult{}, err
 	}
+	if err := core.installer.PreflightOffline(ctx, items); err != nil {
+		return BatchResult{}, classify("offline install preflight", err)
+	}
 	result := BatchResult{Failed: map[string]string{}, FailureCodes: map[string]ErrorCode{}}
 	for index, target := range targets {
 		if err := ctx.Err(); err != nil {
