@@ -25,6 +25,7 @@ Generated from Cobra. Regenerate with `./scripts/update-cli-readme.sh`.
     - `tarlink registry icons <path> [flags]` — Audit registry desktop icons
     - `tarlink registry inspect <target> [flags]` — Inspect an upstream artifact
     - `tarlink registry validate <path>` — Validate a registry tree
+  - `tarlink repair <app>` — Restore an exact installed package and missing integration
   - `tarlink repository` — Manage static artifact repositories
     - `tarlink repository add URL_OR_PATH` — Add a repository source
     - `tarlink repository init PATH` — Initialize an artifact repository

@@ -22,10 +22,9 @@ steps fail closed.
 These are integrity and failure-safety guarantees, not independent publisher
 authentication. Release tags, assets, the registry, and their checksums remain
 publisher-controlled. A checksum delivered by the same compromised publisher
-cannot authenticate that publisher. The reviewed GitHub metadata reports the
-current `v0.18.1` release as `immutable: false`; its annotated tag is also
-unsigned, so the release tag is an identity selector, not an independent trust
-root.
+cannot authenticate that publisher. Release tags select identities; neither a
+tag nor a checksum published through the same trusted channel supplies an
+independent trust root.
 
 ## Proposed trust-root distribution
 

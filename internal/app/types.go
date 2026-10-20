@@ -123,6 +123,11 @@ type LockService interface {
 	InstallLock(context.Context, string, bool, ProgressSink) (BatchResult, error)
 }
 
+// RepairService restores an installed package without changing its identity.
+type RepairService interface {
+	Repair(context.Context, string, ProgressSink) (Result, error)
+}
+
 type ProgressSink func(Progress)
 
 type Application struct {

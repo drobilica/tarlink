@@ -1,42 +1,37 @@
 # TarLink architecture
 
-TarLink is a rootless, single-user application manager for Linux amd64 and arm64. Each application is one strict schema-v5 manifest that stores shared application, release, and integration metadata once. Release entries may explicitly declare one inner archive extraction layer. Every application is stored at `apps/<id>/manifest.yaml`, and each retained release declares its exact supported platforms as artifact keys such as `artifacts.linux-amd64` and `artifacts.linux-arm64`; unsupported platforms are omitted. The client resolves its exact `runtime.GOOS`/`runtime.GOARCH` pair to the matching artifact key in the selected release and refuses an absent platform; there is no alias, compatibility filename, or cross-platform fallback. Executables declare one shared path or explicit per-platform paths, exactly as the schema allows, with no inherited defaults.
+TarLink is a rootless, single-user Linux application manager for amd64 and
+arm64. Each application has one strict v5 manifest at `apps/<id>/manifest.yaml`.
+Shared metadata is declared once; retained releases declare exact platform
+artifacts. Resolution matches `GOOS`/`GOARCH` exactly and refuses absent
+platforms. Executables use either shared or explicit per-platform paths.
 
 ## Interface boundaries
 
-`internal/app` is the UI-independent core. It composes two separate dependency
-graphs inside the same Linux binary, chosen by the CLI before the frontends
-run. The application runtime (`app.NewCore`) owns the full Linux runtime —
-registry freshness and sync, catalog, lifecycle (install/update/uninstall/
-rollback), and TarLink self-upgrade — along with `doctor`. The
-registry-maintainer graph (`app.NewMaintainer`) is a small composition root
-holding only a filesystem layout and a download client; it owns registry
-validation, research, artifact inspection, candidate onboarding, ledger/blocker
-analysis, and icon maintenance. Maintainer tooling shares no lifecycle
-dependencies and performs no installation, self-upgrade, registry sync, or
-host-platform resolution, so its commands never require the application
-runtime. `registry check`, which exercises the real install/uninstall lifecycle
-in a temporary layout without executing application binaries, and `registry
-freshness`, which resolves the host platform's approved manifest variant from
-the validated cache, both deliberately remain on the application runtime.
-`cli` owns argument parsing, streams, JSON, and exit codes. `tui` owns Bubble
-Tea state and views, using Bubbles for reusable terminal components and Lip
-Gloss for styling and layout. Both frontends call the same runtime core service
-and progress model; neither performs release discovery, checksum verification,
-or filesystem replacement itself.
+`internal/app` composes two service graphs:
 
-Runtime platform resolution is an exact `GOOS`/`GOARCH` match for installation,
-unchanged. Registry-maintainer artifact analysis instead derives the target
-architecture from artifact evidence only — the asset name's platform markers
-cross-checked against the artifact's own ELF header — and never from the
-maintainer's host; ambiguity is reported as a required maintainer input rather
-than inheriting the host architecture.
+- `NewCore` owns registry refresh, catalog, application lifecycle, local launch
+  preparation, self-upgrade and doctor.
+- `NewMaintainer` owns registry validation, research, artifact inspection,
+  candidate construction, blockers and icons. It uses only a filesystem layout
+  and download client; it cannot install, self-upgrade, sync the registry or
+  infer artifacts from the host platform.
+
+`registry check` deliberately uses the application runtime to exercise real
+install/uninstall in a temporary layout. `registry freshness` also uses that
+runtime to resolve the approved host-platform manifest.
+
+`cli` handles arguments, streams, JSON and exit codes. `tui` handles Bubble Tea
+state and views with Bubbles and Lip Gloss. Both consume the core service and
+progress model; neither implements acquisition, verification or publication.
+Maintainer inspection derives architecture from asset naming and ELF evidence,
+reports contradictions and ambiguity, and never substitutes the host target.
 
 ## Trust boundaries
 
 ```text
 compiled official registry URL
-        │ HTTPS, bounded archive, validated apps/ tree
+        │ HTTPS, bounded archive, validated apps/ and runtimes/ trees
         ▼
 strict v5 manifest and exact platform/channel/version resolution
         │ exact approved HTTPS artifact URL + SHA-256 or SHA-512 digest
@@ -50,37 +45,19 @@ bounded download ── digest verification ── staging directory
                                            active version
 ```
 
-The official registry is the only catalog and artifact-approval authority. TarLink directly enumerates each strict `apps/<id>/manifest.yaml` and resolves only its exact canonical platform entry; there is no generated index, compatibility filename fallback, architecture fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves only its normalized `apps/` data into a private generation, records the successful checked-at value as private generation metadata, validates and flushes that generation, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations. Historical releases remain registry-approved metadata; they do not imply local retention, and channel heads are never inferred by version sorting.
+The official registry is the only catalog and artifact-approval authority. TarLink directly enumerates each strict `apps/<id>/manifest.yaml` and resolves only its exact canonical platform entry; there is no generated index, compatibility filename fallback, architecture fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves its normalized `apps/` and optional `runtimes/` data into a private generation, records the successful checked-at value as private generation metadata, validates and flushes that generation, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations. Historical releases remain registry-approved metadata; they do not imply local retention, and channel heads are never inferred by version sorting.
 
-Static artifact repositories are included in the `v0.18.1` release. They are
-byte-only sources. A strict repository contains
-only `repository.json`, `v1/sha256/`, `v1/sha512/`, and digest-named regular
-objects. `Open` and `Verify` reject symlinks, extra public entries, malformed
-or oversized descriptors, and invalid object names. During atomic sync they
-also allow only TarLink's `.sync.lock`, `.object-stage-*`, and `.descriptor-*`
-transients. The repository workflow is one command,
-`tarlink repository sync /repository`, with `--app`, `--platform`,
-`--all-retained`, `--dry-run`, and `--json` forms for narrowing, planning, and
-machine output; `status` and `verify` inspect without mutating. Every run uses
-one validated registry snapshot and reports its revision and fetch time. The
-selection unit is application by channel by platform, and the desired closure
-per selected release is the application artifact, its exact required runtime
-artifact, and the app-wide digest-bearing remote desktop icon; icons bundled
-inside archives stay inside their app artifact and are not repository objects,
-and there are no per-version icon variants. Sync is additive-only: it acquires
-missing objects and repairs corrupt required objects, and it retains every
-valid stored artifact — including objects absent from the current registry and
-objects outside a narrowed `--app`/`--platform` selection — so repository
-storage may grow over time and nothing is ever deleted. The repository is a
-byte-only artifact mirror, never a second catalog: hosting bytes does not
-authorize changing official metadata or installing releases absent from the
-validated registry snapshot. The retained
-`releases` list is an explicit set: releases are never inferred or sorted and
-version identifiers are opaque, so no per-channel release-count bound (such as
-keeping the latest five releases per application, channel, and platform) is
-implemented. The default selection and `--all-retained` therefore both select
-the complete eligible retained set, and introducing a count bound requires a
-deliberate history-ordering schema decision.
+Static artifact repositories supply bytes, never approval. Acquisition checks
+verified local cache objects, then configured repositories in order, then the
+registry-declared upstream URL. Every source must supply the exact approved
+digest. Repository sync uses one validated registry snapshot and is additive:
+it acquires missing objects, repairs required corrupt objects, and retains
+all valid objects outside the selected scope. The closure includes application,
+exact runtime, and verified remote icon artifacts. Default and `--all-retained`
+selection both cover the complete eligible retained release set; opaque
+versions have no inferred ordering or release-count bound. See
+[Filesystem layout](filesystem-layout.md#static-artifact-repositories) for the
+repository format, commands, output, and hosting contract.
 
 Normal registry-dependent commands bootstrap a missing official-registry cache automatically. Valid official-registry caches remain local-only for 24 hours according to their explicit checked-at metadata. A stale cache triggers a refresh attempt; a failed attempt may fall back only to the already validated cache without advancing checked-at. `refresh` always fetches and validates the current official registry, activates it before returning, and prints the successful UTC checked-at value. Local operations such as rollback and uninstall do not require networking. The CLI `list` command enumerates the available platform catalog and annotates installed state; the TUI's installed list remains a separate view.
 
@@ -131,14 +108,52 @@ is outside the immutable deployment. Steam is not required and UMU is not used.
 
 No step invokes an archive-provided program, shell, hook, installer, or arbitrary argument.
 
+## Repair flow
+
+`tarlink repair <app>` loads valid layout-bound state and resolves its exact
+version, channel, platform, and fingerprint through the official catalog.
+The installer rechecks the installed identity and metadata under lifecycle
+and application locks. It refuses changed or withdrawn package identities,
+corrupt state, symlinked payload roots, unexpected active pointers, and
+integration files whose ownership cannot be proven.
+
+The normal verified materializer prepares a fresh application tree and icon.
+Repair recreates missing integration entries and atomically exchanges an
+existing payload with the staged tree using Linux `RENAME_EXCHANGE`; a missing
+payload is published by rename. Filesystems without atomic exchange fail
+without a remove-then-rename fallback. Missing application directories and the
+recorded `current` link can be recreated. Publication failures restore prior
+payload, activation, and integrations; a failed payload restoration retains its
+staged backup and reports the path. State is never rewritten, preserving the
+pin, channel, runtime reference, and rollback identity. The previous payload
+is neither repaired nor recreated. Required runtimes use normal immutable
+deployment validation/acquisition; repair does not replace a damaged existing
+shared runtime. This is explicit application recovery, not an offline mode.
+
 ## Removal flow
 
-Single-application uninstall loads strict state, requires canonical paths for the configured layout, validates every existing executable link, desktop entry, and icon, removes only those integrations, then removes the exact application root and state file. When a state record is corrupt, unparseable, or layout-invalid, uninstall degrades to removing only the TarLink-owned product paths plus the integrations proven by canonical path and content markers — `~/.local/bin` links resolving into the app payload and the canonical desktop entry carrying TarLink's `X-TarLink-AppID` marker while referencing the payload — and reports anything unprovable, including icons, as warnings. Full purge first enumerates those same state records and uses normal application uninstall. It removes fixed TarLink-owned data, state, cache, and config product roots — including `repositories.json` and its lock — after application cleanup succeeds, and removes product parents only when empty; shared directories such as `~/.local/bin`, `$XDG_DATA_HOME/applications`, and the hicolor icon hierarchy are never broadly deleted.
+Uninstall validates strict state and canonical integration paths, removes only
+owned links, desktop entries and icons, then removes the exact application root
+and state. Corrupt or layout-invalid state permits degraded removal only of
+TarLink product paths and integrations proven by canonical paths and content
+markers; unprovable files, including icons, remain with warnings.
 
-The bootstrap `uninstall.sh` contains no application-cleanup implementation. It validates the install marker against the canonical binary, invokes `~/.local/bin/tarlink uninstall --all`, rechecks the retained digest after Go reports success, and then removes the marker and binary.
+Full purge uses that same application cleanup before removing fixed TarLink
+data, state, cache and config roots. Shared XDG directories survive and product
+parents are removed only when empty. `uninstall.sh` delegates cleanup to the
+canonical binary, verifies its retained ownership marker, then removes the
+marker and binary. See [Security model](security-model.md#local-ownership-and-lifecycle)
+for the exact ownership rules.
 
 ## Failure and concurrency
 
-Failed registry refreshes cannot replace the validated cache. Failed downloads, verification, extraction, integration, activation, or state writes leave the previously active version usable. Mutations and registry refreshes share a cross-process lifecycle `flock` on the existing home-directory inode, then use narrower per-application or registry locks. The lifecycle lock leaves no file for purge to race or retain. `update --all` processes stable application IDs, continues after independent errors, and returns a non-zero result when any update fails.
+Failed registry refreshes cannot replace the validated cache. Failed downloads,
+verification, extraction, integration, activation, or state writes preserve the
+previous installation. Mutations and registry refreshes share a cross-process
+lifecycle `flock` on the existing home-directory inode, then acquire narrower
+per-application or registry locks. Purge cannot remove that lifecycle lock.
+`update --all` processes stable application IDs, continues after independent
+errors, and returns nonzero when any update fails.
 
-Network and archive limits are part of the security contract. See [security-model.md](security-model.md).
+Network and archive limits are part of the
+[security contract](security-model.md).

@@ -48,12 +48,18 @@ tarlink update <app>
 tarlink rollback <app>
 tarlink uninstall <app>...
 tarlink doctor
+tarlink repair <app>
 ```
 
 Registry-dependent commands refresh the official catalog when needed;
 `tarlink refresh` always checks it explicitly. `tarlink doctor` audits managed
 state, payloads, executable links, and desktop integration without running apps.
-PATH conflicts are reported before installation.
+Use `tarlink repair <app>` to restore the exact installed package and missing
+integration entries without changing its pin or rollback history. Repair needs
+valid installed state and the same package fingerprint in the approved catalog;
+it refuses conflicting files. It restores the current application payload,
+not a lost previous payload or a damaged existing shared runtime. PATH conflicts
+are reported before installation.
 
 In the TUI, navigate with `↑`/`↓` or `j`/`k`, open details with `Enter`, and select
 applications with `Space`. Batch installs show the resolved set for confirmation.

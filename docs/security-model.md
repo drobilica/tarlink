@@ -13,12 +13,11 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 - Version-5 manifests may retain multiple approved releases independently for each exact platform, but every historical release has the same exact URL, digest, archive, and informational origin metadata checks. Explicit channel heads and opaque exact versions are resolved only from the validated official registry; freshness candidates cannot alter trusted release metadata. A release may explicitly declare one nested archive layer, which shares cumulative extraction limits with its outer archive.
 - AppImage releases are accepted only as verified, little-endian 64-bit ELF Type 2 artifacts matching the target architecture. TarLink stores them as opaque regular files, never executes, mounts, or extracts them, and rejects Type 1 markers and malformed headers.
 - Remote desktop icons are HTTPS-only `.png` or `.svg` downloads capped at 4 MiB, verified against the manifest's lowercase SHA-256, and retained byte-for-byte inside each fingerprinted version payload so activation and rollback need no network. PNGs must carry a valid signature and IHDR header with square dimensions from the supported hicolor set; the size is read from the header, never decoded from image pixels. SVGs must be well-formed UTF-8 XML rooted in the SVG namespace and are limited to static vector elements and attributes. DTDs/directives and custom entity declarations are rejected; only predefined/numeric XML character references are parsed, and undefined entities fail. Processing instructions other than a valid optional XML declaration, scripts, event handlers, foreign/active elements, embedded image/object content, stylesheets, and external or non-local resource references are rejected. SVG parsing has byte, element, token, attribute, and nesting limits. TarLink never rewrites accepted SVG bytes. AppImages remain opaque and may only use a verified remote icon, which is downloaded and validated separately from the opaque payload; an archive-contained icon path inside an AppImage is rejected because no extracted tree exists.
-- Registry generations contain only a revalidated `apps/` tree. The active pointer must be relative and remain below `generations/`.
+- Registry generations contain revalidated `apps/` and optional `runtimes/` trees plus private refresh metadata. The active pointer must be relative and remain below `generations/`.
 - A missing registry is fetched automatically. Explicit refresh always fetches the current official registry. Each activated cache generation stores the successful UTC check time as private metadata; failed stale or explicit refreshes cannot advance that time or replace the last successfully validated cache.
 - XDG data, state, and cache homes must be absolute paths below the user's home and cannot contain control characters. Managed directory chains are checked without accepting symlink components before mutation.
 
-Static artifact repositories are included in the `v0.18.1` release. They are
-byte sources only. Their strict descriptor is
+Static artifact repositories are byte sources only. Their strict descriptor is
 `{"format":"content-repository","version":1}`; unsupported versions,
 unknown descriptor fields, oversized descriptors, unsafe filesystem entries,
 extra public-tree entries, and objects whose full content hash does not equal
@@ -49,7 +48,29 @@ registry branch is a trusted, mutable catalog rather than signed metadata:
 compromise of that registry can replace both an artifact URL and its digest and
 is outside the current authenticity guarantee.
 
-## Archive policy
+## Static repository operation
+
+Static repositories are untrusted content stores, never registry authorities.
+TarLink accepts only the exact descriptor format/version, rejects unsafe
+filesystem entries, reads opened regular files into private same-filesystem
+temporary files, verifies the requested digest, and atomically publishes the
+object. A corrupt required object can be repaired only by verified replacement;
+a missing or corrupt desired object is never repaired from the destination
+repository's own bytes. Repository sources are attempted
+in configured order after local cache verification, and failures are visible
+without weakening HTTPS, cancellation, size, or digest checks.
+Repository dry-runs read the already validated local registry generation and do
+not refresh it; without such a generation they report the missing state instead
+of silently downloading one.
+
+`tarlink repository sync` is additive-only: no valid artifact is deleted,
+including objects absent from the registry or outside the selection. Unsafe
+entries abort before mutation. Failures preserve pre-existing valid objects
+and report truthful partial counters, including `removed=0`. Temporary free
+space is required; manifests do not declare artifact sizes. Status, verify,
+and dry-run never mutate persistent content and snapshot under the writer
+lock with a bounded wait. See the [repository contract](filesystem-layout.md#static-artifact-repositories)
+for selection, output fields, and exit codes.
 
 ## Valve Steam Linux Runtime
 
@@ -69,6 +90,8 @@ deployment, while rejecting hardlinks, ownership metadata, special files and
 special mode bits. This compatibility runtime is not a TarLink security
 sandbox and does not promise isolation from the user's home, network, display,
 audio, DBus or devices.
+
+## Application archive policy
 
 Accepted formats are exactly `tar.gz`, `tar.xz`, and ZIP, and the declared format must agree with content magic.
 
@@ -91,6 +114,18 @@ Files are created exclusively and every parent is checked with `lstat`. Archive 
 ## Local ownership and lifecycle
 
 Effective UID 0 is rejected. State uses a temporary file, flush, atomic rename, and directory `fsync`. Active-version links are relative and replaced atomically. Only the current and one previous validated version are retained.
+
+Explicit `repair <app>` resolves the installed version, channel and fingerprint
+through the official registry, then rechecks state under lifecycle and
+application locks. It verifies bytes through the normal bounded materializer,
+restores missing integration entries, and replaces an existing payload using
+atomic Linux directory exchange. Missing payloads use rename. Conflicting
+integrations, symlink components, unexpected active pointers, corrupt state,
+and changed package identities are refused. Failure rolls back publication;
+if restoration fails, the original staged payload is retained and reported.
+Repair leaves state and the previous payload unchanged and does not replace
+damaged existing shared runtimes. See the
+[repair flow](architecture.md#repair-flow).
 
 State is accepted for removal only when its application ID, versions, executable, executable integration, optional desktop integration, icon destination/source metadata, and ownership digests match the canonical current-user layout. Existing integrations are validated before deletion. Missing integrations make interrupted cleanup retryable; replacements or modifications are conflicts. Application roots and TarLink product roots are removed through containment and symlink checks that never select their broader parent directories. Full purge includes the config product root containing `repositories.json` and its lock. Icon sources are regular files below the verified application root; icon destinations are fixed hicolor `scalable/apps` (bundled or verified remote SVG), `48x48/apps` (archive rasters), or the inferred `WxW/apps` (verified remote PNGs) paths.
 
@@ -118,65 +153,3 @@ integrity verification, not publisher authentication: TarLink does not
 independently prove that the registry or upstream publisher is uncompromised.
 Exact platform and runtime-closure checks address compatibility, not isolation;
 TarLink does not sandbox the installed application at runtime.
-
-### Publishing a static repository
-
-TarLink only creates and verifies the tree. Publication is deliberately handled
-by external tooling. For an nginx document root, an operator can stage and copy
-the completed directory, for example:
-
-```text
-rsync -a REPOSITORY/ /srv/www/tarlink-repository/
-```
-
-For S3-compatible static hosting, an operator can use an external sync tool:
-
-```text
-aws s3 sync REPOSITORY/ s3://BUCKET/tarlink/
-```
-
-The initialized tree's public directories and regular files are readable by a
-separate nginx reader, while TarLink's lock and staging entries remain private.
-The server or bucket should serve `repository.json` and `v1/` without rewriting
-their paths. The bundled nginx image keeps its PID and temporary paths under
-`/tmp` so it can run with a read-only root filesystem; a Kubernetes deployment
-using that mode must mount a writable `emptyDir` at `/tmp`. The repository
-document root remains a separate data volume. TarLink never uploads, deletes,
-computes an index, or configures a server.
-### Static repository operation
-
-Static repositories are untrusted content stores, never registry authorities.
-TarLink accepts only the exact descriptor format/version, rejects unsafe
-filesystem entries, reads opened regular files into private same-filesystem
-temporary files, verifies the requested digest, and atomically publishes the
-object. A corrupt required object can be repaired only by verified replacement;
-a missing or corrupt desired object is never repaired from the destination
-repository's own bytes. Repository sources are attempted
-in configured order after local cache verification, and failures are visible
-without weakening HTTPS, cancellation, size, or digest checks.
-Repository dry-runs read the already validated local registry generation and do
-not refresh it; without such a generation they report the missing state instead
-of silently downloading one.
-
-`tarlink repository sync` is additive-only against one validated registry
-snapshot: it acquires missing objects and repairs corrupt required objects,
-and it retains every valid stored artifact — including objects absent from the
-current registry and objects outside a `--app`/`--platform` selection — so
-repository storage may grow over time. Nothing is ever deleted by sync; safe
-temporary-file recovery removes only `.object-stage-*` staging scratch, never
-valid artifacts. Unknown entries, symlinks, malformed names, or any other
-unsafe condition abort the run before any mutation. Any planning, acquisition,
-verification, write, or cancellation failure leaves all pre-existing valid
-objects byte-identical, and the failure report carries the truthful partial
-counters with `removed=0`, so the next run converges. Acquisition needs
-temporary free space; required bytes are unknown before acquisition because
-manifests carry no sizes, while available bytes are reported when known.
-The repository is an artifact mirror, not an authority: hosting bytes does not
-authorize changing official metadata or installing releases absent from the
-validated registry snapshot. There is no second catalog, and mirror operators
-need no signing keys, schedulers, or extra setup. Status reports extra valid
-objects as retained — never unhealthy and never awaiting deletion — and
-corrupt extras are listed, never hidden, without affecting the required-set
-result. Status, verify, and dry-run never mutate persistent content and
-snapshot under the same writer lock with a bounded wait, reporting a lock
-conflict instead of a state result while a writer is active.
