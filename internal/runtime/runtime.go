@@ -20,7 +20,8 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-const maxRuntimeBytes int64 = 2 << 30
+// MaxArtifactBytes bounds both the compressed runtime and its extracted bytes.
+const MaxArtifactBytes int64 = 2 << 30
 
 const (
 	maxRuntimeEntries = 100000
@@ -92,7 +93,7 @@ func Ensure(ctx context.Context, layout filesystem.Layout, client *download.Clie
 	}
 	artifact, err := client.AcquireVerified(ctx, download.VerifiedRequest{
 		URL: value.Artifact.URL, Algorithm: "sha256", Digest: value.Artifact.Verification.Digest,
-		MaxBytes: maxRuntimeBytes, ReportProgress: func(current, total int64) {
+		MaxBytes: MaxArtifactBytes, ReportProgress: func(current, total int64) {
 			if progress != nil {
 				progress("downloading", current, total)
 			}
@@ -279,7 +280,7 @@ func extractValveDeployment(ctx context.Context, source io.Reader, destination s
 			return err
 		}
 		entries++
-		if entries > maxRuntimeEntries || header.Size < 0 || header.Size > maxRuntimeBytes || declared > maxRuntimeBytes-header.Size {
+		if entries > maxRuntimeEntries || header.Size < 0 || header.Size > MaxArtifactBytes || declared > MaxArtifactBytes-header.Size {
 			return errors.New("runtime archive exceeds extraction budget")
 		}
 		declared += header.Size

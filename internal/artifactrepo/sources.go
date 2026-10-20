@@ -38,7 +38,11 @@ func NormalizeSource(value, cwd string) (string, error) {
 			return "", err
 		}
 	}
-	path, err := filepath.Abs(filepath.Join(cwd, value))
+	path := value
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(cwd, path)
+	}
+	path, err = filepath.Abs(path)
 	if err != nil {
 		return "", err
 	}

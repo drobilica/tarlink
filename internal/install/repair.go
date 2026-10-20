@@ -94,6 +94,9 @@ func (manager *Manager) repairUnlocked(ctx context.Context, item *manifest.Manif
 		return outcome, err
 	}
 	manager.ensureArtifactCache()
+	if err := manager.PreflightOffline(ctx, []*manifest.Manifest{item}); err != nil {
+		return outcome, err
+	}
 	if item.Runtime != nil {
 		if _, _, err := taruntime.Ensure(ctx, manager.Layout, manager.Client, item.Runtime, func(stage string, current, total int64) { manager.report(progress, stage, current, total, "runtime") }); err != nil {
 			return outcome, fmt.Errorf("ensure repair runtime: %w", err)

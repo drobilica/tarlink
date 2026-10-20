@@ -39,6 +39,7 @@ var (
 	ErrNetwork          = errors.New("network download failed")
 	ErrDestinationWrite = errors.New("download destination write failed")
 	ErrUnsafeCache      = errors.New("unsafe artifact cache object")
+	ErrOffline          = errors.New("network access is disabled in offline mode")
 )
 
 type Progress func(downloaded, total int64)
@@ -158,6 +159,9 @@ type Result struct {
 }
 
 type Client struct {
+	// Offline permits verified cache and filesystem sources only. Every HTTP
+	// entry point also rejects traffic before opening a destination or socket.
+	Offline       bool
 	HTTP          *http.Client
 	RedirectLimit int
 	// Sources are ordered static content repositories. Invalid sources and
@@ -229,6 +233,9 @@ func (c *Client) acquireArtifact(ctx context.Context, rawURL, algorithm, digest,
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
 		}
+		if c.Offline && !filepath.IsAbs(source) {
+			continue
+		}
 		if err := c.validateSource(ctx, source, destination); err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return Result{}, err
@@ -270,6 +277,9 @@ func (c *Client) acquireArtifact(ctx context.Context, rawURL, algorithm, digest,
 		if c.SourceDiagnostic != nil {
 			c.SourceDiagnostic(failures[len(failures)-1])
 		}
+	}
+	if c.Offline {
+		return Result{}, fmt.Errorf("%w: no verified local artifact %s:%s; local sources: %s", ErrOffline, algorithm, digest, strings.Join(failures, "; "))
 	}
 	result, err := c.fetch(ctx, rawURL, destination, maxBytes, algorithm, digest, nil, progress)
 	if err != nil && len(failures) > 0 {
@@ -839,6 +849,12 @@ func (c *Client) FetchFile(ctx context.Context, request FileRequest) (Result, er
 }
 
 func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes int64, algorithm, expected string, allowed URLPolicy, progress Progress) (Result, error) {
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
+	if c != nil && c.Offline {
+		return Result{}, ErrOffline
+	}
 	parsed, err := parseHTTPS(rawURL)
 	if err != nil {
 		return Result{}, err

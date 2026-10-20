@@ -84,12 +84,31 @@ for example by copying the completed tree into a document root, or to S3 with
 an external sync tool; TarLink does not perform publication or configure those
 services. The bundled nginx image is compatible with a read-only root only when
 its `/tmp` runtime directory is writable; Kubernetes deployments should mount
-an `emptyDir` at `/tmp` and keep the repository document root separate. An
-explicit offline installation or repair mode is not implemented. Any future offline mode must use
-a validated local registry snapshot and disable registry refresh and every
-network repository source. A repository mirror alone does not guarantee that
-every historical lock can be replayed offline; the existing approved
-fallbacks still apply.
+an `emptyDir` at `/tmp` and keep the repository document root separate.
+
+Offline installation and repair require a previously validated local official
+catalog plus every selected artifact. `--offline` skips all HTTPS sources and
+blocks upstream traffic; only the verified cache and configured filesystem
+repositories supply bytes. A stale valid catalog is accepted without refresh
+or a changed check time. Missing metadata or artifacts are errors, and a mirror
+alone cannot preserve historical installability after approved metadata is
+removed.
+
+For an application on Linux amd64, prepare a filesystem mirror while online:
+
+```sh
+tarlink refresh
+tarlink repository init /path/to/repository
+tarlink repository sync /path/to/repository --app <app> --platform linux-amd64
+tarlink repository add /path/to/repository
+```
+
+Use `linux-arm64` for that target. Keep the prepared official catalog on the
+machine that will install offline. Existing verified cache objects can also
+satisfy the closure. A lock records identities, not artifact bytes or a catalog
+backup. Offline preflight may populate or repair cached blobs from the local
+mirror before application mutation; installed payloads are not used as
+substitutes for verified artifact bytes.
 
 Repository reconciliation is driven by
 `tarlink repository sync PATH [--app ID] [--platform PLATFORM] [--all-retained] [--dry-run] [--json]`,

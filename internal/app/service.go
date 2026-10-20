@@ -59,6 +59,7 @@ func NewCore(layout filesystem.Layout, client *download.Client) (*Core, error) {
 	upgradeClient := download.NewClient()
 	upgradeClient.HTTP = client.HTTP
 	upgradeClient.RedirectLimit = client.RedirectLimit
+	upgradeClient.Offline = client.Offline
 	syncer := &registry.Syncer{
 		CacheRoot: filepath.Join(layout.Cache, "registry"),
 		LocksRoot: layout.Locks,
@@ -367,16 +368,25 @@ func (core *Core) RepositorySync(ctx context.Context, path string, selection art
 }
 
 func (core *Core) CheckTarLinkVersion(ctx context.Context) (TarLinkVersion, error) {
+	if core.offline() {
+		return TarLinkVersion{Current: version.Current}, nil
+	}
 	value, err := core.upgrader.Check(ctx)
 	return TarLinkVersion{Current: value.Current, Latest: value.Latest, UpgradeAvailable: upgrade.IsNewer(value.Current, value.Latest)}, err
 }
 
 func (core *Core) CheckTarLinkVersionFresh(ctx context.Context) (TarLinkVersion, error) {
+	if core.offline() {
+		return TarLinkVersion{Current: version.Current}, nil
+	}
 	value, err := core.upgrader.CheckFresh(ctx)
 	return TarLinkVersion{Current: value.Current, Latest: value.Latest, UpgradeAvailable: upgrade.IsNewer(value.Current, value.Latest)}, err
 }
 
 func (core *Core) UpgradeTarLink(ctx context.Context, sink ProgressSink) (TarLinkVersion, error) {
+	if core.offline() {
+		return TarLinkVersion{}, classify("self-update", download.ErrOffline)
+	}
 	var value upgrade.Version
 	err := core.installer.WithLifecycle(ctx, func() error {
 		var upgradeErr error
@@ -662,6 +672,9 @@ func (core *Core) syncRegistry(ctx context.Context, sink ProgressSink) error {
 }
 
 func (core *Core) syncRegistryAt(ctx context.Context, sink ProgressSink) (time.Time, error) {
+	if core.offline() {
+		return time.Time{}, download.ErrOffline
+	}
 	core.syncer.Progress = func(stage string, current, total int64) {
 		mapped := ProgressVerifying
 		if stage == "downloading" {
@@ -683,6 +696,15 @@ func (core *Core) syncRegistryAt(ctx context.Context, sink ProgressSink) (time.T
 func (core *Core) catalog(ctx context.Context, sink ProgressSink) (*registry.Catalog, error) {
 	cacheRoot := filepath.Join(core.layout.Cache, "registry")
 	cached, cacheErr := registry.Open(cacheRoot)
+	if core.offline() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if cacheErr != nil {
+			return nil, &Error{Code: CodeRegistry, Op: "offline catalog", Err: fmt.Errorf("a validated local official catalog is required: %w", cacheErr)}
+		}
+		return cached, nil
+	}
 	now := time.Now
 	if core.now != nil {
 		now = core.now
@@ -937,6 +959,8 @@ func classify(operation string, err error) error {
 	case errors.Is(err, download.ErrChecksumMismatch):
 		code = CodeChecksum
 	case errors.Is(err, download.ErrTooLarge):
+		code = CodeNetwork
+	case errors.Is(err, download.ErrOffline):
 		code = CodeNetwork
 	case errors.Is(err, download.ErrNetwork):
 		code = CodeNetwork
