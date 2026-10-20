@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/drobilica/tarlink/internal/app"
@@ -106,7 +107,7 @@ release:
   releases:
     - version: "1.0"
       artifacts:
-        linux-amd64:
+        linux-` + runtime.GOARCH + `:
           url: https://example.com/fixture.tar.gz
           verification:
             digest: ` + digest + `
