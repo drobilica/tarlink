@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/drobilica/tarlink/internal/integration"
+	"github.com/drobilica/tarlink/internal/integrity"
 	"github.com/drobilica/tarlink/internal/manifest"
 	"github.com/drobilica/tarlink/internal/state"
 )
@@ -263,6 +264,10 @@ func TestRepairOpaqueAppImageAndRemoteIcon(t *testing.T) {
 			}
 			if _, err := manager.RepairSubject(ctx, item, nil); err != nil {
 				t.Fatal(err)
+			}
+			changes, verifyErr := integrity.Verify(ctx, payload, integrity.Identity{App: item.ID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, AppImage: true})
+			if verifyErr != nil || len(changes) != 0 {
+				t.Fatalf("repaired AppImage baseline: %v %v", changes, verifyErr)
 			}
 			content, err := os.ReadFile(filepath.Join(payload, "appimage"))
 			if err != nil || !bytes.Equal(content, image) {

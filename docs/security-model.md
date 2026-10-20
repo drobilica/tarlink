@@ -171,3 +171,18 @@ integrity verification, not publisher authentication: TarLink does not
 independently prove that the registry or upstream publisher is uncompromised.
 Exact platform and runtime-closure checks address compatibility, not isolation;
 TarLink does not sandbox the installed application at runtime.
+
+## Installed payload baselines
+
+`verify` detects drift from a locally recorded installation baseline, including
+opaque AppImage byte changes. The baseline is created only in the private verified
+materializer and is published with its payload. Missing or invalid baselines
+remain unavailable; verification never accepts current bytes as a new baseline.
+File reads are confined, bounded, cancellable, and reject hardlinked/special files;
+symlink target strings are compared without traversing them. AppImage portable
+`.home` and `.config` directories are excluded. The check is read-only, offline,
+and does not block launch or repair automatically. It does not authenticate a
+self-update, distinguish benign changes from corruption, or verify shared
+runtimes. The local user can modify both payload and inventory; this is no new
+trust root or protection against a compromised local account. Concurrent writes
+can require a rerun. See [Installed payload verification](architecture.md#installed-payload-verification).

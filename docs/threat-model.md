@@ -58,6 +58,7 @@ This page describes the implemented trust boundaries and controls.
 | AppImage installation code execution | AppImages are only checksum-verified and structurally checked as opaque Type 2 ELF files; TarLink never executes, mounts, or extracts them |
 | Repair changes identity or overwrites unrelated files | Exact registry-approved installed fingerprint, locked state recheck, ownership validation, atomic payload exchange, unchanged state and rollback history |
 | Update target changes after review | Frozen installed state and approved fingerprints, whole-plan revalidation under the lifecycle lock before acquisition, per-application locked state recheck |
+| Accidental installed payload drift | Read-only offline identity-bound file inventory comparison; neutral changed reporting for self-updates, unavailable for missing/invalid baselines; local account remains trusted |
 | Partial activation | Staging, same-filesystem rename, atomic relative link, atomic state |
 | Concurrent mutation | Shared lifecycle `flock`, narrower registry/per-application locks, and non-overwriting integration creation |
 | Unsafe self-upgrade | Official stable release filtering, exact platform asset, strict checksum, owned canonical path/marker, same-directory staging, atomic replacement, and rollback on publication failure |
