@@ -18,6 +18,7 @@ import (
 	"github.com/drobilica/tarlink/internal/download"
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/integration"
+	"github.com/drobilica/tarlink/internal/integrity"
 	"github.com/drobilica/tarlink/internal/locking"
 	"github.com/drobilica/tarlink/internal/manifest"
 	taruntime "github.com/drobilica/tarlink/internal/runtime"
@@ -1110,6 +1111,13 @@ func (manager *Manager) materializeArtifact(ctx context.Context, item *manifest.
 	}
 	if err := manager.inject("after_extract"); err != nil {
 		return materializedArtifact{}, err
+	}
+	fingerprint, err := item.ResolvedPackageFingerprint()
+	if err != nil {
+		return materializedArtifact{}, err
+	}
+	if err := integrity.Record(ctx, applicationRoot, integrity.Identity{App: item.ID, Version: item.Release.Version, Fingerprint: fingerprint, AppImage: item.Release.Archive == "appimage"}); err != nil {
+		return materializedArtifact{}, fmt.Errorf("record payload integrity: %w", err)
 	}
 	materialized.applicationRoot = applicationRoot
 	cleanup = false

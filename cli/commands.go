@@ -48,6 +48,7 @@ Catalog:
   refresh      Refresh the application catalog
 
 Maintenance:
+  verify       Compare installed payloads with local integrity baselines
   doctor       Audit TarLink-managed state
   repair       Restore an exact installed package and missing integration
   self-update  Update TarLink itself
@@ -229,7 +230,7 @@ func (r Runner) rootCommand(progress *progressRenderer, tuiStdout, tuiStderr io.
 	root.AddCommand(
 		r.versionCommand(), r.completionCommand(), r.refreshCommand(progress), r.searchCommand(), r.installCommand(progress),
 		r.lockCommand(), r.updateCommand(progress), r.repairCommand(progress), r.pinCommand(true), r.pinCommand(false),
-		r.selfUpdateCommand(progress), r.doctorCommand(), r.listCommand(), r.installedCommand(),
+		r.selfUpdateCommand(progress), r.doctorCommand(), r.verifyCommand(), r.listCommand(), r.installedCommand(),
 		r.infoCommand(), r.versionsCommand(), r.rollbackCommand(progress), r.uninstallCommand(progress),
 		r.registryCommand(), r.repositoryCommand(),
 	)

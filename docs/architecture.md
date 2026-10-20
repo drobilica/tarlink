@@ -158,6 +158,39 @@ is neither repaired nor recreated. Required runtimes use normal immutable
 deployment validation/acquisition; repair does not replace a damaged existing
 shared runtime. Repair also supports the explicit offline mode below.
 
+## Installed payload verification
+
+The shared materializer records `.tarlink-integrity.json` inside the private
+verified payload after executable modes and icons are finalized. The reserved
+path must not exist in the upstream payload. Its schema-1 canonical inventory
+binds the application ID, version, resolved fingerprint, and AppImage kind to a
+sorted list of regular-file SHA-256 digests and sizes, file/directory permission
+bits, and symlink targets. The baseline is flushed before publication and travels
+with atomic install, repair, update, retention, and rollback. State schema is
+unchanged; no inventory is inferred from an existing installation.
+
+`verify <app>` and `verify --all` use layout-bound local state and inspect both
+current and previous application payloads without network access, locks, file
+writes, application execution, or automatic repair. Confined root-relative
+reads do not follow leaf symlinks when hashing files. Symlinks are compared by
+target text and never traversed by the tree walk; hardlinked regular files and
+special files make verification unavailable. Reads check cancellation and enforce
+100,010 entries, 4,096-byte paths, 64 path components, 24 GiB plus 4 MiB cumulative
+file bytes, and a 32 MiB inventory limit. Inventory recording enforces these same
+limits; an oversized inventory fails installation before publication.
+
+Malformed, missing, noncanonical, or identity-mismatched inventories report
+unavailable; they never trigger baseline creation. Byte, mode, target, missing,
+and unexpected-file differences report changed. AppImage `appimage.home` and
+`appimage.config` trees are excluded as portable user data. Other added payload
+files remain unexpected. Self-updated application bytes are drift from the
+recorded installation, not proof of malicious modification. Verification does
+not gate launch. Runtime deployments, integration files, and external user data
+are outside this audit. It is a read-only observation rather than a locked
+snapshot: concurrent application writes or lifecycle operations can require a
+rerun. Explicit repair replaces the full current payload, including any portable
+data inside it, with a freshly verified tree and baseline.
+
 ## Offline acquisition
 
 `--offline` is a startup option for `install` and `repair` only. The CLI rejects

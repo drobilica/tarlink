@@ -2,6 +2,14 @@
 
 TarLink creates only user-owned application roots and narrowly named integrations.
 
+Newly materialized application packages contain the reserved
+`.tarlink-integrity.json` baseline (mode `0600`) at their payload root. It is
+flushed and published with the payload, retained through rollback, and replaced
+with the tree during explicit repair. Existing payloads are never inventoried
+in place. Missing baselines make `verify` unavailable. AppImage portable
+`appimage.home` and `appimage.config` entries are excluded from verification;
+explicit repair still replaces the entire payload directory.
+
 ```text
 $XDG_DATA_HOME/tarlink/apps/<id>/
 ├── <version>/.tarlink-package-<sha256-fingerprint>/

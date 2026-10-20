@@ -40,6 +40,7 @@ Generated from Cobra. Regenerate with `./scripts/update-cli-readme.sh`.
   - `tarlink uninstall <app>... [flags]` — Uninstall applications
   - `tarlink unpin <app>` — Unpin an installed application
   - `tarlink update <app> [flags]` — Update applications
+  - `tarlink verify [app] [flags]` — Compare installed payloads with local integrity baselines
   - `tarlink version` — Show TarLink version
   - `tarlink versions <app> [flags]` — Show application versions
 

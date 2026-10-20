@@ -50,6 +50,8 @@ tarlink update --all --dry-run --json
 tarlink rollback <app>
 tarlink uninstall <app>...
 tarlink doctor
+tarlink verify <app>
+tarlink verify --all
 tarlink repair <app>
 ```
 
@@ -62,6 +64,20 @@ valid installed state and the same package fingerprint in the approved catalog;
 it refuses conflicting files. It restores the current application payload,
 not a lost previous payload or a damaged existing shared runtime. PATH conflicts
 are reported before installation.
+
+`tarlink verify <app>` (or `--all`) compares current and retained previous
+application files against their local installation baselines, entirely offline
+and without changing files or blocking launch. It reports changed contents,
+permissions, symlink targets, missing files, and unexpected files. AppImage
+self-updates report **changed**, which does not by itself mean corruption;
+adjacent `appimage.home` and `appimage.config` portable data are excluded.
+Baselines are recorded by new installations and repairs; older payloads report
+**unavailable** until explicitly repaired or replaced by an update. Verification
+returns exit code 13 for differences or unavailable checks. It does not verify
+shared runtimes, external user data, or desktop integration (use `doctor` for
+integration checks). Repair replaces the entire current payload, potentially
+undoing self-updates and removing portable data stored inside it; preserve that
+data before requesting repair. Concurrent writes can require a verification rerun.
 
 `update --dry-run` previews current and target versions, channels, package
 fingerprints, runtime changes, pin skips, resolution failures, and the package
