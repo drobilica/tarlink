@@ -9,14 +9,16 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/drobilica/tarlink/internal/integration"
+	"github.com/drobilica/tarlink/internal/manifest"
 	"github.com/drobilica/tarlink/internal/state"
 )
 
 func TestRepairRestoresExactPackage(t *testing.T) {
-	for _, damage := range []string{"executable", "payload", "application", "integrations", "current", "healthy"} {
+	for _, damage := range []string{"executable", "payload", "application", "integrations", "current", "healthy", "equivalent-metadata"} {
 		t.Run(damage, func(t *testing.T) {
 			ctx := context.Background()
 			layout := testLayout(t)
@@ -55,6 +57,11 @@ func TestRepairRestoresExactPackage(t *testing.T) {
 				}
 			case "current":
 				err = os.Remove(filepath.Join(appRoot, "current"))
+			case "equivalent-metadata":
+				enabled := true
+				item.Application.Executables[0].CreateBinLink = &enabled
+				item.Release.Verification.Source = "https://example.com/release"
+				item.ReleaseHistory.Releases[0] = item.Release
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -304,5 +311,28 @@ func TestRepairRejectsBadDownloadedBytesAndCancellation(t *testing.T) {
 				t.Fatalf("original payload changed: %q %v", content, err)
 			}
 		})
+	}
+}
+
+func TestRepairRuntimeIdentityIgnoresInformationalSource(t *testing.T) {
+	approved := &manifest.Runtime{
+		Schema: 1, ID: "steam-linux-runtime-4", Kind: "steam-linux-runtime", Version: "1.0",
+		Platform: manifest.Platform{OS: "linux", Arch: "amd64"}, Interface: "valve-v2-entry-point-v1",
+		Artifact: manifest.RuntimeArtifact{
+			URL: "https://example.com/runtime.tar.xz", Archive: "tar.xz",
+			Verification: manifest.Verification{Algorithm: "sha256", Digest: strings.Repeat("a", 64), Source: "https://example.com/release"},
+		},
+	}
+	installed := *approved
+	installed.Artifact.Verification.Source = "https://example.com/previous-origin"
+	if !repairRuntimeMatches(&installed, approved) {
+		t.Fatal("informational source changed runtime identity")
+	}
+	installed.Artifact.Verification.Digest = strings.Repeat("b", 64)
+	if repairRuntimeMatches(&installed, approved) {
+		t.Fatal("different runtime bytes accepted")
+	}
+	if repairRuntimeMatches(nil, approved) || repairRuntimeMatches(approved, nil) {
+		t.Fatal("missing runtime accepted")
 	}
 }

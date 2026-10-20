@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/integration"
@@ -58,8 +57,8 @@ func (manager *Manager) repairUnlocked(ctx context.Context, item *manifest.Manif
 		return outcome, errors.New("repair requires the exact installed package fingerprint and channel")
 	}
 	if installed.Artifact != item.Release.Archive || installed.DesktopEnabled != item.Desktop.Enabled ||
-		!reflect.DeepEqual(installed.Executables, manifestExecutables(item.Application.Executables)) ||
-		!reflect.DeepEqual(installed.Runtime, item.Runtime) ||
+		!repairExecutablesMatch(installed.Executables, item.Application.Executables) ||
+		!repairRuntimeMatches(installed.Runtime, item.Runtime) ||
 		installed.Integration.DesktopExecutable != desktopExecutableName(item) ||
 		installed.Integration.WorkingDirectory != (item.Desktop.WorkingDirectory == "application-root") {
 		return outcome, errors.New("repair requires installed metadata matching the approved package")
@@ -203,4 +202,25 @@ func (manager *Manager) repairUnlocked(ctx context.Context, item *manifest.Manif
 	committed = true
 	outcome.State = installed
 	return outcome, nil
+}
+
+func repairExecutablesMatch(installed []state.Executable, approved []manifest.Executable) bool {
+	if len(installed) != len(approved) {
+		return false
+	}
+	for i, executable := range installed {
+		if executable.Name != approved[i].Name || executable.Path != approved[i].Path || executable.WantsBinLink() != approved[i].WantsBinLink() {
+			return false
+		}
+	}
+	return true
+}
+
+func repairRuntimeMatches(installed, approved *manifest.Runtime) bool {
+	if installed == nil || approved == nil {
+		return installed == nil && approved == nil
+	}
+	installedFingerprint, installedErr := installed.Fingerprint()
+	approvedFingerprint, approvedErr := approved.Fingerprint()
+	return installedErr == nil && approvedErr == nil && installedFingerprint == approvedFingerprint
 }
