@@ -146,6 +146,9 @@ func (m model) contextualActions() []contextualAction {
 	}
 	if m.screen == screenDetails {
 		enterLabel := "Enter Apply"
+		if m.updatePlan != nil {
+			return []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, "Enter Confirm updates"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
+		}
 		if len(m.selectedIDs) > 0 {
 			if m.returnTo == screenAvailable || m.returnTo == screenNotInstalled {
 				enterLabel = "Enter Install selected"
@@ -160,7 +163,7 @@ func (m model) contextualActions() []contextualAction {
 			case m.detail.Pinned:
 				enterLabel = "Enter Pinned status"
 			case m.detail.UpdateAvailable:
-				enterLabel = "Enter Update"
+				enterLabel = "Enter Review update"
 			default:
 				enterLabel = "Enter Check status"
 			}

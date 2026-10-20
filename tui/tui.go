@@ -72,6 +72,12 @@ type pathCheckMsg struct {
 	err       error
 }
 
+type updatePlanMsg struct {
+	plan      app.UpdatePlan
+	err       error
+	cancelled bool
+}
+
 type batchResolveMsg struct {
 	targets []app.BatchTarget
 	err     error
@@ -126,6 +132,7 @@ type model struct {
 	selectedIDs         map[string]bool
 	batchIDs            []string
 	batchTargets        []app.BatchTarget
+	updatePlan          *app.UpdatePlan
 	channelSelected     int
 	channels            []string
 	detail              *app.Application
@@ -249,6 +256,22 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.startInstall(m.installSelector(message.appID))
+	case updatePlanMsg:
+		m.busy = ""
+		m.opCancel = nil
+		m.updatePlan = nil
+		if message.cancelled {
+			m.status = "Update planning cancelled"
+			return m, nil
+		}
+		if message.err != nil {
+			m.err = message.err
+			return m, nil
+		}
+		m.updatePlan = &message.plan
+		m.reviewScroll = 0
+		m.screen = screenDetails
+		return m, nil
 	case batchResolveMsg:
 		m.busy = ""
 		m.opCancel = nil
@@ -786,6 +809,35 @@ func applicationMarker(selected, cursor, color bool) string {
 }
 
 func (m model) reviewLines() []string {
+	if m.updatePlan != nil {
+		lines := []string{m.theme.panel.Render("Review update plan")}
+		for _, entry := range m.updatePlan.Applications {
+			lines = append(lines, entry.Name+": "+entry.Status)
+			if entry.Target.Version != "" {
+				lines = append(lines, fmt.Sprintf("%s [%s] → %s [%s]", entry.Current.Version, entry.Current.Channel, entry.Target.Version, entry.Target.Channel))
+			}
+			if entry.Reason != "" {
+				lines = append(lines, entry.Reason)
+			}
+			if entry.Status == "update" {
+				lines = append(lines, "Package: "+entry.Current.Fingerprint+" → "+entry.Target.Fingerprint)
+				if entry.RuntimeChanged {
+					lines = append(lines, "Runtime: "+updateRuntimeLabel(entry.Current.Runtime)+" → "+updateRuntimeLabel(entry.Target.Runtime))
+				}
+				lines = append(lines, "Rollback retained: "+entry.Rollback.Version+" ["+entry.Rollback.Channel+"] "+entry.Rollback.Fingerprint)
+			}
+			lines = append(lines, "")
+		}
+		var wrapped []string
+		for _, line := range lines {
+			if line == "" {
+				wrapped = append(wrapped, "")
+				continue
+			}
+			wrapped = append(wrapped, wrappedLines(line, max(1, viewWidth(m.width)-2))...)
+		}
+		return wrapped
+	}
 	var lines []string
 	// The tab bar stays in the shell on every screen, so the detail context
 	// moves into the workspace instead of replacing navigation.
@@ -1224,6 +1276,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case m.matchesAction(message, actionUpdates):
 		m.switchTab(screenUpdates)
 	case m.matchesAction(message, actionCancel):
+		m.updatePlan = nil
 		m.clearFeedback()
 		if m.screen == screenUninstall {
 			m.uninstallConflict = nil
@@ -1331,6 +1384,15 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.screen == screenDetails {
+			if m.updatePlan != nil {
+				plan := *m.updatePlan
+				m.updatePlan = nil
+				m.busy = "Applying update plan"
+				m.startOperation()
+				cmd, cancel := m.applyUpdatePlanCmd(plan)
+				m.opCancel = cancel
+				return m, cmd
+			}
 			if len(m.selectedIDs) > 0 {
 				if m.screen == screenDetails && (m.returnTo == screenAvailable || m.returnTo == screenNotInstalled) {
 					if len(m.batchTargets) > 0 {
@@ -1564,9 +1626,17 @@ func (m model) activateSelected() (tea.Model, tea.Cmd) {
 		m.status = id + " is pinned at " + m.detail.InstalledVersion
 		return m, nil
 	case m.detail.UpdateAvailable:
-		m.busy = "Updating " + id
-		m.startOperation()
-		cmd, cancel := m.updateCmd(id)
+		planner, ok := m.service.(app.UpdatePlanService)
+		if !ok {
+			m.err = errors.New("update planning is unavailable")
+			return m, nil
+		}
+		m.clearFeedback()
+		m.busy = "Planning update for " + id
+		cmd, cancel := m.cancellableCmd(func(ctx context.Context) tea.Msg {
+			plan, err := planner.PlanUpdates(ctx, []string{id})
+			return updatePlanMsg{plan: plan, err: err}
+		}, updatePlanMsg{cancelled: true})
 		m.opCancel = cancel
 		return m, cmd
 	default:
@@ -1705,10 +1775,30 @@ func (m model) installSelector(id string) string {
 	return id + "@" + channel
 }
 
-func (m model) updateCmd(id string) (tea.Cmd, context.CancelFunc) {
+func updateRuntimeLabel(value *app.UpdateRuntime) string {
+	if value == nil {
+		return "self-contained"
+	}
+	return value.ID + "@" + value.Version + " (" + value.Fingerprint + ")"
+}
+
+func (m model) applyUpdatePlanCmd(plan app.UpdatePlan) (tea.Cmd, context.CancelFunc) {
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
-		result, err := m.service.Update(ctx, id, sink)
-		return operationMsg{message: resultMessage("Updated", result), appID: id}, err
+		result, err := m.service.(app.UpdatePlanService).ApplyUpdatePlan(ctx, plan, sink)
+		message := fmt.Sprintf("Updated %d; skipped %d; failed %d", len(result.Updated), len(result.Skipped), len(result.Failed))
+		if err == nil && len(result.Failed) > 0 {
+			ids := make([]string, 0, len(result.Failed))
+			for id := range result.Failed {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			err = errors.New(result.Failed[ids[0]])
+		}
+		feedbackID := ""
+		if len(plan.Applications) == 1 {
+			feedbackID = plan.Applications[0].ID
+		}
+		return operationMsg{message: message, appID: feedbackID, partial: len(result.Failed) > 0}, err
 	})
 }
 
@@ -1985,6 +2075,7 @@ func (m model) visibleApplications() []app.Application {
 // index otherwise. Batch selections and any stale detail belong to the old
 // list and are cleared.
 func (m *model) switchTab(target screen) {
+	m.updatePlan = nil
 	if m.screen == target {
 		return
 	}

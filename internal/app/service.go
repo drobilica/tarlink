@@ -450,36 +450,24 @@ func (core *Core) Install(ctx context.Context, appID string, sink ProgressSink) 
 }
 
 func (core *Core) Update(ctx context.Context, appID string, sink ProgressSink) (Result, error) {
-	selector, item, _, err := core.resolveSelector(ctx, appID, sink)
-	if err == nil && selector.Target == "" {
-		if installed, stateErr := state.LoadForApp(core.layout, item.ID); stateErr == nil && installed.Channel != "" {
-			catalog, catErr := core.catalog(ctx, sink)
-			if catErr != nil {
-				err = catErr
-			} else {
-				item, catErr = catalog.ReleaseForPlatform(item.ID, item.Platform.OS, item.Platform.Arch, installed.Channel)
-				if catErr != nil {
-					err = catErr
-				}
-			}
-		}
-	}
+	plan, err := core.PlanUpdates(ctx, []string{appID})
 	if err != nil {
 		return Result{}, err
 	}
-	if err := core.checkManifestPlatform(item); err != nil {
+	result, err := core.ApplyUpdatePlan(ctx, plan, sink)
+	if err != nil {
 		return Result{}, err
 	}
-	core.emit(sink, ProgressResolving, appID, 0, 0)
-	outcome, err := core.installer.UpdateWithOptionsSubject(ctx, item, install.Options{Channel: item.Release.Channel, Explicit: selector.Target != ""}, core.progress(sink, item.ID))
-	if err != nil {
-		return Result{}, classify("update "+appID, err)
+	if len(result.Updated) > 0 {
+		return result.Updated[0], nil
 	}
-	if gcErr := core.runtimeGC(ctx); gcErr != nil {
-		outcome.Warnings = append(outcome.Warnings, "runtime cleanup deferred: "+gcErr.Error())
+	if failure, ok := result.Failed[plan.Applications[0].ID]; ok {
+		return Result{}, &Error{Code: result.FailureCodes[plan.Applications[0].ID], Op: "update " + appID, Err: errors.New(failure)}
 	}
-	core.emit(sink, ProgressComplete, item.ID, 0, 0)
-	return Result{AppID: item.ID, Version: outcome.State.Current, Fingerprint: outcome.State.CurrentFingerprint, Previous: outcome.State.Previous, PreviousFingerprint: outcome.State.PreviousFingerprint, Channel: outcome.State.Channel, Pinned: outcome.State.Pinned, Warnings: outcome.Warnings}, nil
+	if len(result.Pinned) > 0 {
+		return Result{}, classify("update "+appID, install.ErrPinned)
+	}
+	return Result{}, classify("update "+appID, install.ErrNoUpdate)
 }
 
 func (core *Core) Pin(ctx context.Context, appID string) error {
@@ -500,33 +488,11 @@ func (core *Core) setPinned(ctx context.Context, appID string, pinned bool) erro
 }
 
 func (core *Core) UpdateAll(ctx context.Context, sink ProgressSink) (UpdateAllResult, error) {
-	installed, err := core.installedStates()
+	plan, err := core.PlanUpdates(ctx, nil)
 	if err != nil {
 		return UpdateAllResult{}, err
 	}
-	result := UpdateAllResult{Failed: make(map[string]string), FailureCodes: make(map[string]ErrorCode)}
-	for _, installedState := range installed {
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
-		if installedState.Pinned {
-			result.Skipped = append(result.Skipped, installedState.App)
-			result.Pinned = append(result.Pinned, installedState.App)
-			continue
-		}
-		updated, updateErr := core.Update(ctx, installedState.App, sink)
-		if updateErr == nil {
-			result.Updated = append(result.Updated, updated)
-			continue
-		}
-		if CodeOf(updateErr) == CodeNoUpdate {
-			result.Skipped = append(result.Skipped, installedState.App)
-			continue
-		}
-		result.Failed[installedState.App] = updateErr.Error()
-		result.FailureCodes[installedState.App] = CodeOf(updateErr)
-	}
-	return result, nil
+	return core.ApplyUpdatePlan(ctx, plan, sink)
 }
 
 func (core *Core) Rollback(ctx context.Context, appID string, sink ProgressSink) (Result, error) {

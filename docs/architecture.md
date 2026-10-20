@@ -108,6 +108,34 @@ is outside the immutable deployment. Steam is not required and UMU is not used.
 
 No step invokes an archive-provided program, shell, hook, installer, or arbitrary argument.
 
+## Update planning
+
+`PlanUpdates` freezes an ID-ordered selection from one validated catalog
+snapshot. An empty selection means every installed application. Unqualified
+updates follow each installed channel; explicit channel/version selectors keep
+their existing pin override semantics. Each entry reports current and target
+package identities, runtime identities, the retained rollback package, and an
+`update`, `current`, `pinned`, or `error` status. Same-version fingerprint
+changes are updates. Planning may refresh the official catalog but does not
+acquire application, runtime, or icon artifacts.
+
+The CLI exposes human and JSON previews with `update --dry-run` and
+`update --dry-run --json`, including `--all`. JSON is an inspection format,
+not a replay file or an approval source. A separate CLI invocation makes a new
+plan. The TUI holds the in-memory plan through review and confirmation.
+
+`ApplyUpdatePlan` checks that the displayed plan is intact, then takes the
+lifecycle lock, reloads strict installed state and the validated local catalog,
+and re-resolves every actionable target. Changed installed state, a changed
+all-installed selection, or changed/withdrawn target fingerprints reject the
+whole review before artifact acquisition. Unrelated catalog metadata changes
+need not invalidate a plan. Each update also checks its expected state under
+the application lock. The batch retains per-application atomicity and continues
+after independent acquisition/publication failures; it is not a transaction
+across applications. Pin/current skips and planned resolution failures remain
+explicit outcomes. Both ordinary CLI updates and TUI confirmation use this
+same planner and apply path.
+
 ## Repair flow
 
 `tarlink repair <app>` loads valid layout-bound state and resolves its exact
