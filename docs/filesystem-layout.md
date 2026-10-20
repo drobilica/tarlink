@@ -7,6 +7,7 @@ $XDG_DATA_HOME/tarlink/apps/<id>/
 ├── <version>/.tarlink-package-<sha256-fingerprint>/
 ├── <previous-version>/.tarlink-package-<sha256-fingerprint>/
 └── current -> <version>/.tarlink-package-<sha256-fingerprint>
+$XDG_DATA_HOME/tarlink/runtimes/<id>/<version>/.tarlink-runtime-<sha256-hex>/
 $XDG_STATE_HOME/tarlink/
 ├── install.sha256
 ├── locks/<id>.lock
@@ -16,13 +17,14 @@ $XDG_CACHE_HOME/tarlink/
 ├── artifacts/locks/<algorithm>-<digest>.lock
 └── registry/
     ├── generations/generation-*/apps/
+    ├── generations/generation-*/runtimes/  # when declared
     └── current -> generations/generation-*
 $XDG_CONFIG_HOME/tarlink/repositories.json
 $REPOSITORY/
 ├── repository.json
 └── v1/{sha256,sha512}/<digest>
 $HOME/.local/bin/tarlink
-$HOME/.local/bin/<id>
+$HOME/.local/bin/<declared-command>
 $XDG_DATA_HOME/applications/tarlink-<id>.desktop
 $XDG_DATA_HOME/icons/hicolor/scalable/apps/tarlink-<id>.svg
 $XDG_DATA_HOME/icons/hicolor/48x48/apps/tarlink-<id>.<raster-ext>
@@ -36,18 +38,10 @@ the standard hicolor theme hierarchy shown above.
 Icons are published before the desktop entry that references them, and an icon
 is removed only after the entry that references it has been replaced or
 removed, so a launcher never becomes visible while its themed icon is missing.
-TarLink remains pure Go and never executes external commands, so it cannot
-invoke D-Bus, cache updaters, or any desktop-specific refresh. One known
-desktop-cache limitation remains: verified on Linux Mint Cinnamon 6.6.9, an
-application installed while the session is running appears in the menu without
-its icon even though the icon was published before the entry and resolves
-correctly in newly started processes; the icon appears once the desktop
-reloads its menu (restarting Cinnamon or relogging in), while installs made on
-a fresh session resolve normally. The same limitation affects package-manager
-installs (upstream linuxmint/Cinnamon#4498), whose triggers only rebuild
-system-prefix caches, so no standards-based refresh exists for TarLink to
-perform; this is recorded as a desktop-cache limitation, not an integration
-defect.
+TarLink does not invoke D-Bus or desktop cache updaters. A running desktop
+session may therefore need its menu reloaded or a new login before it displays
+a newly installed icon. Publishing the icon before its entry does not force
+an existing desktop process to invalidate its cache.
 
 Unset XDG variables fall back to `~/.local/share`, `~/.local/state`, and `~/.cache`. Configured XDG homes must be absolute, control-character-free paths within `$HOME`; TarLink does not manage data outside the user's home tree. Application and registry `current` pointers are relative symlinks constrained below their owning roots. New versions and registry generations are completed before activation, and only the current and one previous generation are retained.
 
@@ -69,7 +63,7 @@ registry or a release-definition archive.
 The installer records the exact SHA-256 of the canonical TarLink binary in `install.sha256`, using an atomic write. A fresh install replaces an unowned regular file or symlink at the canonical path and replaces an orphan marker, while the bootstrap uninstaller requires that private, regular, non-symlink marker to match the binary. Per-application state records the exact executable link and target plus the exact desktop entry and icon paths with content digests when desktop integration is enabled. State is rejected unless those paths equal the canonical layout for the recorded application. TarLink refuses to overwrite or remove an occupied integration that it cannot prove it owns. When a state record is corrupt, uninstall falls back to removing only the TarLink-owned product paths plus the integrations proven by canonical path and content markers — `~/.local/bin` links resolving into the app payload and the canonical desktop entry carrying TarLink's `X-TarLink-AppID` marker while referencing the payload — leaving icons and any other unprovable files in place with warnings.
 
 State records also retain the current and previous resolved-package SHA-256 fingerprints alongside the verified artifact kind (`tar.gz`, `tar.xz`, `zip`, or opaque `appimage`) so lifecycle audits can distinguish package identities and AppImage files. Verified remote PNG and SVG icons are retained byte-for-byte at format-specific reserved `.tarlink-icon.png` or `.tarlink-icon.svg` paths inside each fingerprinted package payload so re-activation and rollback need no network; a PNG's hicolor destination size is recorded in state while SVG uses the scalable destination. Full purge removes the exact application, state, lock, cache, and config product roots — including `repositories.json` and its lock — only after managed applications have been processed. The data and state product parents are removed only when empty, so an unexpected sibling in a product parent stops that parent's removal rather than being deleted. Purge never removes shared XDG parent directories, `~/.local/bin`, or `$XDG_DATA_HOME/applications`; only exact TarLink-owned entries inside those shared directories are removed.
-# Static artifact repositories
+## Static artifact repositories
 
 TarLink repositories are static trees with a strict `repository.json`
 descriptor (`format` `content-repository`, `version` `1`) and optional
@@ -90,8 +84,8 @@ for example by copying the completed tree into a document root, or to S3 with
 an external sync tool; TarLink does not perform publication or configure those
 services. The bundled nginx image is compatible with a read-only root only when
 its `/tmp` runtime directory is writable; Kubernetes deployments should mount
-an `emptyDir` at `/tmp` and keep the repository document root separate. Offline
-installation and recovery are not implemented. Any future offline mode must use
+an `emptyDir` at `/tmp` and keep the repository document root separate. An
+explicit offline installation or repair mode is not implemented. Any future offline mode must use
 a validated local registry snapshot and disable registry refresh and every
 network repository source. A repository mirror alone does not guarantee that
 every historical lock can be replayed offline; the existing approved
@@ -119,14 +113,9 @@ always 0) and status output reports
 revision, scope, and retention policy; `--json` emits exactly one JSON document
 on stdout with diagnostics on stderr, including the sorted object and retained
 lists and, for dry runs, a separate acquisition/repair plan whose
-completed-work counters stay zero. The additive-only sync JSON contract no
-longer includes the deletion-era `excess`, `preserved`, or `removals` fields,
-nor `plan.remove`; its plan contains only `acquire` and `repair`. The
-`retained` count and `retained_objects` list describe stored objects outside
-the desired set (including their validity state), not planned deletions or a
-replacement deletion plan. The `removed` counter remains present and is always
-zero for sync. Scripts consuming the earlier fields must be updated for this
-output change. Exit codes reuse the existing mapping:
+completed-work counters stay zero. The plan contains only `acquire` and
+`repair`. `retained_objects` describes stored objects outside the desired set, including validity; `removed` is
+always zero. Exit codes reuse the existing mapping:
 success, a healthy inspection, and successful dry-run planning exit 0, and
 retained extras alone are never an error; `status` reports corrupt required
 objects with 6 and missing-only objects with 8 (corrupt wins when both are

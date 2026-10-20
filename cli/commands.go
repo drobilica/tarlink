@@ -46,6 +46,7 @@ Catalog:
 
 Maintenance:
   doctor       Audit TarLink-managed state
+  repair       Restore an exact installed package and missing integration
   self-update  Update TarLink itself
   version      Show TarLink version (-v, --version)
   completion   Generate a Bash, Zsh, Fish, or PowerShell completion script
@@ -209,7 +210,7 @@ func (r Runner) rootCommand(progress *progressRenderer, tuiStdout, tuiStderr io.
 
 	root.AddCommand(
 		r.versionCommand(), r.completionCommand(), r.refreshCommand(progress), r.searchCommand(), r.installCommand(progress),
-		r.lockCommand(), r.updateCommand(progress), r.pinCommand(true), r.pinCommand(false),
+		r.lockCommand(), r.updateCommand(progress), r.repairCommand(progress), r.pinCommand(true), r.pinCommand(false),
 		r.selfUpdateCommand(progress), r.doctorCommand(), r.listCommand(), r.installedCommand(),
 		r.infoCommand(), r.versionsCommand(), r.rollbackCommand(progress), r.uninstallCommand(progress),
 		r.registryCommand(), r.repositoryCommand(),
@@ -646,6 +647,27 @@ func (r Runner) updateCommand(progress *progressRenderer) *cobra.Command {
 		return r.printResult("Updated", result)
 	}}
 	command.Flags().BoolVar(&all, "all", false, "update all installed applications")
+	configureCommand(command, usage)
+	return command
+}
+
+func (r Runner) repairCommand(progress *progressRenderer) *cobra.Command {
+	usage := "usage: tarlink repair <app>"
+	command := &cobra.Command{Use: "repair <app>", Short: "Restore an exact installed package and missing integration", Args: exactArgs(1, usage), RunE: func(command *cobra.Command, args []string) error {
+		service, err := r.requireService()
+		if err != nil {
+			return err
+		}
+		repair, ok := service.(app.RepairService)
+		if !ok {
+			return errors.New("application repair is unavailable")
+		}
+		result, err := repair.Repair(command.Context(), args[0], progress.report)
+		if err != nil {
+			return err
+		}
+		return r.printResult("Repaired", result)
+	}}
 	configureCommand(command, usage)
 	return command
 }

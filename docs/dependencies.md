@@ -12,11 +12,11 @@ Runtime dependencies are intentionally few and pure Go where practical:
 | `charm.land/lipgloss/v2` | v2.0.6 | Semantic terminal styling and layout | MIT; color output follows Bubble Tea and TarLink terminal capability detection |
 | `github.com/spf13/cobra` | v1.10.2 | CLI command tree, argument parsing, help, and static shell completion generation | Apache-2.0; presentation-only, with no lifecycle, networking, filesystem, or background behavior |
 
-The pinned Charm runtime graph was reviewed from `go.mod`, module source, and license files. The Charmbracelet, Clipperhouse, colorful, runewidth, cancelreader, uniseg, and terminfo modules are MIT-licensed. `golang.org/x/sys` and `golang.org/x/sync` use BSD-3-Clause terms. All are pure Go for the supported build and do not execute external programs. Exact versions and checksums are recorded in `go.mod` and `go.sum`.
+The pinned Charm runtime graph was reviewed from `go.mod`, module source, and license files. The Charmbracelet, Clipperhouse, colorful, runewidth, cancelreader, uniseg, and terminfo modules are MIT-licensed. `golang.org/x/sys` and `golang.org/x/sync` use BSD-3-Clause terms. All are pure Go for the supported build; lifecycle operations do not execute external programs. Exact versions and checksums are recorded in `go.mod` and `go.sum`.
 
 Cobra's source, behavior, and Apache-2.0 license were reviewed for its narrow
 presentation role. Its pflag dependency is BSD-3-Clause, and mousetrap is
 Apache-2.0 and limited by build tags to Windows console detection. None adds
 network access, background work, command execution, or a system dependency.
 
-The standard library provides archive parsing, hashing, HTTP, locking primitives, and filesystem operations. TarLink does not use CGO, shell commands, `os/exec`, unsafe code, plugins, or a system runtime dependency. Dependency upgrades require a source, license, security, and behavior review; dependency notices must be updated when the transitive graph changes.
+The standard library provides archive parsing, hashing, HTTP, locking primitives, and filesystem operations. TarLink does not use CGO, shell commands, `os/exec`, unsafe code, plugins, or a system runtime dependency. Explicit launch replaces the frontend process with the local application or compiled Valve adapter; see [Runtime-backed execution closures](architecture.md#runtime-backed-execution-closures). Dependency upgrades require a source, license, security, and behavior review; dependency notices must be updated when the transitive graph changes.
