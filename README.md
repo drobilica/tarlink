@@ -45,6 +45,8 @@ tarlink search <query>
 tarlink list --installed
 tarlink install <app>...
 tarlink update <app>
+tarlink update --all --dry-run
+tarlink update --all --dry-run --json
 tarlink rollback <app>
 tarlink uninstall <app>...
 tarlink doctor
@@ -60,6 +62,16 @@ valid installed state and the same package fingerprint in the approved catalog;
 it refuses conflicting files. It restores the current application payload,
 not a lost previous payload or a damaged existing shared runtime. PATH conflicts
 are reported before installation.
+
+`update --dry-run` previews current and target versions, channels, package
+fingerprints, runtime changes, pin skips, resolution failures, and the package
+retained for rollback. It may refresh catalog metadata but does not acquire
+application artifacts or change installed applications. `--json` is available
+with `--dry-run` and emits one schema-version-1 plan; resolution errors return
+nonzero after printing the plan. A later CLI update creates a new plan. The TUI
+shows a resolved update plan before confirmation and applies that same plan.
+Updates recheck installed state and approved target fingerprints under the
+lifecycle lock before acquisition, rejecting stale plans before any update.
 
 In the TUI, navigate with `↑`/`↓` or `j`/`k`, open details with `Enter`, and select
 applications with `Space`. Batch installs show the resolved set for confirmation.

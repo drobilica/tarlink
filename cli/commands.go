@@ -618,9 +618,12 @@ func (r Runner) lockCommand() *cobra.Command {
 }
 
 func (r Runner) updateCommand(progress *progressRenderer) *cobra.Command {
-	usage := "usage: tarlink update <app> | tarlink update --all"
-	var all bool
+	usage := "usage: tarlink update <app> [--dry-run [--json]] | tarlink update --all [--dry-run [--json]]"
+	var all, dryRun, jsonOutput bool
 	command := &cobra.Command{Use: "update <app>", Short: "Update applications", Args: func(_ *cobra.Command, args []string) error {
+		if jsonOutput && !dryRun {
+			return invalidCommand(usage)
+		}
 		if all {
 			if len(args) != 0 {
 				return invalidCommand(usage)
@@ -632,6 +635,21 @@ func (r Runner) updateCommand(progress *progressRenderer) *cobra.Command {
 		service, err := r.requireService()
 		if err != nil {
 			return err
+		}
+		if dryRun {
+			planner, ok := service.(app.UpdatePlanService)
+			if !ok {
+				return errors.New("update planning is unavailable")
+			}
+			selection := args
+			if all {
+				selection = nil
+			}
+			plan, err := planner.PlanUpdates(command.Context(), selection)
+			if err != nil {
+				return err
+			}
+			return r.printUpdatePlan(plan, jsonOutput)
 		}
 		if all {
 			result, err := service.UpdateAll(command.Context(), progress.report)
@@ -647,6 +665,8 @@ func (r Runner) updateCommand(progress *progressRenderer) *cobra.Command {
 		return r.printResult("Updated", result)
 	}}
 	command.Flags().BoolVar(&all, "all", false, "update all installed applications")
+	command.Flags().BoolVar(&dryRun, "dry-run", false, "preview updates without acquiring application artifacts")
+	command.Flags().BoolVar(&jsonOutput, "json", false, "write the dry-run plan as JSON")
 	configureCommand(command, usage)
 	return command
 }

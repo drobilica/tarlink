@@ -115,6 +115,15 @@ Files are created exclusively and every parent is checked with `lstat`. Archive 
 
 Effective UID 0 is rejected. State uses a temporary file, flush, atomic rename, and directory `fsync`. Active-version links are relative and replaced atomically. Only the current and one previous validated version are retained.
 
+Update previews acquire no application artifacts. Application state and
+approved target identities are frozen for review, then revalidated under the
+lifecycle lock before any update begins. Public plan fields are checked against
+the private in-memory review snapshot; JSON output cannot be imported as an
+approval source. The normal digest, extraction, ownership, activation, and
+retention controls apply to each planned update. A stale review is rejected
+before acquisition; independent operational failures can leave a truthful
+partially completed batch. See [Update planning](architecture.md#update-planning).
+
 Explicit `repair <app>` resolves the installed version, channel and fingerprint
 through the official registry, then rechecks state under lifecycle and
 application locks. It verifies bytes through the normal bounded materializer,

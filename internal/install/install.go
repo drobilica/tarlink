@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -180,13 +181,19 @@ func (manager *Manager) UpdateWithOptionsSubject(ctx context.Context, item *mani
 	var outcome Outcome
 	err := manager.WithLifecycle(ctx, func() error {
 		var err error
-		outcome, err = manager.updateUnlocked(ctx, item, options, progress)
+		outcome, err = manager.updateUnlocked(ctx, item, options, nil, progress)
 		return err
 	})
 	return outcome, err
 }
 
-func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manifest, options Options, progress SubjectProgress) (Outcome, error) {
+// UpdatePlannedUnderLifecycle applies a frozen update. The caller must hold
+// WithLifecycle while revalidating registry targets and applying the batch.
+func (manager *Manager) UpdatePlannedUnderLifecycle(ctx context.Context, item *manifest.Manifest, options Options, expected state.State, progress SubjectProgress) (Outcome, error) {
+	return manager.updateUnlocked(ctx, item, options, &expected, progress)
+}
+
+func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manifest, options Options, expected *state.State, progress SubjectProgress) (Outcome, error) {
 	if item == nil {
 		return Outcome{}, errors.New("manifest is nil")
 	}
@@ -207,6 +214,9 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	}
 	if err != nil {
 		return Outcome{}, err
+	}
+	if expected != nil && !reflect.DeepEqual(installed, *expected) {
+		return Outcome{}, fmt.Errorf("%w: installed state changed since update planning", ErrConflict)
 	}
 	if installed.Pinned && !options.Explicit {
 		return Outcome{}, ErrPinned
