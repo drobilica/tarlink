@@ -319,8 +319,8 @@ func TestReviewScrollClampsAcrossTallShrinkGrow(t *testing.T) {
 	}
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 10})
 	m = updated.(model)
-	if !strings.Contains(m.View().Content, "One") {
-		t.Fatal("shrink hid heading without scrolling")
+	if !strings.Contains(m.View().Content, "› View versions") {
+		t.Fatal("shrink hid selected action")
 	}
 	m.moveReviewScroll(3)
 	if m.reviewScroll == 0 {

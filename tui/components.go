@@ -64,6 +64,7 @@ const (
 	actionRemoveConflict
 	actionCancel
 	actionQuit
+	actionScroll
 	actionHelp
 )
 
@@ -156,22 +157,21 @@ func (m model) contextualActions() []contextualAction {
 			if m.returnTo == screenInstalled {
 				enterLabel = "Enter Uninstall selected"
 			}
-		} else if m.detail != nil {
-			switch {
-			case m.detail.InstalledVersion == "":
-				enterLabel = "Enter Install"
-			case m.detail.Pinned:
-				enterLabel = "Enter Pinned status"
-			case m.detail.UpdateAvailable:
-				enterLabel = "Enter Review update"
-			default:
-				enterLabel = "Enter Check status"
-			}
+		} else if m.detailPanel() {
+			enterLabel = "Enter Choose"
 		}
 		actions := []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, enterLabel)}
 		if m.detail != nil && m.detail.InstalledVersion != "" {
-			actions = append(actions, action(actionVersions, b.Versions, "v Versions"), action(actionRollback, b.Rollback, "r Rollback"), action(actionUninstall, b.Uninstall, "x Uninstall"))
+			actions = append(actions, action(actionVersions, b.Versions, "v Versions"), action(actionUninstall, b.Uninstall, "x Uninstall"))
+			if m.detail.PreviousVersion != "" {
+				actions = append(actions, action(actionRollback, b.Rollback, "r Rollback"))
+			}
 		}
+		if m.detailPanel() {
+			scroll := keypkg.NewBinding(keypkg.WithKeys("pgup", "pgdown"), keypkg.WithHelp("PgUp/PgDn", "Scroll"))
+			actions = append(actions, action(actionScroll, scroll, "PgUp/PgDn Scroll"))
+		}
+		actions = append(actions, action(actionBrowse, b.Browse, "b Browse"), action(actionInstalled, b.Installed, "i Installed"), action(actionNotInstalled, b.NotInstalled, "n Not installed"), action(actionUpdates, b.Updates, "u Updates"))
 		return append(actions, action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit"))
 	}
 	if m.screen == screenVersions {
@@ -258,6 +258,9 @@ func (m model) helpView() string {
 	if m.isListScreen() {
 		bindings = prioritizeListBindings(bindings)
 	}
+	if m.detailPanel() {
+		bindings = detailFooterBindings(bindings)
+	}
 	helper.SetWidth(max(1, viewWidth(m.width)))
 	return helper.ShortHelpView(bindings)
 }
@@ -292,6 +295,9 @@ func (m model) actionBindings() []keypkg.Binding {
 			binding = keypkg.NewBinding(keypkg.WithKeys("up", "down", "k", "j"), keypkg.WithHelp("↑↓", "Navigate"))
 		}
 		binding.SetHelp(binding.Help().Key, strings.TrimPrefix(action.label, binding.Help().Key+" "))
+		if m.detailPanel() && action.label == "Navigate" {
+			binding.SetHelp("↑↓", "Select")
+		}
 		bindings = append(bindings, binding)
 	}
 	// Help is always a discoverable shell action, including while a modal is
@@ -309,4 +315,16 @@ func newProgress(color bool) progress.Model {
 		bar.EmptyColor = nil
 	}
 	return bar
+}
+
+func detailFooterBindings(bindings []keypkg.Binding) []keypkg.Binding {
+	var result []keypkg.Binding
+	for _, want := range []string{"↑↓", "Enter", "Esc", "?", "q", "v", "x", "r"} {
+		for _, binding := range bindings {
+			if binding.Help().Key == want {
+				result = append(result, binding)
+			}
+		}
+	}
+	return result
 }
