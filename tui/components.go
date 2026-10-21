@@ -106,6 +106,10 @@ func (m model) contextualActionPolicy() []contextualAction {
 	if m.busy == "" && !m.searching {
 		actions = append(actions, contextualAction{id: actionHelp, binding: newKeyMap().Help, label: "? Help"})
 	}
+	if m.dockScrollable() && !m.searching {
+		scroll := keypkg.NewBinding(keypkg.WithKeys("pgup", "pgdown"), keypkg.WithHelp("PgUp/PgDn", "Result"))
+		actions = append([]contextualAction{{id: actionScroll, binding: scroll, label: "PgUp/PgDn Result"}}, actions...)
+	}
 	return actions
 }
 
@@ -149,6 +153,10 @@ func (m model) contextualActions() []contextualAction {
 		enterLabel := "Enter Apply"
 		if m.updatePlan != nil {
 			return []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionEnter, b.Enter, "Enter Confirm updates"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
+		}
+		if len(m.selectedIDs) > 0 && m.batchFinished {
+			scroll := keypkg.NewBinding(keypkg.WithKeys("pgup", "pgdown"), keypkg.WithHelp("PgUp/PgDn", "Scroll"))
+			return []contextualAction{action(actionUp, b.Up, "Navigate"), action(actionDown, b.Down, "Navigate"), action(actionScroll, scroll, "PgUp/PgDn Scroll"), action(actionCancel, b.Cancel, "Esc Back"), action(actionQuit, b.Quit, "q Quit")}
 		}
 		if len(m.selectedIDs) > 0 {
 			if m.returnTo == screenAvailable || m.returnTo == screenNotInstalled {
@@ -251,6 +259,11 @@ func (m model) helpView() string {
 		helper = newHelp(m.color)
 	}
 	bindings := m.actionBindings()
+	// Long result scrolling is the primary action while that result is visible.
+	if m.dockScrollable() {
+		helper.SetWidth(max(1, viewWidth(m.width)))
+		return helper.ShortHelpView(bindings)
+	}
 	// List screens share one fixed shell legend so switching tabs or
 	// emptying a list never changes the footer. Up, Down, and Enter stay in
 	// the legend even with no rows, matching the keyboard policy. Help

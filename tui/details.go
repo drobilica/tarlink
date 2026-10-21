@@ -61,6 +61,10 @@ func (m model) detailLines(lines []string) []string {
 	if value.Pinned || value.UpdateAvailable && value.InstalledVersion != "" {
 		statusStyle = m.theme.warning
 	}
+	if m.busy != "" {
+		status = strings.ToUpper(strings.Fields(m.busy)[0])
+		statusStyle = m.theme.accent
+	}
 	nameWidth := max(1, width-lipgloss.Width(status)-1)
 	lines = append(lines, lipgloss.JoinHorizontal(lipgloss.Top,
 		lipgloss.NewStyle().Width(nameWidth).Render(m.theme.panel.Render(truncate(detailName(&value), nameWidth, "…"))),
@@ -97,7 +101,7 @@ func (m model) detailLines(lines []string) []string {
 		if i == cursor {
 			marker = "›"
 		}
-		rows[i] = table.Row{marker + " " + action.label}
+		rows[i] = table.Row{marker + " " + m.detailActionLabel(action)}
 	}
 	menu := table.New(table.WithColumns([]table.Column{{Title: "", Width: width}}), table.WithRows(rows), table.WithFocused(true), table.WithHeight(len(rows)+1))
 	styles := table.DefaultStyles()
@@ -113,7 +117,7 @@ func (m model) detailLines(lines []string) []string {
 	title := "SELECTED ACTION"
 	descriptionStyle := lipgloss.NewStyle()
 	descriptionText := actions[cursor].description
-	feedback := m.feedbackAppID == "" || m.feedbackAppID == value.ID
+	feedback := !m.dockVisible() && (m.feedbackAppID == "" || m.feedbackAppID == value.ID)
 	if feedback && m.status != "" {
 		title = "RESULT"
 		descriptionText = m.status
@@ -157,6 +161,15 @@ func (m model) detailLines(lines []string) []string {
 		lines = append(lines, "")
 		addPackageFields(&lines, value, width, m.theme)
 	}
+	if m.dockVisible() && m.listTableBudget() < 12 {
+		compact := make([]string, 0, len(lines))
+		for _, line := range lines {
+			if line != "" {
+				compact = append(compact, line)
+			}
+		}
+		return compact
+	}
 	return lines
 }
 
@@ -171,8 +184,13 @@ func (m *model) moveDetailOrReview(delta int) {
 
 func (m *model) ensureDetailSelection() {
 	view := m.reviewViewport(m.listTableBudget())
-	// Breadcrumb (2), identity (3), versions (3), and action heading (1).
-	view.EnsureVisible(9+m.detailCursor(), 0, 1)
+	// Locate the menu in both regular and compact detail layouts.
+	for row, line := range m.reviewLines() {
+		if line == m.theme.panel.Render("ACTIONS") {
+			view.EnsureVisible(row+1+m.detailCursor(), 0, 1)
+			break
+		}
+	}
 	m.reviewScroll = view.YOffset()
 }
 
@@ -206,4 +224,12 @@ func (m model) chooseDetailAction() (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// Keep menu rows in place while the keyboard policy blocks conflicting actions.
+func (m model) detailActionLabel(action detailAction) string {
+	if m.busy != "" && action.id == m.detailActions()[m.detailCursor()].id {
+		return m.busy + "…"
+	}
+	return action.label
 }

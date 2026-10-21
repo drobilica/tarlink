@@ -65,18 +65,18 @@ func TestBatchPartialFeedbackKeepsFailureMeaning(t *testing.T) {
 
 func TestProgressLineShowsOnlyEventIdentityAndKnownValues(t *testing.T) {
 	m := model{width: 80, color: false, theme: newTheme(false), progressBar: newProgress(false), progress: app.Progress{Stage: app.ProgressExtracting, AppID: "blender", Item: 3, Total: 7}}
-	line := m.progressLine()
+	line := strings.Join(m.operationProgressLines(), " ")
 	if !strings.Contains(line, "Extracting 3/7 · blender") || strings.Contains(line, "ETA") {
 		t.Fatalf("progress invented or lost event data: %q", line)
 	}
-	if got := m.progressLine(); got != line {
+	if got := strings.Join(m.operationProgressLines(), " "); got != line {
 		t.Fatalf("progress changed for unrelated input: %q", got)
 	}
 }
 
 func TestRuntimeExtractionProgressShowsLiveBytes(t *testing.T) {
 	m := model{width: 80, color: false, theme: newTheme(false), progressBar: newProgress(false), progress: app.Progress{Stage: app.ProgressExtracting, Subject: app.ProgressSubjectRuntime, Description: "Extracting runtime", AppID: "magic-sushi", BytesDone: 5 << 20, BytesTotal: -1}}
-	line := m.progressLine()
+	line := strings.Join(m.operationProgressLines(), " ")
 	if !strings.Contains(line, "Extracting runtime") || !strings.Contains(line, "magic-sushi") || !strings.Contains(line, "MiB") {
 		t.Fatalf("runtime progress hid background work: %q", line)
 	}
