@@ -132,6 +132,7 @@ type model struct {
 	selectedIDs         map[string]bool
 	batchIDs            []string
 	batchTargets        []app.BatchTarget
+	batchFinished       bool
 	updatePlan          *app.UpdatePlan
 	channelSelected     int
 	channels            []string
@@ -143,6 +144,8 @@ type model struct {
 	searchPriorSelected int
 	searchPriorCursorID string
 	busy                string
+	operationTitle      string
+	dockScroll          int
 	status              string
 	feedbackAppID       string
 	feedbackPartial     bool
@@ -207,7 +210,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == screenDetails || m.screen == screenVersions {
 			v := m.reviewViewport(m.listTableBudget())
 			m.reviewScroll = v.YOffset()
-			if m.detailPanel() {
+			if m.detailPanel() && !m.dockVisible() {
 				m.ensureDetailSelection()
 			}
 		}
@@ -321,7 +324,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.generation != m.operationGeneration || m.opCancel == nil {
 			return m, nil
 		}
+		m.batchFinished = len(m.batchIDs) > 0
 		m.busy = ""
+		m.updatePlan = nil
 		m.resetProgress()
 		m.opCancel = nil
 		m.err = message.err
@@ -399,9 +404,11 @@ func (m model) View() tea.View {
 	m.initComponents()
 	body := m.bodyLines()
 	footer := fit(m.helpView(), m.width)
+	dock := m.operationDockLines()
 	if m.height > 0 {
-		body = append(body, make([]string, max(0, m.height-1-len(body)))...)
+		body = append(body, make([]string, max(0, m.height-1-len(dock)-len(body)))...)
 	}
+	body = append(body, dock...)
 	lines := append(body, footer)
 	view := tea.NewView(strings.Join(lines, "\n") + "\n")
 	view.AltScreen = true
@@ -421,7 +428,7 @@ func (m model) bodyLines() []string {
 			lines = append(lines, fit(part, m.width))
 		}
 	}
-	showFeedback := m.feedbackAppID == "" || m.isListScreen() || (m.detail != nil && m.detail.ID == m.feedbackAppID)
+	showFeedback := !m.dockVisible() && (m.feedbackAppID == "" || m.isListScreen() || (m.detail != nil && m.detail.ID == m.feedbackAppID))
 	if m.status != "" && showFeedback && !m.detailPanel() && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions)) {
 		tone := success
 		if m.feedbackPartial {
@@ -436,7 +443,7 @@ func (m model) bodyLines() []string {
 	if m.uninstallConflict != nil && (m.screen == screenUninstall || m.screen == screenUninstallConflictConfirm) {
 		add("Conflicting integration: " + m.uninstallConflict.Path)
 	}
-	remaining := max(0, m.height-len(lines)-1)
+	remaining := max(0, m.height-len(lines)-1-m.operationDockHeight())
 	var expanded []string
 	if m.helpOverlay {
 		expanded = m.helpOverlayLines()
@@ -467,7 +474,7 @@ func (m model) bodyLines() []string {
 			lines = append(lines, lipgloss.NewStyle().PaddingLeft(1).Render(fit(line, max(1, viewWidth(m.width)-1))))
 		}
 	}
-	if m.helpOverlay {
+	if m.helpOverlay && len(expanded) > 0 {
 		lines = append(lines, "")
 		for _, line := range expanded {
 			lines = append(lines, fit(line, m.width))
@@ -506,21 +513,13 @@ func (m model) workspaceLinesFor(budget int) ([]string, int) {
 	if budget <= 0 {
 		return nil, 0
 	}
-	if m.busy != "" {
-		lines := []string{m.theme.panel.Render(m.busy)}
-		if m.progress.AppID != "" {
-			lines = append(lines, m.progress.AppID)
+	// A confirmed operation keeps its underlying workspace visible while the
+	// existing screen state continues to own confirmation/recovery semantics.
+	if m.isOverlay() && m.busy != "" {
+		m.screen = m.confirmationTarget()
+		if m.isOverlay() {
+			m.screen = screenDetails
 		}
-		if detail := m.detail; detail != nil && m.progress.AppID == "" && m.operationGeneration > 0 {
-			lines = append(lines, detail.Name)
-		}
-		if progress := m.progressLine(); progress != "" {
-			lines = append(lines, "", progress)
-		}
-		if len(lines) > budget {
-			lines = lines[:budget]
-		}
-		return lines, 1
 	}
 	if m.isListScreen() && m.loading && !m.dataLoaded {
 		return []string{m.theme.accent.Render("Loading applications…")}, 1
@@ -564,7 +563,7 @@ func (m model) workspaceHeight() int {
 	// The header, navigation, separator, and contextual help consume three
 	// rows plus however many lines the responsive navigation needs.
 	feedback := 0
-	showFeedback := m.feedbackAppID == "" || m.isListScreen() || (m.detail != nil && m.detail.ID == m.feedbackAppID)
+	showFeedback := !m.dockVisible() && (m.feedbackAppID == "" || m.isListScreen() || (m.detail != nil && m.detail.ID == m.feedbackAppID))
 	showFeedback = showFeedback && !m.detailPanel() && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions))
 	if showFeedback && m.status != "" {
 		feedback++
@@ -573,7 +572,7 @@ func (m model) workspaceHeight() int {
 		feedback += 2
 	}
 	navigationRows := strings.Count(m.tabsLine(), "\n") + 1
-	return max(3, max(1, m.height)-(3+navigationRows)-feedback)
+	return max(3, max(1, m.height)-(3+navigationRows)-feedback-m.operationDockHeight())
 }
 
 func (m model) hasPreview(values []app.Application) bool {
@@ -783,6 +782,9 @@ func (m model) listTableBudget() int {
 // applyHelpOverlayBudget bounds the expanded help overlay to the workspace
 // budget and returns the budget left after the overlay and its separator line.
 func applyHelpOverlayBudget(budget int, expanded []string) (int, []string) {
+	if budget < 2 {
+		return budget, nil
+	}
 	if len(expanded) > max(1, budget-2) {
 		expanded = expanded[:max(1, budget-2)]
 	}
@@ -1178,6 +1180,16 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.matchesAction(message, actionScroll) {
+		if m.dockScrollable() {
+			v := m.operationResultViewport()
+			if message.String() == "pgup" {
+				v.PageUp()
+			} else {
+				v.PageDown()
+			}
+			m.dockScroll = v.YOffset()
+			return m, nil
+		}
 		delta := max(1, m.workspaceHeight()-1)
 		if message.String() == "pgup" {
 			delta = -delta
@@ -1268,6 +1280,10 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.updatePlan = nil
 		m.clearFeedback()
+		if m.batchFinished {
+			m.batchIDs, m.batchTargets, m.selectedIDs = nil, nil, nil
+			m.batchFinished = false
+		}
 		if m.screen == screenUninstall {
 			m.uninstallConflict = nil
 		}
@@ -1376,7 +1392,6 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.screen == screenDetails {
 			if m.updatePlan != nil {
 				plan := *m.updatePlan
-				m.updatePlan = nil
 				m.busy = "Applying update plan"
 				m.startOperation()
 				cmd, cancel := m.applyUpdatePlanCmd(plan)
@@ -1747,7 +1762,7 @@ func (m model) batchInstallCmd(ids []string) (tea.Cmd, context.CancelFunc) {
 	service := m.service.(app.BatchService)
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
 		result, err := service.InstallBatch(ctx, ids, sink)
-		return operationMsg{message: batchMessage("Installed", result), partial: len(result.Failed) > 0, move: true, next: screenAvailable}, err
+		return operationMsg{message: batchMessage("Installed", result), partial: len(result.Failed) > 0}, err
 	})
 }
 
@@ -1980,7 +1995,7 @@ func (m model) batchUninstallCmd(ids []string) (tea.Cmd, context.CancelFunc) {
 	service := m.service.(app.BatchService)
 	return m.operationCmd(func(ctx context.Context, sink app.ProgressSink) (operationMsg, error) {
 		result, err := service.UninstallBatch(ctx, ids, sink)
-		return operationMsg{message: batchMessage("Uninstalled", result), partial: len(result.Failed) > 0, move: true, next: screenInstalled}, err
+		return operationMsg{message: batchMessage("Uninstalled", result), partial: len(result.Failed) > 0}, err
 	})
 }
 
@@ -2069,6 +2084,7 @@ func (m *model) switchTab(target screen) {
 	m.clearFeedback()
 	m.selectedIDs = nil
 	m.batchIDs, m.batchTargets = nil, nil
+	m.batchFinished = false
 	m.detail = nil
 	m.screen = target
 	m.clampSelection()
@@ -2298,53 +2314,6 @@ func truncate(value string, width int, tail string) string {
 	return displaywidth.Options{ControlSequences: true}.TruncateString(value, width, tail)
 }
 
-func (m model) progressLine() string {
-	if m.progress.Stage == "" && m.progress.Description == "" && m.progress.AppID == "" && m.progress.BytesDone == 0 && m.progress.BytesTotal == 0 {
-		return ""
-	}
-	stage := title(string(m.progress.Stage))
-	if m.progress.Description != "" {
-		stage = m.progress.Description
-	}
-	if m.progress.Stage == app.ProgressComplete {
-		return m.style(stage, success)
-	}
-	line := stage
-	if m.progress.Item > 0 && m.progress.Total > 0 && m.progress.AppID != "" {
-		line = fmt.Sprintf("%s %d/%d · %s", stage, m.progress.Item, m.progress.Total, m.progress.AppID)
-	} else if m.progress.AppID != "" {
-		line = strings.TrimSpace(stage + " · " + m.progress.AppID)
-	}
-	if m.progress.BytesTotal > 0 {
-		done := m.progress.BytesDone
-		if done < 0 {
-			done = 0
-		}
-		if done > m.progress.BytesTotal {
-			done = m.progress.BytesTotal
-		}
-		percent := float64(done) / float64(m.progress.BytesTotal)
-		bar := m.progressBar
-		if bar.Width() == 0 {
-			bar = newProgress(m.color)
-		}
-		bar.SetWidth(progressBarWidthFor(m.width))
-		line += " " + bar.ViewAs(percent)
-		if viewWidth(m.width) >= 60 {
-			line += "  " + fmt.Sprintf("%s / %s", bytesLabel(m.progress.BytesDone), bytesLabel(m.progress.BytesTotal))
-		}
-	} else if m.progress.BytesDone > 0 {
-		line += " " + bytesLabel(m.progress.BytesDone)
-	}
-	if m.progressSpeed > 0 {
-		line += "  " + formatRate(m.progressSpeed)
-		if m.estimator.Ready() && m.progress.BytesTotal > m.progress.BytesDone && m.progress.BytesTotal > 0 {
-			line += " · ETA ~" + formatDuration(float64(m.progress.BytesTotal-m.progress.BytesDone)/m.progressSpeed)
-		}
-	}
-	return m.style(line, accent)
-}
-
 func (m *model) resetProgress() {
 	m.progress = app.Progress{}
 	m.progressSpeed = 0
@@ -2355,6 +2324,8 @@ func (m *model) resetProgress() {
 // clearFeedback deterministically clears stale success/error feedback when the
 // user navigates away from a completed operation's result.
 func (m *model) clearFeedback() {
+	m.operationTitle = ""
+	m.dockScroll = 0
 	m.status = ""
 	m.feedbackAppID = ""
 	m.feedbackPartial = false
@@ -2365,10 +2336,12 @@ func (m *model) clearFeedback() {
 // active operation begins, so a previous operation's success/error never
 // leaks into the next one.
 func (m *model) startOperation() {
+	m.batchFinished = false
 	m.operationGeneration++
 	m.requestGeneration++
 	m.overlayScroll = 0
 	m.clearFeedback()
+	m.operationTitle = m.busy
 	m.resetProgress()
 }
 

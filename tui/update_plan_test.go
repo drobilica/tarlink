@@ -55,11 +55,19 @@ func TestUpdateRequiresPlanConfirmationAndSupportsCancel(t *testing.T) {
 			if cmd == nil {
 				t.Fatal("confirm did not apply")
 			}
+			running := next.(model)
+			if !strings.Contains(running.View().Content, "Review update plan") || !strings.Contains(running.View().Content, "Applying update plan") {
+				t.Fatal("applying the plan discarded its review workspace")
+			}
 			result := cmd()
 			// The operation hub may deliver progress first for a real service; this
 			// fixture returns directly without emitting progress.
 			if message, ok := result.(operationMsg); !ok || message.err != nil || !service.applied {
 				t.Fatalf("apply=%+v applied=%v", result, service.applied)
+			}
+			next, _ = running.Update(result)
+			if next.(model).updatePlan != nil {
+				t.Fatal("completed plan remains actionable")
 			}
 		}
 	}

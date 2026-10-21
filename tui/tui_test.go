@@ -501,7 +501,7 @@ func TestTableUsesCharmTableScrollingAndIgnoresMouse(t *testing.T) {
 
 func TestProgressViewUsesCurrentEvent(t *testing.T) {
 	m := model{width: 80, color: false, theme: newTheme(false), opCancel: func() {}, progressBar: newProgress(false), progress: app.Progress{Stage: app.ProgressDownloading, BytesDone: 50, BytesTotal: 100}}
-	if got := m.progressLine(); !strings.Contains(got, "Downloading") || !strings.Contains(got, "50%") {
+	if got := strings.Join(m.operationProgressLines(), " "); !strings.Contains(got, "Downloading") || !strings.Contains(got, "50%") {
 		t.Fatalf("progress=%q", got)
 	}
 	updated, command := m.Update(progressMsg{event: app.Progress{Stage: app.ProgressVerifying, BytesDone: 1}})

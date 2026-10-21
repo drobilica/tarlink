@@ -91,6 +91,9 @@ lifecycle lock before acquisition, rejecting stale plans before any update.
 
 In the TUI, navigate with `↑`/`↓` or `j`/`k`, open details with `Enter`, and select
 applications with `Space`. Batch installs show the resolved set for confirmation.
+Operations keep the current workspace visible, with progress and results docked
+above the footer. `Esc` cancels a running operation; `PgUp`/`PgDn` scroll long
+operation results. Successful installs refresh the details and available actions.
 Use `tarlink --help` or the [CLI reference](cli/README.md) for all commands,
 including channels, pinning, registry maintenance, and static artifact mirrors.
 Generate shell completions with `tarlink completion <shell>`.
