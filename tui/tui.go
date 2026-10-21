@@ -171,6 +171,8 @@ type model struct {
 	tableWidth          int
 	tableHeight         int
 	searchInput         textinput.Model
+	detailSelected      int
+	packageExpanded     bool
 	reviewScroll        int
 	overlayScroll       int
 }
@@ -203,8 +205,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = message.Height
 		m.clampSelection()
 		if m.screen == screenDetails || m.screen == screenVersions {
-			v := m.reviewViewport(max(1, m.height-4))
+			v := m.reviewViewport(m.listTableBudget())
 			m.reviewScroll = v.YOffset()
+			if m.detailPanel() {
+				m.ensureDetailSelection()
+			}
 		}
 		m.help.SetWidth(m.width)
 		m.progressBar.SetWidth(progressBarWidthFor(m.width))
@@ -417,14 +422,14 @@ func (m model) bodyLines() []string {
 		}
 	}
 	showFeedback := m.feedbackAppID == "" || m.isListScreen() || (m.detail != nil && m.detail.ID == m.feedbackAppID)
-	if m.status != "" && showFeedback && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions)) {
+	if m.status != "" && showFeedback && !m.detailPanel() && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions)) {
 		tone := success
 		if m.feedbackPartial {
 			tone = warning
 		}
 		add(m.style(m.status, tone))
 	}
-	if m.err != nil && showFeedback && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions)) {
+	if m.err != nil && showFeedback && !m.detailPanel() && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions)) {
 		add(m.style("Operation failed", danger))
 		add(m.style(m.err.Error(), danger))
 	}
@@ -559,10 +564,12 @@ func (m model) workspaceHeight() int {
 	// The header, navigation, separator, and contextual help consume three
 	// rows plus however many lines the responsive navigation needs.
 	feedback := 0
-	if m.status != "" {
+	showFeedback := m.feedbackAppID == "" || m.isListScreen() || (m.detail != nil && m.detail.ID == m.feedbackAppID)
+	showFeedback = showFeedback && !m.detailPanel() && !(m.feedbackAppID != "" && (m.screen == screenDetails || m.screen == screenVersions))
+	if showFeedback && m.status != "" {
 		feedback++
 	}
-	if m.err != nil {
+	if showFeedback && m.err != nil {
 		feedback += 2
 	}
 	navigationRows := strings.Count(m.tabsLine(), "\n") + 1
@@ -877,41 +884,7 @@ func (m model) reviewLines() []string {
 		}
 		return lines
 	}
-	lines = append(lines, m.theme.panel.Render(m.detail.Name))
-	state := applicationStatus(*m.detail)
-	if m.detail.UpdateAvailable && !m.detail.Pinned {
-		state = "Update"
-	}
-	if state != "" {
-		available := max(1, viewWidth(m.width)-2)
-		stateStyle := m.theme.success
-		if m.detail.UpdateAvailable && !m.detail.Pinned {
-			stateStyle = m.theme.warning
-		}
-		if m.detail.InstalledVersion == "" {
-			stateStyle = m.theme.muted
-		}
-		stateText := stateStyle.Render(state)
-		stateWidth := displaywidth.Options{ControlSequences: true}.String(stateText)
-		lines[0] = lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(max(1, available-stateWidth)).Render(truncate(lines[0], max(1, available-stateWidth), "…")), stateText)
-	}
-	lines = append(lines, wrappedLines(m.detail.Summary, max(1, viewWidth(m.width)-2))...)
-	if m.feedbackAppID == m.detail.ID && m.feedbackAppID != "" {
-		if m.status != "" {
-			tone := success
-			if m.feedbackPartial {
-				tone = warning
-			}
-			lines = append(lines, m.style(m.status, tone))
-		}
-		if m.err != nil {
-			lines = append(lines, m.style("Operation failed", danger))
-			lines = append(lines, wrappedLines(m.err.Error(), max(1, viewWidth(m.width)-2))...)
-		}
-	}
-	lines = append(lines, "")
-	addDetailFields(&lines, *m.detail, viewWidth(m.width)-2, m.theme)
-	return lines
+	return m.detailLines(lines)
 }
 
 func (m model) reviewApplications() []app.Application {
@@ -1125,6 +1098,9 @@ func detailName(value *app.Application) string {
 	if value == nil {
 		return ""
 	}
+	if value.Name == "" {
+		return value.ID
+	}
 	return value.Name
 }
 
@@ -1201,6 +1177,14 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.matchesAction(message, actionScroll) {
+		delta := max(1, m.workspaceHeight()-1)
+		if message.String() == "pgup" {
+			delta = -delta
+		}
+		m.moveReviewScroll(delta)
+		return m, nil
+	}
 	if m.matchesAction(message, actionToggle) {
 		visible := m.visibleApplications()
 		cursor := m.applicationTable.Cursor()
@@ -1232,7 +1216,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			delta = 1
 		}
 		if m.screen == screenDetails || m.screen == screenVersions {
-			m.moveReviewScroll(delta)
+			m.moveDetailOrReview(delta)
 		} else if m.screen == screenInstallChannel {
 			m.moveChannel(delta)
 		} else if m.isOverlay() {
@@ -1243,7 +1227,7 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case m.matchesAction(message, actionDown):
 		m.clearFeedback()
 		if m.screen == screenDetails || m.screen == screenVersions {
-			m.moveReviewScroll(1)
+			m.moveDetailOrReview(1)
 		} else if m.screen == screenInstallChannel {
 			m.moveChannel(1)
 		} else if m.isOverlay() {
@@ -1276,6 +1260,12 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case m.matchesAction(message, actionUpdates):
 		m.switchTab(screenUpdates)
 	case m.matchesAction(message, actionCancel):
+		if m.detailPanel() && m.packageExpanded {
+			m.packageExpanded = false
+			m.reviewScroll = 0
+			m.ensureDetailSelection()
+			return m, nil
+		}
 		m.updatePlan = nil
 		m.clearFeedback()
 		if m.screen == screenUninstall {
@@ -1413,15 +1403,10 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					return m, cmd
 				}
 			}
-			if m.detail != nil && m.detail.InstalledVersion == "" && len(m.detail.ChannelHeads) > 1 {
-				m.channels = channelNames(m.detail)
-				m.channelSelected = channelIndex(m.channels, m.detail.DefaultChannel)
-				m.screen = screenInstallChannel
-				return m, nil
+			if m.detailPanel() {
+				return m.chooseDetailAction()
 			}
-			m.channels = nil
-			m.channelSelected = 0
-			return m.activateSelected()
+			return m, nil
 		}
 		visible := m.visibleApplications()
 		if len(visible) != 0 {
@@ -1432,6 +1417,8 @@ func (m model) updateKey(message tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.returnTo = m.screen
 			m.reviewScroll = 0
+			m.detailSelected = 0
+			m.packageExpanded = false
 			m.screen = screenDetails
 			return m, nil
 		}
@@ -1546,7 +1533,7 @@ func (m *model) moveSelection(delta int) {
 }
 
 func (m *model) moveReviewScroll(delta int) {
-	v := m.reviewViewport(max(1, m.height-4))
+	v := m.reviewViewport(m.listTableBudget())
 	if delta < 0 {
 		v.ScrollUp(-delta)
 	} else {
@@ -2154,7 +2141,7 @@ func updates(values []app.Application) []app.Application {
 	return result
 }
 
-func addDetailFields(lines *[]string, value app.Application, width int, theme tuiTheme) {
+func addPackageFields(lines *[]string, value app.Application, width int, theme tuiTheme) {
 	field := func(label, content string) {
 		if content == "" {
 			return
@@ -2172,16 +2159,6 @@ func addDetailFields(lines *[]string, value app.Application, width int, theme tu
 			}
 			*lines = append(*lines, lipgloss.JoinHorizontal(lipgloss.Top, lipgloss.NewStyle().Width(14).Render(theme.muted.Render(caption)), chunk))
 		}
-	}
-	channel := value.InstalledChannel
-	if channel == "" {
-		channel = value.DefaultChannel
-	}
-	if value.InstalledVersion != "" || value.RegistryVersion != "" || channel != "" {
-		*lines = append(*lines, theme.panel.Render("VERSION"))
-		field("Installed", value.InstalledVersion)
-		field("Available", value.RegistryVersion)
-		field("Channel", channel)
 	}
 	if len(value.Categories) > 0 || hasGameData(value) || value.ID != "" {
 		*lines = append(*lines, "", theme.panel.Render("PACKAGE"))

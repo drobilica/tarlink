@@ -137,7 +137,7 @@ func TestDetailsUseLeftAlignedWorkspaceAndBreadcrumb(t *testing.T) {
 		ID: "blender", Name: "Blender", Summary: "3D creation suite", InstalledVersion: "5.2.0", RegistryVersion: "5.2.1", UpdateAvailable: true,
 	}, width: 80, height: 24, theme: newTheme(false)}
 	view := m.View().Content
-	if strings.Contains(view, "╭") || !strings.Contains(view, "Installed › Blender") || !strings.Contains(view, "VERSION") {
+	if strings.Contains(view, "╭") || !strings.Contains(view, "Installed › Blender") || !strings.Contains(view, "INSTALLED") {
 		t.Fatalf("details shell=%q", view)
 	}
 	for _, line := range strings.Split(strings.TrimSuffix(view, "\n"), "\n") {
@@ -185,7 +185,7 @@ func TestReviewScrollKeepsDetailsReachable(t *testing.T) {
 	before := strings.Join(m.reviewLines(), "\n")
 	m.moveReviewScroll(2)
 	after := strings.Join(m.reviewLines()[m.reviewScroll:], "\n")
-	if before == after || !strings.Contains(after, "VERSION") {
+	if before == after || !strings.Contains(after, "INSTALLED") {
 		t.Fatalf("review scroll did not move: before=%q after=%q", before, after)
 	}
 }
