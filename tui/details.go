@@ -228,7 +228,7 @@ func (m model) chooseDetailAction() (tea.Model, tea.Cmd) {
 
 // Keep menu rows in place while the keyboard policy blocks conflicting actions.
 func (m model) detailActionLabel(action detailAction) string {
-	if m.busy != "" && action.id == m.detailActions()[m.detailCursor()].id {
+	if m.busy != "" && m.detail.InstalledVersion == "" && action.id == actionEnter {
 		return m.busy + "…"
 	}
 	return action.label

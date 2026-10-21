@@ -355,3 +355,24 @@ func TestDockHelpAndMinimumTerminalGeometry(t *testing.T) {
 		}
 	}
 }
+
+func TestLifecycleShortcutsKeepActionLabelsAccurate(t *testing.T) {
+	for _, shortcut := range []string{"r", "x"} {
+		m := panelFixture()
+		next, _ := m.Update(key(shortcut))
+		m = next.(model)
+		next, cmd := m.Update(key("enter"))
+		m = next.(model)
+		defer m.opCancel()
+		if cmd == nil || m.busy == "" {
+			t.Fatal("confirmed shortcut did not start operation")
+		}
+		// The selected Review-update row is not the operation invoked by a shortcut.
+		// Keep installed action labels intact; the identity status and dock show work.
+		workspace, _ := m.workspaceLinesFor(20)
+		lines := strings.Join(workspace, "\n")
+		if !strings.Contains(lines, "› Review update") || !strings.Contains(lines, "Uninstall") {
+			t.Fatalf("shortcut relabeled the wrong action:\n%s", lines)
+		}
+	}
+}
