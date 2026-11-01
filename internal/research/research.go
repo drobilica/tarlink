@@ -337,33 +337,44 @@ func (c *Client) Discover(ctx context.Context, raw string) ([]Release, error) {
 		}
 	}
 refresh:
-	resp, err := c.apiGet(ctx, c.apiURL(repo)+"?per_page=100")
-	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) {
-			return nil, err
-		}
-		return nil, &APIError{Kind: APIErrorNetwork, Message: fmt.Sprintf("GitHub releases request: %v", err)}
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, classifyStatus(resp)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return nil, &APIError{Kind: APIErrorNetwork, Message: fmt.Sprintf("read GitHub releases: %v", err), Cause: err}
-	}
-	if int64(len(body)) > maxResponseBytes {
-		return nil, &APIError{Kind: APIErrorMalformed, Message: "GitHub releases response exceeds size limit"}
-	}
 	var rawReleases []apiRelease
-	dec := json.NewDecoder(bytes.NewReader(body))
-	if err := dec.Decode(&rawReleases); err != nil {
-		return nil, &APIError{Kind: APIErrorMalformed, Message: fmt.Sprintf("decode GitHub releases: %v", err)}
-	}
-	var extra any
-	if err := dec.Decode(&extra); err != io.EOF {
-		return nil, &APIError{Kind: APIErrorMalformed, Message: "trailing GitHub releases response data"}
+	for page := 1; page <= 2; page++ {
+		resp, err := c.apiGet(ctx, fmt.Sprintf("%s?per_page=50&page=%d", c.apiURL(repo), page))
+		if err != nil {
+			var apiErr *APIError
+			if errors.As(err, &apiErr) {
+				return nil, err
+			}
+			return nil, &APIError{Kind: APIErrorNetwork, Message: fmt.Sprintf("GitHub releases request: %v", err)}
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, classifyStatus(resp)
+		}
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		resp.Body.Close()
+		if err != nil {
+			return nil, &APIError{Kind: APIErrorNetwork, Message: fmt.Sprintf("read GitHub releases: %v", err), Cause: err}
+		}
+		if int64(len(body)) > maxResponseBytes {
+			return nil, &APIError{Kind: APIErrorMalformed, Message: "GitHub releases response exceeds size limit"}
+		}
+		var batch []apiRelease
+		dec := json.NewDecoder(bytes.NewReader(body))
+		if err := dec.Decode(&batch); err != nil {
+			return nil, &APIError{Kind: APIErrorMalformed, Message: fmt.Sprintf("decode GitHub releases: %v", err)}
+		}
+		var extra any
+		if err := dec.Decode(&extra); err != io.EOF {
+			return nil, &APIError{Kind: APIErrorMalformed, Message: "trailing GitHub releases response data"}
+		}
+		if len(batch) > 50 {
+			return nil, &APIError{Kind: APIErrorMalformed, Message: "GitHub releases page exceeds release limit"}
+		}
+		rawReleases = append(rawReleases, batch...)
+		if len(batch) < 50 {
+			break
+		}
 	}
 	result := make([]Release, 0, len(rawReleases))
 	for _, in := range rawReleases {

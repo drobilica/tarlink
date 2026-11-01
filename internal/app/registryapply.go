@@ -155,10 +155,7 @@ func prepareRegistryUpdate(ctx context.Context, client *research.Client, reposit
 		if latest.PublishedAt.IsZero() {
 			return nil, nil, errors.New("release publication time missing; manual review required")
 		}
-		version := latest.Tag
-		if len(version) > 1 && version[0] == 'v' && version[1] >= '0' && version[1] <= '9' {
-			version = version[1:]
-		}
+		version := freshness.ReleaseVersion(repository, latest.Tag)
 		// Test membership before selecting any missing version: do not backfill history.
 		exists := false
 		var source manifest.ReleaseDefinition
@@ -179,10 +176,7 @@ func prepareRegistryUpdate(ctx context.Context, client *research.Client, reposit
 		}
 		var currentPublished time.Time
 		for _, release := range releases {
-			tag := release.Tag
-			if len(tag) > 1 && tag[0] == 'v' && tag[1] >= '0' && tag[1] <= '9' {
-				tag = tag[1:]
-			}
+			tag := freshness.ReleaseVersion(repository, release.Tag)
 			if !release.Draft && (channel == "stable") != release.Prerelease && (tag == channels[channel].Current || release.Tag == channels[channel].Current) {
 				currentPublished = release.PublishedAt
 				break

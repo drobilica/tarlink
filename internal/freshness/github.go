@@ -21,6 +21,8 @@ const (
 	githubAPIHost    = "api.github.com"
 )
 
+var godotStableVersionPattern = regexp.MustCompile(`^[0-9]+(\.[0-9]+)+$`)
+
 var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 
 // Target identifies an explicitly reviewed upstream source and the releases
@@ -83,49 +85,59 @@ func (c *Client) Discover(ctx context.Context, target Target) ([]Candidate, erro
 	approved := make(map[string]bool, len(target.Approved))
 	for _, release := range target.Approved {
 		if release.Version != "" && release.Channel == target.Channel {
-			approved[release.Version] = true
+			approved[ReleaseVersion(target.Repository, release.Version)] = true
 		}
 	}
 	apiURL, err := APIURL(target.Repository)
 	if err != nil {
 		return nil, err
 	}
-	apiURL += "?per_page=100"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "tarlink-registry-freshness")
-	var httpClient *http.Client
-	if c != nil {
-		httpClient = c.HTTP
-	}
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	response, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("discover GitHub releases: %w", err)
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GitHub releases API returned %s", response.Status)
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
-	if err != nil {
-		return nil, fmt.Errorf("read GitHub releases: %w", err)
-	}
-	if int64(len(data)) > maxResponseBytes {
-		return nil, errors.New("GitHub releases response exceeds size limit")
-	}
 	var releases []githubRelease
-	if err := json.Unmarshal(data, &releases); err != nil {
-		return nil, fmt.Errorf("decode GitHub releases: %w", err)
+	for page := 1; page <= 2; page++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s?per_page=50&page=%d", apiURL, page), nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Accept", "application/vnd.github+json")
+		req.Header.Set("User-Agent", "tarlink-registry-freshness")
+		var httpClient *http.Client
+		if c != nil {
+			httpClient = c.HTTP
+		}
+		if httpClient == nil {
+			httpClient = http.DefaultClient
+		}
+		response, err := httpClient.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("discover GitHub releases: %w", err)
+		}
+		if response.StatusCode != http.StatusOK {
+			response.Body.Close()
+			return nil, fmt.Errorf("GitHub releases API returned %s", response.Status)
+		}
+		data, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
+		response.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("read GitHub releases: %w", err)
+		}
+		if int64(len(data)) > maxResponseBytes {
+			return nil, errors.New("GitHub releases response exceeds size limit")
+		}
+		var batch []githubRelease
+		if err := json.Unmarshal(data, &batch); err != nil {
+			return nil, fmt.Errorf("decode GitHub releases: %w", err)
+		}
+		if len(batch) > 50 {
+			return nil, errors.New("GitHub releases page exceeds release limit")
+		}
+		releases = append(releases, batch...)
+		if len(batch) < 50 {
+			break
+		}
 	}
 	var currentPublished time.Time
 	for _, release := range releases {
-		if !release.Draft && (target.Channel == "stable") != release.Prerelease && canonicalTagVersion(release.TagName) == canonicalTagVersion(target.Current) {
+		if !release.Draft && (target.Channel == "stable") != release.Prerelease && ReleaseVersion(target.Repository, release.TagName) == ReleaseVersion(target.Repository, target.Current) {
 			currentPublished = release.PublishedAt
 			break
 		}
@@ -146,7 +158,7 @@ func (c *Client) Discover(ctx context.Context, target Target) ([]Candidate, erro
 		if target.Channel != "stable" && !release.Prerelease {
 			continue
 		}
-		version := canonicalTagVersion(release.TagName)
+		version := ReleaseVersion(target.Repository, release.TagName)
 		if approved[release.TagName] || approved[version] {
 			continue
 		}
@@ -182,4 +194,18 @@ func APIURL(repository string) (string, error) {
 	}
 	u, _ := url.Parse("https://" + githubAPIHost + "/repos/" + repository + "/releases")
 	return u.String(), nil
+}
+
+// ReleaseVersion maps reviewed upstream tag conventions to registry versions.
+// Godot stable build tags use a suffix that is absent from registry versions.
+// Other repositories and opaque tags retain their existing spelling.
+func ReleaseVersion(repository, tag string) string {
+	version := canonicalTagVersion(tag)
+	if repository == "godotengine/godot-builds" && strings.HasSuffix(version, "-stable") {
+		numeric := strings.TrimSuffix(version, "-stable")
+		if godotStableVersionPattern.MatchString(numeric) {
+			return numeric
+		}
+	}
+	return version
 }

@@ -28,17 +28,17 @@ func registryApplyFixture(t *testing.T) (string, *Maintainer, *[]research.Releas
 	writeOnboardingManifest(t, filepath.Join(root, "apps", "godot", "manifest.yaml"), data)
 	payload := appImageELF(0x3e)
 	sum := sha256.Sum256(payload)
-	releases := []research.Release{{ID: 10, Tag: "v2.0", PublishedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Assets: []research.Asset{{ID: 20, Name: "godot-linux-amd64.AppImage", URL: "https://github.com/godotengine/godot/releases/download/v2.0/godot-linux-amd64.AppImage", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(sum[:]), State: "uploaded"}}}, {ID: 11, Tag: "v1.0", PublishedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}}
+	releases := []research.Release{{ID: 10, Tag: "v2.0", PublishedAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Assets: []research.Asset{{ID: 20, Name: "godot-linux-amd64.AppImage", URL: "https://github.com/godotengine/godot-builds/releases/download/v2.0/godot-linux-amd64.AppImage", Size: int64(len(payload)), Digest: "sha256:" + hex.EncodeToString(sum[:]), State: "uploaded"}}}, {ID: 11, Tag: "v1.0", PublishedAt: time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)}}
 	downloads := 0
 	client := &download.Client{HTTP: &http.Client{Transport: maintainerRoundTrip(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host == "api.github.com" && r.URL.Path == "/repos/godotengine/godot/releases" {
+		if r.URL.Host == "api.github.com" && r.URL.Path == "/repos/godotengine/godot-builds/releases" {
 			data, err := json.Marshal(releases)
 			if err != nil {
 				t.Fatal(err)
 			}
 			return maintainerResponse(http.StatusOK, string(data)), nil
 		}
-		if r.URL.Host == "github.com" && strings.HasPrefix(r.URL.Path, "/godotengine/godot/releases/download/") {
+		if r.URL.Host == "github.com" && strings.HasPrefix(r.URL.Path, "/godotengine/godot-builds/releases/download/") {
 			downloads++
 			return maintainerResponse(http.StatusOK, string(payload)), nil
 		}
@@ -93,7 +93,7 @@ func TestRegistryApplyFailurePreservesManifest(t *testing.T) {
 				copy.URL = strings.Replace(copy.URL, "godot-linux-amd64.AppImage", copy.Name, 1)
 				(*releases)[0].Assets = append((*releases)[0].Assets, copy)
 			case "wrong-repository":
-				asset.URL = strings.Replace(asset.URL, "godotengine/godot", "evil/project", 1)
+				asset.URL = strings.Replace(asset.URL, "godotengine/godot-builds", "evil/project", 1)
 			case "digest-mismatch":
 				asset.Digest = "sha256:" + strings.Repeat("0", 64)
 			case "malformed-digest":
@@ -275,5 +275,20 @@ func TestRegistryApplyPreservesVerificationAlgorithm(t *testing.T) {
 	}
 	if document.Release.Verification.Algorithm != "sha512" || len(document.Release.Releases[1].Artifacts["linux-amd64"].Verification.Digest) != 128 {
 		t.Fatal("verification algorithm changed")
+	}
+}
+
+func TestRegistryApplyGodotStableTags(t *testing.T) {
+	root, m, releases, _ := registryApplyFixture(t)
+	(*releases)[0].Tag = "2.0-stable"
+	(*releases)[1].Tag = "1.0-stable"
+	(*releases)[0].Assets[0].URL = strings.ReplaceAll((*releases)[0].Assets[0].URL, "/v2.0/", "/2.0-stable/")
+	report, err := m.ApplyRegistryUpdates(t.Context(), RegistryApplyOptions{Root: root})
+	if err != nil || report.Results[0].Status != "updated" || report.Results[0].Versions[0] != "stable:2.0" {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+	report, err = m.ApplyRegistryUpdates(t.Context(), RegistryApplyOptions{Root: root})
+	if err != nil || report.Results[0].Status != "no-change" {
+		t.Fatalf("repeat=%+v err=%v", report, err)
 	}
 }
