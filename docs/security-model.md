@@ -7,6 +7,7 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 - The official registry URL is compiled into the program. Alternate registries and arbitrary manifest locations are not accepted.
 - Registry and release traffic uses HTTPS. Release redirects must remain valid HTTPS URLs and are capped at five; a digest authenticates the final bytes independently of redirect hosting.
 - Connect, TLS handshake, response-header, and overall timeouts bound waits.
+- Registry update discovery selects only compiled reviewed GitHub repository rules. Manifest URLs are diagnostic evidence for uncovered sources, never authority for new API or artifact requests. Metadata requests reject redirects, examine at most 100 releases in two pages capped at 4 MiB each, and use a 30-second request timeout. Optional `GH_TOKEN` authentication is confined to the fixed GitHub API endpoint. Per-scan memoization is disposable and cannot approve or install candidates.
 - Registry responses are limited to 64 MiB. Application downloads are limited to 8 GiB.
 - Valve runtime downloads and cumulative extracted bytes are limited to 2 GiB.
 - Each application release declares an exact lowercase SHA-256 or SHA-512 digest approved in the official registry. Maintainers may calculate it from the exact official upstream HTTPS artifact; verification still completes before extraction or activation. Other algorithms, missing verification, and malformed digests are rejected.

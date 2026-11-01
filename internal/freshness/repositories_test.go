@@ -2,23 +2,23 @@ package freshness
 
 import "testing"
 
-func TestLoadRepositories(t *testing.T) {
-	value, err := LoadRepositories([]byte("- app: demo\n  repository: owner/project\n"))
+func TestLoadRules(t *testing.T) {
+	value, err := LoadRules([]byte("- app: demo\n  repository: owner/project\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if value["demo"] != "owner/project" {
-		t.Fatalf("repository = %q", value["demo"])
+	if value["demo"].Repository != "owner/project" {
+		t.Fatalf("repository = %q", value["demo"].Repository)
 	}
 }
 
-func TestLoadRepositoriesRejectsMalformedData(t *testing.T) {
+func TestLoadRulesRejectsMalformedData(t *testing.T) {
 	for _, data := range []string{
 		"- app: demo\n  repository: owner/project\n- app: demo\n  repository: other/project\n",
 		"- app: demo\n  repository: https://github.com/owner/project\n",
 		"- app: demo\n  repository: owner/project\n---\n- app: other\n  repository: owner/other\n",
 	} {
-		if _, err := LoadRepositories([]byte(data)); err == nil {
+		if _, err := LoadRules([]byte(data)); err == nil {
 			t.Fatalf("accepted malformed metadata %q", data)
 		}
 	}

@@ -11,9 +11,20 @@ tarlink registry update -n 5 --json
 This command first refreshes and validates the official registry, then checks
 every declared application platform and channel against its compiled approved
 GitHub upstream. It includes applications that are not installed or available
-on the host platform. Disabled applications and applications without an approved
-source are reported as `skipped`, with `disabled` or `no_approved_upstream`
-reasons. It does not infer upstream sources from manifest URLs.
+on the host platform. Built-in reviewed rules select the release repository,
+normalize project-specific
+numeric tag prefixes/suffixes, and narrow asset names for applications sharing a
+repository. Manifest URLs never authorize a new network source. For uncovered
+apps, current artifact URLs are used only to explain what is missing:
+
+- `disabled`: the registry explicitly disables the app.
+- `unsupported_provider`: GitLab or the named download host needs a provider adapter.
+- `unreviewed_repository`: the identified GitHub repository needs a reviewed built-in rule.
+- `ambiguous_upstream`: current artifacts identify multiple sources needing review.
+- `missing_upstream` or `invalid_upstream`: source evidence is missing or malformed.
+
+Every skipped result includes a human-readable explanation and a next step.
+JSON results identify the selected repository and rule when one applies.
 
 Use `-n <count>` (or `--number <count>`) to cap the report at that many
 newer missing releases per app/platform across its channels. The count must be
@@ -25,7 +36,9 @@ entries.
 
 Each app/platform result is `candidates`, `no-candidates`, `skipped`, or `error`.
 The schema-version-1 JSON report includes the validated catalog revision,
-registry checked-at time, and all results. Failed upstream checks preserve
+registry checked-at time, all results, and a summary counting app/platform results
+by status and skip reason. Text output includes the same tally and per-app
+explanations. Failed upstream checks preserve
 successful results and return a nonzero exit status; cancellation stops the scan.
 A failed registry refresh aborts before upstream checks, even if a previous
 cache exists. `--offline` is unsupported.
@@ -41,9 +54,17 @@ Godot uses its official `godotengine/godot-builds` repository; numeric
 Candidates still require compatibility review. Discovery and apply examine up to
 100 releases using at most two pages of 50 releases, each bounded to 4 MiB.
 Advisory requests reject redirects and have a 30-second timeout per request.
-API errors, including rate limits, produce failed checks rather than a clean
-result. The scan does not change registry manifests, Git state, or installed
-applications.
+API errors produce failed checks rather than a clean result. Reasons distinguish
+`repository_moved`, `repository_not_found`, `rate_limited`,
+`authentication_failed`, `response_too_large`, `invalid_metadata`, and
+`unknown_release_order`; other failures use `lookup_failed`. A moved repository
+requires rule review; redirects never silently change the approved source.
+Within one scan, shared repositories are fetched once and reused across apps,
+platforms, and channels, with filtering applied separately. The next scan fetches
+fresh metadata. Set `GH_TOKEN` to use authenticated GitHub API quotas for large
+scans; the credential is sent only to the fixed GitHub API endpoint, never to
+registry or artifact downloads, and is not stored in reports or caches. The scan
+does not change registry manifests, Git state, or installed applications.
 
 To prepare updates in an explicit local checkout:
 
@@ -60,7 +81,12 @@ never backfills older missing releases or downgrades a numeric version.
 `-n` cannot be combined with `--apply`.
 
 Every platform of the current channel release must have exactly one upstream
-asset matching its platform and archive format. Assets must be canonical GitHub
+asset matching its platform, archive format, and any reviewed application asset
+prefix. This prevents shared repositories from mixing assets for different apps.
+AppImage filenames identify Linux implicitly but must still name the architecture;
+the acquired binary is independently inspected for that architecture.
+`missing_platform_asset` and `ambiguous_platform_asset` explain when selection
+needs manual review. Assets must be canonical GitHub
 release URLs in the compiled approved repository. Downloads use bounded HTTPS
 acquisition and safe static inspection; published supported digests are verified,
 and missing upstream digests are handled by computing the registry
@@ -98,7 +124,10 @@ The reviewed app-to-repository allowlist lives in
 binary. It is deliberately separate from registry metadata: maintainers add a
 mapping only after verifying the official registry artifact uses that GitHub
 repository's Releases, then review the mapping as TarLink trust configuration.
-Malformed or duplicate entries are rejected deterministically.
+The same rules serve registry-wide discovery, single-app freshness, and local
+apply. Numeric-only version rules handle Godot's `-stable`, Conker's `V`, DKR's
+`Version`, and TRX's `trx-`; opaque identifiers remain opaque. Conflicting version
+rules, malformed fields, and duplicate entries are rejected deterministically.
 
 Channel filtering is deliberate: `stable` considers published non-prereleases,
 while non-stable channels such as `nightly`, `beta`, and `preview` consider

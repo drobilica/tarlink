@@ -44,6 +44,11 @@ func (r Runner) registryUpdateCommand() *cobra.Command {
 							return err
 						}
 					}
+					if result.Detail != "" {
+						if _, err = fmt.Fprintf(r.Stdout, ": %s", result.Detail); err != nil {
+							return err
+						}
+					}
 					if _, err = fmt.Fprintln(r.Stdout); err != nil {
 						return err
 					}
@@ -81,6 +86,11 @@ func (r Runner) registryUpdateCommand() *cobra.Command {
 						return err
 					}
 				}
+				if result.Detail != "" {
+					if _, err = fmt.Fprintf(r.Stdout, ": %s", result.Detail); err != nil {
+						return err
+					}
+				}
 				if _, err = fmt.Fprintln(r.Stdout); err != nil {
 					return err
 				}
@@ -89,6 +99,10 @@ func (r Runner) registryUpdateCommand() *cobra.Command {
 						return err
 					}
 				}
+			}
+			summary := report.Summary
+			if _, err = fmt.Fprintf(r.Stdout, "Results: %d total, %d with candidates, %d without candidates, %d skipped, %d errors.\n", summary.Total, summary.Candidates, summary.NoCandidates, summary.Skipped, summary.Errors); err != nil {
+				return err
 			}
 			if scanErr == nil {
 				_, err = fmt.Fprintln(r.Stdout, "Scan complete. Candidates require registry review; manifests were not changed.")
