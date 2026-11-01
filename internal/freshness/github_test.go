@@ -12,7 +12,7 @@ import (
 
 func TestDiscoverReportsOnlyUnapprovedStableReleases(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Path != "/repos/example/project/releases" || r.URL.Query().Get("per_page") != "100" {
+		if r.URL.Path != "/repos/example/project/releases" || r.URL.Query().Get("per_page") != "50" {
 			return nil, fmt.Errorf("unexpected request %s", r.URL.String())
 		}
 		if r.Header.Get("Accept") == "" || r.Header.Get("User-Agent") == "" {
@@ -87,3 +87,70 @@ func TestAPIURLIsFixedToGitHub(t *testing.T) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestDiscoverGodotStableBuildTags(t *testing.T) {
+	client := &Client{HTTP: releaseFixtureHTTP(`[
+ {"tag_name":"4.8-stable"}, {"tag_name":"4.7.2-stable"},
+ {"tag_name":"4.7.1-stable"}, {"tag_name":"4.9-beta1","prerelease":true}]`)}
+	got, err := client.Discover(t.Context(), Target{App: "godot", Repository: "godotengine/godot-builds", Channel: "stable", Current: "4.7.2", Approved: []ApprovedRelease{{Version: "4.7.2", Channel: "stable"}}})
+	if err != nil || len(got) != 1 || got[0].Version != "4.8" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	for _, tag := range []string{"nightly-stable", "4.8-beta1", "4..8-stable"} {
+		if got := ReleaseVersion("godotengine/godot-builds", tag); got != tag {
+			t.Fatalf("changed opaque tag %q to %q", tag, got)
+		}
+	}
+	if got := ReleaseVersion("other/project", "4.8-stable"); got != "4.8-stable" {
+		t.Fatal(got)
+	}
+}
+
+func TestDiscoverBoundedPagination(t *testing.T) {
+	for _, failure := range []string{"", "http", "size", "json", "count", "cancel"} {
+		t.Run(failure, func(t *testing.T) {
+			calls := 0
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			client := &Client{HTTP: &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.URL.Query().Get("page") != fmt.Sprint(calls) || r.URL.Query().Get("per_page") != "50" {
+					t.Fatal(r.URL)
+				}
+				if err := r.Context().Err(); err != nil {
+					return nil, err
+				}
+				entries := make([]string, 50)
+				for i := range entries {
+					entries[i] = fmt.Sprintf(`{"tag_name":"%d.0"}`, calls*50+i)
+				}
+				body := "[" + strings.Join(entries, ",") + "]"
+				code := http.StatusOK
+				if calls == 2 {
+					switch failure {
+					case "http":
+						code = http.StatusTooManyRequests
+					case "size":
+						body = strings.Repeat("x", maxResponseBytes+1)
+					case "json":
+						body = "["
+					case "count":
+						body = "[" + strings.Join(append(entries, entries[0]), ",") + "]"
+					}
+				}
+				if calls == 1 && failure == "cancel" {
+					cancel()
+				}
+				return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}}
+			got, err := client.Discover(ctx, Target{App: "demo", Repository: "example/project", Channel: "stable", Current: "1.0"})
+			if failure == "" {
+				if err != nil || len(got) != 100 || calls != 2 {
+					t.Fatalf("len=%d calls=%d err=%v", len(got), calls, err)
+				}
+			} else if err == nil || len(got) != 0 || calls > 2 {
+				t.Fatalf("len=%d calls=%d err=%v", len(got), calls, err)
+			}
+		})
+	}
+}

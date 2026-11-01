@@ -2,7 +2,7 @@
 # registry metadata because the source selection is part of TarLink's trust
 # policy.
 - app: 2ship2harkinian
-  repository: HarbourMasters/2ship2harkinian
+  repository: 2ship2harkinian/2ship2harkinian
 - app: devilutionx
   repository: diasurgical/DevilutionX
 - app: dosbox-staging
@@ -10,7 +10,7 @@
 - app: dusklight
   repository: TwilitRealm/dusklight
 - app: godot
-  repository: godotengine/godot
+  repository: godotengine/godot-builds
 - app: k9s
   repository: derailed/k9s
 - app: ludusavi

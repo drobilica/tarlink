@@ -35,8 +35,12 @@ set and newer than its current registry head. Dotted numeric versions are
 compared numerically, so `1.10` follows `1.9`; other identifiers require upstream
 publication times for both the candidate and current head. Missing chronology
 produces an error requiring manual review, rather than a historical list.
-Candidates still require compatibility review. Each check examines up to the first 100 releases returned by GitHub, with the existing
-4 MiB response bound. Requests reject redirects and have a 30-second timeout.
+Godot uses its official `godotengine/godot-builds` repository; numeric
+`-stable` tags map to registry versions without that suffix in discovery and apply.
+
+Candidates still require compatibility review. Discovery and apply examine up to
+100 releases using at most two pages of 50 releases, each bounded to 4 MiB.
+Advisory requests reject redirects and have a 30-second timeout per request.
 API errors, including rate limits, produce failed checks rather than a clean
 result. The scan does not change registry manifests, Git state, or installed
 applications.

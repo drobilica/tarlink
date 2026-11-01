@@ -1488,3 +1488,45 @@ func TestInspectAssetRedownloadsBeforeParser(t *testing.T) {
 		t.Fatalf("parser calls=%d", parsed)
 	}
 }
+
+func TestDiscoverBoundedReleasePages(t *testing.T) {
+	for _, failure := range []string{"", "http", "json", "size", "count", "duplicate"} {
+		t.Run(failure, func(t *testing.T) {
+			calls := 0
+			client := &Client{Refresh: true, CacheRoot: t.TempDir(), HTTP: &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.URL.Query().Get("page") != fmt.Sprint(calls) || r.URL.Query().Get("per_page") != "50" {
+					t.Fatal(r.URL)
+				}
+				entries := make([]string, 50)
+				for i := range entries {
+					entries[i] = fmt.Sprintf(`{"id":%d,"tag_name":"v%d","assets":[]}`, calls*50+i, calls*50+i)
+				}
+				code := http.StatusOK
+				if calls == 2 {
+					switch failure {
+					case "http":
+						return response(http.StatusTooManyRequests, ""), nil
+					case "json":
+						return response(code, "["), nil
+					case "size":
+						return response(code, strings.Repeat("x", int(maxResponseBytes+1))), nil
+					case "count":
+						entries = append(entries, entries[0])
+					case "duplicate":
+						entries[0] = `{"id":50,"tag_name":"v50","assets":[]}`
+					}
+				}
+				return response(code, "["+strings.Join(entries, ",")+"]"), nil
+			})}}
+			got, err := client.Discover(t.Context(), "example/project")
+			if failure == "" {
+				if err != nil || len(got) != 100 || calls != 2 {
+					t.Fatalf("len=%d calls=%d err=%v", len(got), calls, err)
+				}
+			} else if err == nil || len(got) != 0 {
+				t.Fatalf("len=%d calls=%d err=%v", len(got), calls, err)
+			}
+		})
+	}
+}

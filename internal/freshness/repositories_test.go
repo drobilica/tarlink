@@ -29,6 +29,8 @@ func TestRepositoryPreservesReviewedMappings(t *testing.T) {
 		app        string
 		repository string
 	}{
+		{app: "godot", repository: "godotengine/godot-builds"},
+		{app: "2ship2harkinian", repository: "2ship2harkinian/2ship2harkinian"},
 		{app: "pcsx2", repository: "PCSX2/pcsx2"},
 		{app: "dusklight", repository: "TwilitRealm/dusklight"},
 	} {
