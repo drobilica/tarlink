@@ -20,6 +20,10 @@ platforms. Executables use either shared or explicit per-platform paths.
 `registry check` deliberately uses the application runtime to exercise real
 install/uninstall in a temporary layout. `registry freshness` also uses that
 runtime to resolve the approved host-platform manifest.
+`registry update` uses the core's explicit official-registry refresh, then
+checks all declared application platforms and channels for advisory upstream
+candidates, independent of the host platform. It cannot edit manifests or
+install candidates.
 
 `cli` handles arguments, streams, JSON and exit codes. `tui` handles Bubble Tea
 state and views with Bubbles and Lip Gloss. Both consume the core service and
