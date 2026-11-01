@@ -71,8 +71,14 @@ application:`, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Results) != 5 || calls != 3 || report.SchemaVersion != 1 || report.Revision != catalog.Revision {
+	if len(report.Results) != 5 || calls != 2 || report.SchemaVersion != 1 || report.Revision != catalog.Revision {
 		t.Fatalf("report=%+v calls=%d", report, calls)
+	}
+	if report.Summary.Total != 5 || report.Summary.Candidates != 2 || report.Summary.NoCandidates != 1 || report.Summary.Skipped != 2 || report.Summary.Errors != 0 || report.Summary.SkipReasons["unsupported_provider"] != 1 || report.Summary.SkipReasons["disabled"] != 1 {
+		t.Fatalf("summary=%+v", report.Summary)
+	}
+	if report.Results[0].Detail == "" || report.Results[1].Repository != "godotengine/godot-builds" || report.Results[1].Rule == "" {
+		t.Fatalf("missing source explanations: %+v", report.Results)
 	}
 	want := []string{"foo/linux-amd64/skipped", "godot/linux-arm64/candidates", "tiled/linux-amd64/candidates", "tiled/linux-arm64/no-candidates", "xemu/linux-amd64/skipped"}
 	var got []string
@@ -90,7 +96,7 @@ application:`, 1)
 			t.Fatalf("platform-specific approvals lost: %+v", result)
 		}
 	}
-	if !reflect.DeepEqual(got, want) || report.Results[0].Reason != "no_approved_upstream" || report.Results[4].Reason != "disabled" {
+	if !reflect.DeepEqual(got, want) || report.Results[0].Reason != "unsupported_provider" || report.Results[4].Reason != "disabled" {
 		t.Fatalf("results=%+v want=%v", report.Results, want)
 	}
 	if !reflect.DeepEqual(before, registryEditSnapshot(t, root)) {
@@ -203,10 +209,7 @@ func TestRegistryUpdateOrdersChannelsAndRetainsPartialCandidates(t *testing.T) {
 	calls := 0
 	client := &freshness.Client{HTTP: &http.Client{Transport: maintainerRoundTrip(func(*http.Request) (*http.Response, error) {
 		calls++
-		if calls == 2 {
-			return maintainerResponse(http.StatusForbidden, ""), nil
-		}
-		return maintainerResponse(http.StatusOK, `[{"tag_name":"v3.0.0","prerelease":true}]`), nil
+		return maintainerResponse(http.StatusOK, `[{"tag_name":"v3.0.0","prerelease":true},{"tag_name":"opaque-stable"}]`), nil
 	})}}
 	report, err := checkRegistryUpdates(context.Background(), catalog, client, RegistryUpdateOptions{})
 	if err == nil || len(report.Results) != 1 || report.Results[0].Status != "error" || len(report.Results[0].Candidates) != 1 || report.Results[0].Candidates[0].Channel != "nightly" {

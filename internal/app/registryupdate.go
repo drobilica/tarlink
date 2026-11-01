@@ -32,9 +32,22 @@ type RegistryUpdateReport struct {
 	Revision      string                 `json:"revision"`
 	CheckedAt     time.Time              `json:"checked_at"`
 	Results       []RegistryUpdateResult `json:"results"`
+	Summary       RegistryUpdateSummary  `json:"summary"`
+}
+
+type RegistryUpdateSummary struct {
+	Total        int            `json:"total"`
+	Candidates   int            `json:"candidates"`
+	NoCandidates int            `json:"no_candidates"`
+	Skipped      int            `json:"skipped"`
+	Errors       int            `json:"errors"`
+	SkipReasons  map[string]int `json:"skip_reasons"`
 }
 
 type RegistryUpdateResult struct {
+	Repository string                `json:"repository,omitempty"`
+	Rule       string                `json:"rule,omitempty"`
+	Detail     string                `json:"detail,omitempty"`
 	App        string                `json:"app"`
 	Platform   string                `json:"platform"`
 	Status     string                `json:"status"`
@@ -70,8 +83,25 @@ func (core *Core) UpdateRegistry(ctx context.Context, options RegistryUpdateOpti
 	return checkRegistryUpdates(ctx, catalog, &freshness.Client{HTTP: client}, options)
 }
 
-func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client *freshness.Client, options RegistryUpdateOptions) (RegistryUpdateReport, error) {
-	report := RegistryUpdateReport{SchemaVersion: 1, Revision: catalog.Revision, CheckedAt: catalog.FetchedAt, Results: []RegistryUpdateResult{}}
+func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client *freshness.Client, options RegistryUpdateOptions) (report RegistryUpdateReport, scanErr error) {
+	report = RegistryUpdateReport{SchemaVersion: 1, Revision: catalog.Revision, CheckedAt: catalog.FetchedAt, Results: []RegistryUpdateResult{}}
+	defer func() {
+		report.Summary = RegistryUpdateSummary{Total: len(report.Results), SkipReasons: map[string]int{}}
+		for _, r := range report.Results {
+			switch r.Status {
+			case "candidates":
+				report.Summary.Candidates++
+			case "no-candidates":
+				report.Summary.NoCandidates++
+			case "skipped":
+				report.Summary.Skipped++
+				report.Summary.SkipReasons[r.Reason]++
+			case "error":
+				report.Summary.Errors++
+			}
+		}
+	}()
+	client = client.ForScan()
 	ids := make([]string, 0, len(catalog.Variants))
 	for id := range catalog.Variants {
 		ids = append(ids, id)
@@ -92,14 +122,16 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 			}
 			item := catalog.Variants[id][platform]
 			result := RegistryUpdateResult{App: id, Platform: platform.OS + "-" + platform.Arch, Candidates: []freshness.Candidate{}}
-			repository, ok, err := freshness.Repository(id)
+			decision, err := freshness.Resolve(id, releaseSourceURLs(item))
+			result.Repository, result.Rule, result.Detail = decision.Repository, decision.Rule, decision.Detail
 			switch {
 			case err != nil:
 				return report, err
 			case !item.WantsEnabled():
 				result.Status, result.Reason = "skipped", "disabled"
-			case !ok:
-				result.Status, result.Reason = "skipped", "no_approved_upstream"
+				result.Detail = "This application is disabled in the registry."
+			case decision.Repository == "":
+				result.Status, result.Reason = "skipped", decision.Reason
 			default:
 				result.Status = "no-candidates"
 				approved := make([]freshness.ApprovedRelease, 0, len(item.ReleaseHistory.Releases))
@@ -112,9 +144,14 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 				}
 				sort.Strings(channels)
 				for _, channel := range channels {
-					candidates, err := client.Discover(ctx, freshness.Target{App: id, Repository: repository, Channel: channel, Approved: approved, Current: item.ReleaseHistory.Channels[channel].Current})
+					candidates, err := client.Discover(ctx, freshness.Target{App: id, Repository: decision.Repository, Channel: channel, Approved: approved, Current: item.ReleaseHistory.Channels[channel].Current})
 					if err != nil {
 						result.Status, result.Reason = "error", "lookup_failed"
+						result.Detail = err.Error()
+						var issue *freshness.Issue
+						if errors.As(err, &issue) {
+							result.Reason, result.Detail = issue.Reason, issue.Detail
+						}
 						result.Error = fmt.Sprintf("%s: %v", channel, err)
 						failures = append(failures, fmt.Errorf("%s/%s/%s: %w", id, result.Platform, channel, err))
 						break
@@ -137,4 +174,19 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 		}
 	}
 	return report, errors.Join(failures...)
+}
+
+// Only current channel heads are diagnostic source evidence. Old retained URLs
+// may belong to previous upstream owners and must not create false ambiguity.
+func releaseSourceURLs(item *manifest.Manifest) []string {
+	var urls []string
+	for channel, head := range item.ReleaseHistory.Channels {
+		for _, release := range item.ReleaseHistory.Releases {
+			if release.Channel == channel && release.Version == head.Current {
+				urls = append(urls, release.URL)
+			}
+		}
+	}
+	sort.Strings(urls)
+	return urls
 }

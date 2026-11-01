@@ -28,9 +28,9 @@ func (s *registryUpdateService) UpdateRegistry(_ context.Context, options app.Re
 }
 
 func TestRegistryUpdatePrintsHumanAndJSONReports(t *testing.T) {
-	report := app.RegistryUpdateReport{SchemaVersion: 1, Revision: "snapshot", Results: []app.RegistryUpdateResult{
+	report := app.RegistryUpdateReport{SchemaVersion: 1, Revision: "snapshot", Summary: app.RegistryUpdateSummary{Total: 2, Candidates: 1, Skipped: 1, SkipReasons: map[string]int{"unreviewed_repository": 1}}, Results: []app.RegistryUpdateResult{
 		{App: "godot", Platform: "linux-arm64", Status: "candidates", Candidates: []freshness.Candidate{{App: "godot", Channel: "stable", Version: "2.0", UpstreamURL: "https://github.com/godotengine/godot/releases/tag/2.0"}}},
-		{App: "foo", Platform: "linux-amd64", Status: "skipped", Reason: "no_approved_upstream", Candidates: []freshness.Candidate{}},
+		{App: "foo", Platform: "linux-amd64", Status: "skipped", Reason: "unreviewed_repository", Detail: "GitHub source needs a reviewed rule", Candidates: []freshness.Candidate{}},
 	}}
 	for _, jsonOutput := range []bool{false, true} {
 		service := &registryUpdateService{report: report}
@@ -45,10 +45,10 @@ func TestRegistryUpdatePrintsHumanAndJSONReports(t *testing.T) {
 		}
 		if jsonOutput {
 			var got app.RegistryUpdateReport
-			if err := json.Unmarshal(out.Bytes(), &got); err != nil || len(got.Results) != 2 || got.Revision != "snapshot" {
+			if err := json.Unmarshal(out.Bytes(), &got); err != nil || len(got.Results) != 2 || got.Revision != "snapshot" || got.Summary.Total != 2 || got.Summary.SkipReasons["unreviewed_repository"] != 1 {
 				t.Fatalf("JSON=%s err=%v", out.String(), err)
 			}
-		} else if !strings.Contains(out.String(), "godot linux-arm64: candidates") || !strings.Contains(out.String(), "stable 2.0") || !strings.Contains(out.String(), "skipped (no_approved_upstream)") {
+		} else if !strings.Contains(out.String(), "Results: 2 total, 1 with candidates, 0 without candidates, 1 skipped, 0 errors.") || !strings.Contains(out.String(), "godot linux-arm64: candidates") || !strings.Contains(out.String(), "stable 2.0") || !strings.Contains(out.String(), "skipped (unreviewed_repository): GitHub source needs a reviewed rule") {
 			t.Fatalf("output=%s", out.String())
 		}
 	}

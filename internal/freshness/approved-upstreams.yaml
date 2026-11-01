@@ -1,39 +1,217 @@
-# Reviewed TarLink freshness sources. These repositories are not read from
-# registry metadata because the source selection is part of TarLink's trust
-# policy.
+# Reviewed built-in GitHub release rules. Sources are approved in TarLink,
+# never selected by manifest URLs. Prefixes/suffixes normalize numeric tags only.
 - app: 2ship2harkinian
   repository: 2ship2harkinian/2ship2harkinian
+- app: ace-driver
+  repository: spacestate1/namco22-decompile
+  asset-prefix: AceDriver-
+- app: aerogauge-recompiled
+  repository: alondero/aerogauge-recomp
+- app: armadillo-racing
+  repository: spacestate1/namco22-decompile
+  asset-prefix: ArmadilloRacing-
+- app: banjo-recompiled
+  repository: BanjoRecomp/BanjoRecomp
+- app: battleship
+  repository: JRickey/BattleShip
+- app: besprited
+  repository: veritaware/Besprited
+- app: bloodborne-bbport
+  repository: deadinside28/bloodborne_pc
+- app: bloody-roar-2-recompiled
+  repository: novapowers0/BloodyRoar2Recomp
+- app: bomberman-64-recompiled
+  repository: RevoSucks/BM64Recomp
+- app: bomberman-hero-recompiled
+  repository: RevoSucks/BMHeroRecomp
+- app: celpix
+  repository: YoriKv/celpix
+- app: chaotix-recompiled
+  repository: YuutaTsubasa/ChaotixRecompiled
+- app: clownmaped
+  repository: Clownacy/ClownMapEd
+- app: conker-recompiled
+  repository: sciaschi/CBFD-Recompiled
+  version-prefix: V
+- app: cyber-commando
+  repository: spacestate1/namco22-decompile
+  asset-prefix: CyberCommando-
+- app: cyber-sled
+  repository: spacestate1/namco22-decompile
+  asset-prefix: CyberSled-
 - app: devilutionx
   repository: diasurgical/DevilutionX
+- app: diddy-kong-racing-recompiled
+  repository: ThatGuyMcd/DKR-R
+  version-prefix: Version
+- app: dinosaur-planet-recompiled
+  repository: DinosaurPlanetRecomp/dino-recomp
+- app: dirt-dash
+  repository: spacestate1/namco22-decompile
+  asset-prefix: DirtDash-
+- app: donkey-kong-64-recompiled
+  repository: Rainchus/Donkey-Kong-64-Recompiled
 - app: dosbox-staging
   repository: dosbox-staging/dosbox-staging
 - app: dusklight
   repository: TwilitRealm/dusklight
+- app: earthbound-native
+  repository: seanstaggsQU/EarthboundNativePublic
+- app: f1-race
+  repository: EXL/F1-Race
+- app: fallout-2-community-edition
+  repository: alexbatalov/fallout2-ce
+- app: fallout-community-edition
+  repository: alexbatalov/fallout1-ce
+- app: flare
+  repository: flareteam/flare-game
+- app: furnace
+  repository: tildearrow/furnace
+- app: fzero-snes-recompiled
+  repository: RetroPortingToolKit/FZeroSNESRecomp
+- app: gen1recomp
+  repository: bryanthaboi/gen1recomp
 - app: godot
   repository: godotengine/godot-builds
+  version-suffix: -stable
+- app: goemon64-recomp
+  repository: klorfmorf/Goemon64Recomp
+- app: harvest-moon-64-recompiled
+  repository: HarvestMoon64Recomp/HarvestMoon64Recomp
+- app: heroic-games-launcher
+  repository: Heroic-Games-Launcher/HeroicGamesLauncher
+- app: hybrid-heaven-recompiled
+  repository: ogdanimal/HybridHeaven-Recomp
+- app: jgenesis
+  repository: jsgroth/jgenesis
 - app: k9s
   repository: derailed/k9s
+- app: lost-odyssey-recomp
+  repository: freefrank/LostOdysseyRecomp
 - app: ludusavi
   repository: mtkennerly/ludusavi
+- app: magic-sushi
+  repository: EXL/Magic-Sushi
+- app: material-maker
+  repository: RodZill4/material-maker
+- app: mega-man-64-recompiled
+  repository: MegaMan64Recomp/MegaMan64Recompiled
+- app: mega-man-x-snes-recomp
+  repository: mstan/MegaManXSNESRecomp
+- app: mega-man-x5-recomp
+  repository: mstan/MegaManX5Recomp
 - app: melonds
   repository: melonDS-emu/melonDS
+- app: mother3-recompiled
+  repository: josiahg2502-glitch/Mother3Recomp
+- app: nexen
+  repository: TheAnsarya/Nexen
+- app: nocturne-recomp
+  repository: birabittoh/NocturneRecomp
+- app: ogre-battle-64-recompiled
+  repository: lfarroco/ogre-battle-64-recomp
+- app: openggf
+  repository: OpenGGF/OpenGGF
+- app: openjazz
+  repository: AlisterT/openjazz
+- app: openra-dune-2000
+  repository: OpenRA/OpenRA
+  asset-prefix: OpenRA-Dune-2000-
+- app: openra-red-alert
+  repository: OpenRA/OpenRA
+  asset-prefix: OpenRA-Red-Alert-
+- app: openra-tiberian-dawn
+  repository: OpenRA/OpenRA
+  asset-prefix: OpenRA-Tiberian-Dawn-
 - app: openrct2
   repository: OpenRCT2/OpenRCT2
 - app: openttd
   repository: OpenTTD/OpenTTD
+- app: paperboat
+  repository: HarbourMasters/PaperBoat
 - app: pcsx2
   repository: PCSX2/pcsx2
 - app: pixelorama
   repository: Orama-Interactive/Pixelorama
-- app: prism-launcher
-  repository: PrismLauncher/PrismLauncher
 - app: ppsspp
   repository: hrydgard/ppsspp
+- app: prism-launcher
+  repository: PrismLauncher/PrismLauncher
+- app: project8-recomp
+  repository: theokyr/Project8Recomp
+- app: prop-cycle
+  repository: spacestate1/namco22-decompile
+  asset-prefix: PropCycle-
+- app: pt-pc
+  repository: LoreanXavier/pt-pc
+- app: qualetize-gui
+  repository: ulalume/qualetize_gui
+- app: quiver-launcher
+  repository: tgeorgiadis/quiver-launcher
+- app: r2modman
+  repository: ebkr/r2modmanPlus
+- app: rage-racer-pc
+  repository: khasinski/rage-racer-pc
+- app: rave-racer
+  repository: spacestate1/namco22-decompile
+  asset-prefix: RaveRacer-
+- app: reblue
+  repository: zolaware/reblue
+- app: ruffle
+  repository: ruffle-rs/ruffle
+- app: sega2asm
+  repository: hansbonini/sega2asm
+- app: shantae-recompiled
+  repository: vibecodekun/shantaerecomp
+- app: shipwright
+  repository: HarbourMasters/Shipwright
+- app: snowboard-kids-2-recompiled
+  repository: cdlewis/snowboardkids2-recomp
+- app: sonic-3-recompiled
+  repository: mstan/Sonic3AndKnucklesRecomp
+- app: sssv-recompiled
+  repository: Cellenseres/SSSV_Recomp
+- app: starfox-enhanced
+  repository: kandowontu2/starfox-enhanced
+- app: starship
+  repository: HarbourMasters/Starship
 - app: steam-rom-manager
   repository: SteamGridDB/steam-rom-manager
+- app: street-fighter-alpha-3-recomp
+  repository: TechnicallyComputers/Street-Fighter-Alpha-3-Recomp
+- app: street-fighter-ex2-plus-recomp
+  repository: strider973/Street-Fighter-EX2-Plus-Recompiled
+- app: strider-2-recompiled
+  repository: strider973/STRIDER-2-Recompiled
+- app: super-mario-strikers
+  repository: new-coke/strikers
+- app: super-mario-world-recomp
+  repository: mstan/SuperMarioWorldRecomp
 - app: tiled
   repository: mapeditor/tiled
+- app: time-crisis
+  repository: spacestate1/namco22-decompile
+  asset-prefix: TimeCrisis-
+- app: time-crisis-2
+  repository: spacestate1/namco22-decompile
+  asset-prefix: TimeCrisis2-
+- app: tokyo-wars
+  repository: spacestate1/namco22-decompile
+  asset-prefix: TokyoWars-
+- app: tomba-recompiled
+  repository: mstan/TombaRecomp
+- app: tomba2-recompiled
+  repository: mstan/Tomba2Recomp
 - app: trenchbroom
   repository: TrenchBroom/TrenchBroom
+- app: trx
+  repository: LostArtefacts/TRX
+  version-prefix: trx-
 - app: xemu
   repository: xemu-project/xemu
+- app: xrevive
+  repository: Teraflopping/xrevive
+- app: yu-gi-oh-forbidden-memories-recompiled
+  repository: Unchiga/Yu-Gi-Oh-Forbidden-Memories-Recompiled
+- app: zelda64-recompiled
+  repository: Zelda64Recomp/Zelda64Recomp

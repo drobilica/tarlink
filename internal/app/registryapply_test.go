@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -290,5 +291,72 @@ func TestRegistryApplyGodotStableTags(t *testing.T) {
 	report, err = m.ApplyRegistryUpdates(t.Context(), RegistryApplyOptions{Root: root})
 	if err != nil || report.Results[0].Status != "no-change" {
 		t.Fatalf("repeat=%+v err=%v", report, err)
+	}
+}
+
+func TestRegistryApplySelectsReviewedSharedRepositoryAsset(t *testing.T) {
+	root, m, releases, _ := registryApplyFixture(t)
+	oldPath := filepath.Join(root, "apps", "godot", "manifest.yaml")
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = []byte(strings.ReplaceAll(string(data), "godot", "ace-driver"))
+	if err := os.RemoveAll(filepath.Join(root, "apps", "godot")); err != nil {
+		t.Fatal(err)
+	}
+	writeOnboardingManifest(t, filepath.Join(root, "apps", "ace-driver", "manifest.yaml"), string(data))
+	asset := &(*releases)[0].Assets[0]
+	asset.Name = "AceDriver-x86_64.AppImage"
+	asset.URL = "https://github.com/spacestate1/namco22-decompile/releases/download/v2.0/" + asset.Name
+	other := *asset
+	other.ID++
+	other.Name = "ArmadilloRacing-x86_64.AppImage"
+	other.URL = strings.Replace(asset.URL, asset.Name, other.Name, 1)
+	(*releases)[0].Assets = append((*releases)[0].Assets, other)
+	m.client.HTTP.Transport = maintainerRoundTrip(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "api.github.com" {
+			if r.URL.Path != "/repos/spacestate1/namco22-decompile/releases" {
+				t.Fatal(r.URL)
+			}
+			data, err := json.Marshal(releases)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return maintainerResponse(200, string(data)), nil
+		}
+		if r.URL.String() != (*releases)[0].Assets[0].URL {
+			t.Fatalf("selected another application's artifact: %s", r.URL)
+		}
+		return maintainerResponse(200, string(appImageELF(0x3e))), nil
+	})
+	report, err := m.ApplyRegistryUpdates(t.Context(), RegistryApplyOptions{Root: root, DryRun: true})
+	if err != nil || report.Results[0].Status != "would-update" {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+	// Two matching assets must still fail closed rather than pick the first.
+	duplicate := (*releases)[0].Assets[0]
+	duplicate.ID += 2
+	duplicate.Name = "AceDriver-other-x86_64.AppImage"
+	duplicate.URL = strings.Replace(duplicate.URL, "AceDriver-x86_64.AppImage", duplicate.Name, 1)
+	(*releases)[0].Assets = append((*releases)[0].Assets, duplicate)
+	report, err = m.ApplyRegistryUpdates(t.Context(), RegistryApplyOptions{Root: root, DryRun: true})
+	if err == nil || report.Results[0].Reason != "ambiguous_platform_asset" || report.Results[0].Detail == "" {
+		t.Fatalf("report=%+v err=%v", report, err)
+	}
+}
+
+func TestRegistryUpdateAssetPlatformRequiresArchitecture(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{"AceDriver-x86_64.AppImage", "linux-amd64"},
+		{"demo-aarch64.appimage", "linux-arm64"},
+		{"demo.AppImage", ""},
+		{"demo-x86_64-arm64.AppImage", ""},
+		{"demo-x64.zip", ""},
+		{"demo-linux-arm64.tar.gz", "linux-arm64"},
+	} {
+		if got := registryUpdateAssetPlatform(tc.name); got != tc.want {
+			t.Fatalf("%s = %s", tc.name, got)
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -35,11 +36,13 @@ type RegistryApplyReport struct {
 	Results       []RegistryApplyResult `json:"results"`
 }
 type RegistryApplyResult struct {
-	App      string              `json:"app"`
-	Status   string              `json:"status"`
-	Reason   string              `json:"reason,omitempty"`
-	Versions []string            `json:"versions,omitempty"`
-	Edit     *RegistryEditReport `json:"edit,omitempty"`
+	App        string              `json:"app"`
+	Status     string              `json:"status"`
+	Detail     string              `json:"detail,omitempty"`
+	Repository string              `json:"repository,omitempty"`
+	Reason     string              `json:"reason,omitempty"`
+	Versions   []string            `json:"versions,omitempty"`
+	Edit       *RegistryEditReport `json:"edit,omitempty"`
 }
 
 func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryApplyOptions) (RegistryApplyReport, error) {
@@ -71,7 +74,9 @@ func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryA
 	if httpClient.Timeout <= 0 || httpClient.Timeout > 30*time.Second {
 		httpClient.Timeout = 30 * time.Second
 	}
-	client := &research.Client{Refresh: true, CacheRoot: cache, HTTP: httpClient}
+	// This private cache starts empty for every apply and avoids repeated lookups
+	// for shared repositories without reusing metadata from earlier invocations.
+	client := &research.Client{CacheRoot: cache, HTTP: httpClient}
 	ids := make([]string, 0, len(catalog.Variants))
 	for id := range catalog.Variants {
 		ids = append(ids, id)
@@ -83,12 +88,25 @@ func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryA
 			return report, errors.Join(append(failures, err)...)
 		}
 		result := RegistryApplyResult{App: id, Status: "no-change"}
-		repository, approved, err := freshness.Repository(id)
+		var urls []string
+		enabled := false
+		for _, item := range catalog.Variants[id] {
+			urls = append(urls, releaseSourceURLs(item)...)
+			enabled = enabled || item.WantsEnabled()
+		}
+		if !enabled {
+			result.Status, result.Reason, result.Detail = "skipped", "disabled", "This application is disabled in the registry."
+			report.Results = append(report.Results, result)
+			continue
+		}
+		decision, err := freshness.Resolve(id, urls)
+		repository := decision.Repository
+		result.Repository = repository
 		if err != nil {
 			return report, err
 		}
-		if !approved {
-			result.Status, result.Reason = "skipped", "no_approved_upstream"
+		if repository == "" {
+			result.Status, result.Reason, result.Detail = "skipped", decision.Reason, decision.Detail
 			report.Results = append(report.Results, result)
 			continue
 		}
@@ -114,7 +132,11 @@ func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryA
 			}
 		}
 		if err != nil {
-			result.Status, result.Reason = "error", err.Error()
+			result.Status, result.Reason, result.Detail = "error", "apply_failed", err.Error()
+			var issue *freshness.Issue
+			if errors.As(err, &issue) {
+				result.Reason, result.Detail = issue.Reason, issue.Detail
+			}
 			failures = append(failures, fmt.Errorf("%s: %w", id, err))
 		}
 		report.Results = append(report.Results, result)
@@ -211,12 +233,16 @@ func prepareRegistryUpdate(ctx context.Context, client *research.Client, reposit
 			}
 			var assets []research.Asset
 			for _, asset := range latest.Assets {
-				if research.InferPlatform(asset.Name) == platform && registryAssetFormat(asset.Name) == format {
+				if freshness.MatchesAsset(document.ID, asset.Name) && registryUpdateAssetPlatform(asset.Name) == platform && registryAssetFormat(asset.Name) == format {
 					assets = append(assets, asset)
 				}
 			}
 			if len(assets) != 1 {
-				return nil, nil, fmt.Errorf("%s/%s: expected one %s asset, found %d; manual review required", channel, platform, format, len(assets))
+				reason := "ambiguous_platform_asset"
+				if len(assets) == 0 {
+					reason = "missing_platform_asset"
+				}
+				return nil, nil, &freshness.Issue{Reason: reason, Detail: fmt.Sprintf("%s/%s: expected one %s asset for %s, found %d; review upstream asset names and the built-in rule", channel, platform, format, document.ID, len(assets))}
 			}
 			asset := assets[0]
 			// Only exact assets under the reviewed upstream repository are eligible.
@@ -227,13 +253,13 @@ func prepareRegistryUpdate(ctx context.Context, client *research.Client, reposit
 			provenance := research.EvaluateProvenance(latest.Repository, *latest, asset)
 			var inspection research.Inspection
 			if provenance.Verdict == research.Acceptable {
-				inspection, err = client.InspectAsset(ctx, asset, provenance, archive.Format(format), research.TargetArchitecture(asset.Name))
+				inspection, err = client.InspectAsset(ctx, asset, provenance, archive.Format(format), strings.TrimPrefix(platform, "linux-"))
 			} else if provenance.ReasonCode == "NO_AUTHORITATIVE_DIGEST" {
 				artifact, fetchErr := client.FetchUnverified(ctx, asset)
 				if fetchErr != nil {
 					return nil, nil, fetchErr
 				}
-				inspection, err = research.Inspect(ctx, artifact, archive.Format(format), research.TargetArchitecture(asset.Name))
+				inspection, err = research.Inspect(ctx, artifact, archive.Format(format), strings.TrimPrefix(platform, "linux-"))
 				_ = artifact.Cleanup()
 			} else {
 				return nil, nil, errors.New(provenance.Message)
@@ -330,3 +356,22 @@ func registryAssetFormat(name string) string {
 	}
 	return ""
 }
+
+// AppImage is a Linux format. Its name must still explicitly identify the
+// architecture; neither a generic name nor the host platform supplies one.
+func registryUpdateAssetPlatform(name string) string {
+	if registryAssetFormat(name) == "appimage" {
+		amd64, arm64 := registryAppImageAMD64.MatchString(name), registryAppImageARM64.MatchString(name)
+		if amd64 && !arm64 {
+			return "linux-amd64"
+		}
+		if arm64 && !amd64 {
+			return "linux-arm64"
+		}
+		return ""
+	}
+	return research.InferPlatform(name)
+}
+
+var registryAppImageAMD64 = regexp.MustCompile(`(?i)(^|[^a-z0-9])(x86[-_]64|amd64|x64)([^a-z0-9]|$)`)
+var registryAppImageARM64 = regexp.MustCompile(`(?i)(^|[^a-z0-9])(aarch64|arm64)([^a-z0-9]|$)`)

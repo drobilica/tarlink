@@ -14,18 +14,19 @@ import (
 var approvedUpstreamsYAML []byte
 
 var (
-	approvedRepositories, approvedRepositoriesErr = LoadRepositories(approvedUpstreamsYAML)
+	approvedRules, approvedRepositoriesErr = LoadRules(approvedUpstreamsYAML)
 )
 
 type approvedUpstream struct {
-	App        string `yaml:"app"`
-	Repository string `yaml:"repository"`
+	App           string `yaml:"app"`
+	Repository    string `yaml:"repository"`
+	VersionPrefix string `yaml:"version-prefix"`
+	VersionSuffix string `yaml:"version-suffix"`
+	AssetPrefix   string `yaml:"asset-prefix"`
 }
 
-// LoadRepositories validates the reviewed freshness source list. The input is
-// kept as a function parameter so malformed maintainer data is testable without
-// changing the compiled source list.
-func LoadRepositories(data []byte) (map[string]string, error) {
+// LoadRules validates the compiled provider, version and asset rules.
+func LoadRules(data []byte) (map[string]approvedUpstream, error) {
 	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
 	decoder.KnownFields(true)
 	var entries []approvedUpstream
@@ -42,7 +43,7 @@ func LoadRepositories(data []byte) (map[string]string, error) {
 	if len(entries) == 0 {
 		return nil, errors.New("approved freshness sources are empty")
 	}
-	result := make(map[string]string, len(entries))
+	result := make(map[string]approvedUpstream, len(entries))
 	for _, entry := range entries {
 		if err := validateRepositoryApp(entry.App); err != nil {
 			return nil, err
@@ -53,7 +54,17 @@ func LoadRepositories(data []byte) (map[string]string, error) {
 		if _, exists := result[entry.App]; exists {
 			return nil, fmt.Errorf("duplicate approved freshness mapping for %q", entry.App)
 		}
-		result[entry.App] = entry.Repository
+		for _, value := range []string{entry.VersionPrefix, entry.VersionSuffix, entry.AssetPrefix} {
+			if len(value) > 80 || strings.ContainsAny(value, "/\\\n\r\t ") {
+				return nil, fmt.Errorf("invalid discovery rule for %q", entry.App)
+			}
+		}
+		for _, other := range result {
+			if other.Repository == entry.Repository && (other.VersionPrefix != entry.VersionPrefix || other.VersionSuffix != entry.VersionSuffix) {
+				return nil, fmt.Errorf("conflicting version rules for %q", entry.Repository)
+			}
+		}
+		result[entry.App] = entry
 	}
 	return result, nil
 }
@@ -63,8 +74,8 @@ func Repository(appID string) (string, bool, error) {
 	if approvedRepositoriesErr != nil {
 		return "", false, approvedRepositoriesErr
 	}
-	repository, ok := approvedRepositories[appID]
-	return repository, ok, nil
+	rule, ok := approvedRules[appID]
+	return rule.Repository, ok, nil
 }
 
 func validateRepositoryApp(appID string) error {

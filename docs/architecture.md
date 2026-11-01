@@ -22,7 +22,12 @@ install/uninstall in a temporary layout. `registry freshness` also uses that
 runtime to resolve the approved host-platform manifest.
 `registry update` uses the core's explicit official-registry refresh, then
 checks all declared application platforms and channels for advisory upstream
-candidates newer than each current channel head, independent of the host platform.
+candidates newer than each current channel head, independent of the host
+platform. Discovery uses compiled reviewed
+repository/version/asset rules. Current artifact URLs only explain uncovered
+sources; they cannot select a network destination. Each scan reuses repository
+metadata across platforms and channels and reports actionable reasons plus a
+status tally.
 Its `--apply --registry <path>` mode uses the maintainer graph to prepare only the
 newest missing release per channel in an explicit local checkout, with the same
 artifact inspection and locked atomic publication boundaries as other maintainer
