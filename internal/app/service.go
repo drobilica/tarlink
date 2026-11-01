@@ -385,7 +385,7 @@ func (core *Core) CheckTarLinkVersionFresh(ctx context.Context) (TarLinkVersion,
 
 func (core *Core) UpgradeTarLink(ctx context.Context, sink ProgressSink) (TarLinkVersion, error) {
 	if core.offline() {
-		return TarLinkVersion{}, classify("self-update", download.ErrOffline)
+		return TarLinkVersion{}, classify("update", download.ErrOffline)
 	}
 	var value upgrade.Version
 	err := core.installer.WithLifecycle(ctx, func() error {

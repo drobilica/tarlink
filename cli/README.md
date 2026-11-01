@@ -24,7 +24,7 @@ Generated from Cobra. Regenerate with `./scripts/update-cli-readme.sh`.
     - `tarlink registry freshness <app> [flags]` — Inspect upstream release freshness
     - `tarlink registry icons <path> [flags]` — Audit registry desktop icons
     - `tarlink registry inspect <target> [flags]` — Inspect an upstream artifact
-    - `tarlink registry update [flags]` — Check all registry applications for upstream releases
+    - `tarlink registry update [flags]` — Check for newer upstream releases or apply local registry updates
     - `tarlink registry validate <path>` — Validate a registry tree
   - `tarlink repair <app>` — Restore an exact installed package and missing integration
   - `tarlink repository` — Manage static artifact repositories
@@ -37,10 +37,9 @@ Generated from Cobra. Regenerate with `./scripts/update-cli-readme.sh`.
     - `tarlink repository verify PATH [flags]` — Verify repository metadata and artifact digests
   - `tarlink rollback <app>` — Roll back an application
   - `tarlink search <query> [flags]` — Search applications
-  - `tarlink self-update` — Update TarLink itself
   - `tarlink uninstall <app>... [flags]` — Uninstall applications
   - `tarlink unpin <app>` — Unpin an installed application
-  - `tarlink update <app> [flags]` — Update applications
+  - `tarlink update [app] [flags]` — Update TarLink itself or installed applications
   - `tarlink verify [app] [flags]` — Compare installed payloads with local integrity baselines
   - `tarlink version` — Show TarLink version
   - `tarlink versions <app> [flags]` — Show application versions

@@ -22,8 +22,12 @@ install/uninstall in a temporary layout. `registry freshness` also uses that
 runtime to resolve the approved host-platform manifest.
 `registry update` uses the core's explicit official-registry refresh, then
 checks all declared application platforms and channels for advisory upstream
-candidates, independent of the host platform. It cannot edit manifests or
-install candidates.
+candidates newer than each current channel head, independent of the host platform.
+Its `--apply --registry <path>` mode uses the maintainer graph to prepare only the
+newest missing release per channel in an explicit local checkout, with the same
+artifact inspection and locked atomic publication boundaries as other maintainer
+edits. `--dry-run` validates proposed changes without editing that tree. Neither
+mode installs candidates or publishes registry metadata.
 
 `cli` handles arguments, streams, JSON and exit codes. `tui` handles Bubble Tea
 state and views with Bubbles and Lip Gloss. Both consume the core service and

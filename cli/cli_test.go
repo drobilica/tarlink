@@ -637,11 +637,11 @@ func TestVersionNoticeIsNotEmittedDuringCommands(t *testing.T) {
 	}
 }
 
-func TestSelfUpdateCommandDelegatesAndReportsCurrent(t *testing.T) {
+func TestUpdateCommandDelegatesAndReportsCurrent(t *testing.T) {
 	var out bytes.Buffer
 	service := &fakeService{upgradeValue: app.TarLinkVersion{Current: "0.5.0", Latest: "0.5.0"}}
-	if code := (Runner{Service: service, Stdout: &out, Stderr: &bytes.Buffer{}}).Run(context.Background(), []string{"self-update"}); code != 0 || out.String() != "TarLink 0.5.0 is already up to date.\n" {
-		t.Fatalf("self-update output: code=%d output=%q", code, out.String())
+	if code := (Runner{Service: service, Stdout: &out, Stderr: &bytes.Buffer{}}).Run(context.Background(), []string{"update"}); code != 0 || out.String() != "TarLink 0.5.0 is already up to date.\n" {
+		t.Fatalf("update output: code=%d output=%q", code, out.String())
 	}
 }
 
@@ -1050,5 +1050,11 @@ func TestMetaCommandClassifier(t *testing.T) {
 		if MetaCommand(arguments) {
 			t.Fatalf("arguments %v should not be meta command", arguments)
 		}
+	}
+}
+
+func TestOldSelfUpdateCommandIsRemoved(t *testing.T) {
+	if code := (Runner{Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), []string{"self-update"}); code != exitInvalidArguments {
+		t.Fatalf("removed command exit=%d", code)
 	}
 }

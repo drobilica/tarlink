@@ -24,11 +24,13 @@ type RegistryEditingService interface {
 }
 
 type RegistryEditOptions struct {
-	Root    string
-	Add     []byte
-	ID      string
-	Enabled *bool
-	DryRun  bool
+	Root     string
+	Add      []byte
+	Update   []byte
+	Expected []byte
+	ID       string
+	Enabled  *bool
+	DryRun   bool
 }
 
 type RegistryEditReport struct {
@@ -48,8 +50,14 @@ func (m *Maintainer) EditRegistry(ctx context.Context, options RegistryEditOptio
 
 func editRegistry(ctx context.Context, options RegistryEditOptions, syncDirectory func(string) error) (RegistryEditReport, error) {
 	report := RegistryEditReport{SchemaVersion: 1, DryRun: options.DryRun}
-	if options.Root == "" || (len(options.Add) != 0) == (options.Enabled != nil) || len(options.Add) != 0 && options.ID != "" {
-		return report, &Error{Code: CodeInvalidArguments, Err: errors.New("select a registry and exactly one addition or enabled-state change")}
+	actions := 0
+	for _, selected := range []bool{len(options.Add) != 0, len(options.Update) != 0, options.Enabled != nil} {
+		if selected {
+			actions++
+		}
+	}
+	if options.Root == "" || actions != 1 || len(options.Add) != 0 && options.ID != "" {
+		return report, &Error{Code: CodeInvalidArguments, Err: errors.New("select a registry and exactly one addition, update, or enabled-state change")}
 	}
 	root, err := filepath.Abs(options.Root)
 	if err != nil {
@@ -77,6 +85,25 @@ func editRegistry(ctx context.Context, options RegistryEditOptions, syncDirector
 		report.ID, report.Action, updated = document.ID, "add", options.Add
 		if _, exists := catalog.Variants[report.ID]; exists {
 			return report, &Error{Code: CodeConflict, Err: fmt.Errorf("application %q already exists; additions never overwrite manifests", report.ID)}
+		}
+	} else if len(options.Update) != 0 {
+		document, err := manifest.ParseBytes(options.Update)
+		if err != nil {
+			return report, err
+		}
+		report.ID, report.Action, updated = document.ID, "update", options.Update
+		if options.ID != report.ID {
+			return report, errors.New("update application ID mismatch")
+		}
+		if _, exists := catalog.Variants[report.ID]; !exists {
+			return report, errors.New("application is not in registry")
+		}
+		previous, err = readRegistryManifest(filepath.Join(root, "apps", report.ID, "manifest.yaml"))
+		if err != nil {
+			return report, err
+		}
+		if !bytes.Equal(previous, options.Expected) {
+			return report, errors.New("manifest changed while preparing update")
 		}
 	} else {
 		if !manifest.ValidID(options.ID) {

@@ -31,6 +31,7 @@ type Target struct {
 	Repository string
 	Channel    string
 	Approved   []ApprovedRelease
+	Current    string
 }
 
 // ApprovedRelease is intentionally only a version/channel pair. Artifact
@@ -122,6 +123,13 @@ func (c *Client) Discover(ctx context.Context, target Target) ([]Candidate, erro
 	if err := json.Unmarshal(data, &releases); err != nil {
 		return nil, fmt.Errorf("decode GitHub releases: %w", err)
 	}
+	var currentPublished time.Time
+	for _, release := range releases {
+		if !release.Draft && (target.Channel == "stable") != release.Prerelease && canonicalTagVersion(release.TagName) == canonicalTagVersion(target.Current) {
+			currentPublished = release.PublishedAt
+			break
+		}
+	}
 	result := make([]Candidate, 0)
 	for _, release := range releases {
 		// Drafts have not been published and are never useful candidates.
@@ -141,6 +149,15 @@ func (c *Client) Discover(ctx context.Context, target Target) ([]Candidate, erro
 		version := canonicalTagVersion(release.TagName)
 		if approved[release.TagName] || approved[version] {
 			continue
+		}
+		if target.Current != "" {
+			newer, err := IsNewerRelease(version, target.Current, release.PublishedAt, currentPublished)
+			if err != nil {
+				return nil, err
+			}
+			if !newer {
+				continue
+			}
 		}
 		result = append(result, Candidate{App: target.App, Repository: target.Repository, Channel: target.Channel, Version: version, UpstreamURL: release.HTMLURL, PublishedAt: release.PublishedAt, Prerelease: release.Prerelease})
 	}

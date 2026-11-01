@@ -15,13 +15,15 @@ import (
 
 type registryUpdateService struct {
 	fakeService
-	report app.RegistryUpdateReport
-	err    error
-	calls  int
+	report  app.RegistryUpdateReport
+	err     error
+	calls   int
+	options app.RegistryUpdateOptions
 }
 
-func (s *registryUpdateService) UpdateRegistry(context.Context, app.ProgressSink) (app.RegistryUpdateReport, error) {
+func (s *registryUpdateService) UpdateRegistry(_ context.Context, options app.RegistryUpdateOptions, _ app.ProgressSink) (app.RegistryUpdateReport, error) {
 	s.calls++
+	s.options = options
 	return s.report, s.err
 }
 
@@ -73,7 +75,7 @@ func TestRegistryUpdatePreservesPartialReportAndFails(t *testing.T) {
 }
 
 func TestRegistryUpdateRejectsArgumentsAndOfflineBeforeScanning(t *testing.T) {
-	for _, args := range [][]string{{"registry", "update", "godot"}, {"registry", "update", "--unknown"}, {"registry", "update", "--offline"}} {
+	for _, args := range [][]string{{"registry", "update", "godot"}, {"registry", "update", "--unknown"}, {"registry", "update", "--offline"}, {"registry", "update", "-n", "0"}, {"registry", "update", "-n", "-1"}, {"registry", "update", "-n", "bad"}} {
 		service := &registryUpdateService{}
 		code := (Runner{Service: service, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), args)
 		if code != exitInvalidArguments || service.calls != 0 {
@@ -82,5 +84,68 @@ func TestRegistryUpdateRejectsArgumentsAndOfflineBeforeScanning(t *testing.T) {
 	}
 	if RegistryMaintainerCommand([]string{"registry", "update"}) {
 		t.Fatal("registry update needs the official registry sync service")
+	}
+}
+
+func TestRegistryUpdatePassesLimitForTextAndJSON(t *testing.T) {
+	for _, args := range [][]string{{"registry", "update", "-n", "5"}, {"registry", "update", "--number", "5", "--json"}} {
+		service := &registryUpdateService{}
+		code := (Runner{Service: service, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), args)
+		if code != 0 || service.calls != 1 || service.options.Limit != 5 {
+			t.Fatalf("args=%v code=%d options=%+v calls=%d", args, code, service.options, service.calls)
+		}
+	}
+}
+
+type registryApplyFake struct {
+	options app.RegistryApplyOptions
+	calls   int
+	err     error
+}
+
+func (s *registryApplyFake) ApplyRegistryUpdates(_ context.Context, options app.RegistryApplyOptions) (app.RegistryApplyReport, error) {
+	s.options = options
+	s.calls++
+	return app.RegistryApplyReport{SchemaVersion: 1, DryRun: options.DryRun, Results: []app.RegistryApplyResult{{App: "godot", Status: "would-update", Versions: []string{"stable:2.0"}}}}, s.err
+}
+func TestRegistryApplyCLI(t *testing.T) {
+	for _, jsonOutput := range []bool{false, true} {
+		service := &registryApplyFake{}
+		var out bytes.Buffer
+		args := []string{"registry", "update", "--apply", "--registry", "/checkout", "--dry-run"}
+		if jsonOutput {
+			args = append(args, "--json")
+		}
+		if !RegistryMaintainerCommand(args) {
+			t.Fatal("local apply constructed runtime")
+		}
+		code := (Runner{Registry: RegistryTools{Apply: service}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), args)
+		if code != 0 || service.calls != 1 || service.options.Root != "/checkout" || !service.options.DryRun {
+			t.Fatalf("code=%d service=%+v", code, service)
+		}
+		if jsonOutput && !json.Valid(out.Bytes()) {
+			t.Fatalf("JSON=%s", out.String())
+		}
+		if !strings.Contains(out.String(), "would-update") {
+			t.Fatalf("output=%s", out.String())
+		}
+	}
+	for _, args := range [][]string{
+		{"registry", "update", "--apply"}, {"registry", "update", "--dry-run"}, {"registry", "update", "--registry", "/checkout"},
+		{"registry", "update", "--apply", "--registry", "/checkout", "-n", "5"}, {"registry", "update", "--apply", "--registry", "/checkout", "--offline"},
+	} {
+		service := &registryApplyFake{}
+		code := (Runner{Registry: RegistryTools{Apply: service}, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), args)
+		if code != exitInvalidArguments || service.calls != 0 {
+			t.Fatalf("args=%v code=%d calls=%d", args, code, service.calls)
+		}
+	}
+}
+func TestRegistryApplyCLIReturnsPartialFailure(t *testing.T) {
+	service := &registryApplyFake{err: errors.New("failed artifact")}
+	var out bytes.Buffer
+	code := (Runner{Registry: RegistryTools{Apply: service}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "update", "--apply", "--registry", "/checkout", "--json"})
+	if code == 0 || !json.Valid(out.Bytes()) {
+		t.Fatalf("code=%d output=%s", code, out.String())
 	}
 }

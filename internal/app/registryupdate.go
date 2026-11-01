@@ -18,7 +18,13 @@ import (
 // RegistryUpdateService checks the complete official catalog for advisory
 // upstream candidates. It never edits manifests or changes application state.
 type RegistryUpdateService interface {
-	UpdateRegistry(context.Context, ProgressSink) (RegistryUpdateReport, error)
+	UpdateRegistry(context.Context, RegistryUpdateOptions, ProgressSink) (RegistryUpdateReport, error)
+}
+
+// RegistryUpdateOptions controls the advisory report, never registry contents.
+type RegistryUpdateOptions struct {
+	// Limit caps missing releases per app/platform across channels; zero means all.
+	Limit int
 }
 
 type RegistryUpdateReport struct {
@@ -37,8 +43,11 @@ type RegistryUpdateResult struct {
 	Candidates []freshness.Candidate `json:"candidates"`
 }
 
-func (core *Core) UpdateRegistry(ctx context.Context, sink ProgressSink) (RegistryUpdateReport, error) {
+func (core *Core) UpdateRegistry(ctx context.Context, options RegistryUpdateOptions, sink ProgressSink) (RegistryUpdateReport, error) {
 	report := RegistryUpdateReport{SchemaVersion: 1, Results: []RegistryUpdateResult{}}
+	if options.Limit < 0 {
+		return report, errors.New("registry update limit must not be negative")
+	}
 	if core.offline() {
 		return report, download.ErrOffline
 	}
@@ -58,10 +67,10 @@ func (core *Core) UpdateRegistry(ctx context.Context, sink ProgressSink) (Regist
 	}
 	client.Timeout = 30 * time.Second
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return checkRegistryUpdates(ctx, catalog, &freshness.Client{HTTP: client})
+	return checkRegistryUpdates(ctx, catalog, &freshness.Client{HTTP: client}, options)
 }
 
-func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client *freshness.Client) (RegistryUpdateReport, error) {
+func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client *freshness.Client, options RegistryUpdateOptions) (RegistryUpdateReport, error) {
 	report := RegistryUpdateReport{SchemaVersion: 1, Revision: catalog.Revision, CheckedAt: catalog.FetchedAt, Results: []RegistryUpdateResult{}}
 	ids := make([]string, 0, len(catalog.Variants))
 	for id := range catalog.Variants {
@@ -103,7 +112,7 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 				}
 				sort.Strings(channels)
 				for _, channel := range channels {
-					candidates, err := client.Discover(ctx, freshness.Target{App: id, Repository: repository, Channel: channel, Approved: approved})
+					candidates, err := client.Discover(ctx, freshness.Target{App: id, Repository: repository, Channel: channel, Approved: approved, Current: item.ReleaseHistory.Channels[channel].Current})
 					if err != nil {
 						result.Status, result.Reason = "error", "lookup_failed"
 						result.Error = fmt.Sprintf("%s: %v", channel, err)
@@ -111,6 +120,14 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 						break
 					}
 					result.Candidates = append(result.Candidates, candidates...)
+				}
+				// Stable sorting preserves discovery order when publication times tie
+				// or are absent. Version strings need not be semantic versions.
+				sort.SliceStable(result.Candidates, func(i, j int) bool {
+					return result.Candidates[i].PublishedAt.After(result.Candidates[j].PublishedAt)
+				})
+				if options.Limit > 0 && len(result.Candidates) > options.Limit {
+					result.Candidates = result.Candidates[:options.Limit]
 				}
 				if result.Status != "error" && len(result.Candidates) > 0 {
 					result.Status = "candidates"

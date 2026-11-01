@@ -47,7 +47,7 @@ func TestOfflineFlagConfiguresInstallAndRepairBeforeServiceCalls(t *testing.T) {
 }
 
 func TestOfflineUnsupportedCommandsCannotStartServicesOrTUI(t *testing.T) {
-	for _, args := range [][]string{{"--offline"}, {"--offline", "refresh"}, {"self-update", "--offline"}, {"--offline", "update", "--all"}, {"--offline", "registry", "inspect", "owner/repository"}, {"registry", "candidates", "discover", "--catalog", "quiver:/catalog", "--registry", "/registry", "--offline"}, {"--offline", "repository", "sync", "/repository"}} {
+	for _, args := range [][]string{{"--offline"}, {"--offline", "refresh"}, {"update", "--offline"}, {"--offline", "update", "--all"}, {"--offline", "registry", "inspect", "owner/repository"}, {"registry", "candidates", "discover", "--catalog", "quiver:/catalog", "--registry", "/registry", "--offline"}, {"--offline", "repository", "sync", "/repository"}} {
 		service := &offlineFakeService{}
 		launched := false
 		runner := Runner{Service: service, Stdout: io.Discard, Stderr: io.Discard, LaunchTUI: func(context.Context, app.Service, io.Writer, io.Writer) error { launched = true; return nil }}
