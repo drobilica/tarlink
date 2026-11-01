@@ -35,7 +35,7 @@ Discover applications:
 Manage applications:
   install      Install one or more applications
   lock         Write an installed-state lock snapshot
-  update       Update one or all installed applications
+  update       Update TarLink itself, one application, or all installed applications
   rollback     Roll back an application
   uninstall    Uninstall one or more applications
 
@@ -51,7 +51,6 @@ Maintenance:
   verify       Compare installed payloads with local integrity baselines
   doctor       Audit TarLink-managed state
   repair       Restore an exact installed package and missing integration
-  self-update  Update TarLink itself
   version      Show TarLink version (-v, --version)
   completion   Generate a Bash, Zsh, Fish, or PowerShell completion script
 
@@ -68,7 +67,7 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry validate <path>
   tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]
   tarlink registry freshness <app> [--json]
-  tarlink registry update [--json]
+  tarlink registry update [-n <count>] [--json] | tarlink registry update --apply --registry <path> [--dry-run] [--json]
   tarlink registry inspect <owner/repo | release-asset-url | https-artifact-url | manifest.yaml | directory> [--json] [--refresh]
   tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path> | --registry <path>] [--executable <path>] [--icon <path> | --no-icon]
   tarlink registry enable <app> --registry <path> [--dry-run] [--json]
@@ -122,6 +121,13 @@ func configureCommand(command *cobra.Command, usage string) {
 func RegistryMaintainerCommand(arguments []string) bool {
 	if len(arguments) < 2 || arguments[0] != "registry" {
 		return false
+	}
+	if arguments[1] == "update" {
+		for _, argument := range arguments[2:] {
+			if argument == "--apply" || strings.HasPrefix(argument, "--apply=") || argument == "--dry-run" || strings.HasPrefix(argument, "--dry-run=") || argument == "--registry" || strings.HasPrefix(argument, "--registry=") {
+				return true
+			}
+		}
 	}
 	switch arguments[1] {
 	case "validate", "inspect", "add", "enable", "disable", "candidates", "blockers", "icons":
@@ -231,7 +237,7 @@ func (r Runner) rootCommand(progress *progressRenderer, tuiStdout, tuiStderr io.
 	root.AddCommand(
 		r.versionCommand(), r.completionCommand(), r.refreshCommand(progress), r.searchCommand(), r.installCommand(progress),
 		r.lockCommand(), r.updateCommand(progress), r.repairCommand(progress), r.pinCommand(true), r.pinCommand(false),
-		r.selfUpdateCommand(progress), r.doctorCommand(), r.verifyCommand(), r.listCommand(), r.installedCommand(),
+		r.doctorCommand(), r.verifyCommand(), r.listCommand(), r.installedCommand(),
 		r.infoCommand(), r.versionsCommand(), r.rollbackCommand(progress), r.uninstallCommand(progress),
 		r.registryCommand(), r.repositoryCommand(),
 	)
@@ -638,9 +644,9 @@ func (r Runner) lockCommand() *cobra.Command {
 }
 
 func (r Runner) updateCommand(progress *progressRenderer) *cobra.Command {
-	usage := "usage: tarlink update <app> [--dry-run [--json]] | tarlink update --all [--dry-run [--json]]"
+	usage := "usage: tarlink update | tarlink update <app> [--dry-run [--json]] | tarlink update --all [--dry-run [--json]]"
 	var all, dryRun, jsonOutput bool
-	command := &cobra.Command{Use: "update <app>", Short: "Update applications", Args: func(_ *cobra.Command, args []string) error {
+	command := &cobra.Command{Use: "update [app]", Short: "Update TarLink itself or installed applications", Args: func(_ *cobra.Command, args []string) error {
 		if jsonOutput && !dryRun {
 			return invalidCommand(usage)
 		}
@@ -650,11 +656,17 @@ func (r Runner) updateCommand(progress *progressRenderer) *cobra.Command {
 			}
 			return nil
 		}
+		if len(args) == 0 && !dryRun && !jsonOutput {
+			return nil
+		}
 		return exactArgs(1, usage)(nil, args)
 	}, RunE: func(command *cobra.Command, args []string) error {
 		service, err := r.requireService()
 		if err != nil {
 			return err
+		}
+		if !all && len(args) == 0 {
+			return r.upgradeTarLink(command.Context(), service, progress)
 		}
 		if dryRun {
 			planner, ok := service.(app.UpdatePlanService)
@@ -747,26 +759,17 @@ func (r Runner) pinCommand(pin bool) *cobra.Command {
 	return command
 }
 
-func (r Runner) selfUpdateCommand(progress *progressRenderer) *cobra.Command {
-	usage := "usage: tarlink self-update"
-	command := &cobra.Command{Use: "self-update", Short: "Update TarLink itself", Args: noArgs(usage), RunE: func(command *cobra.Command, _ []string) error {
-		service, err := r.requireService()
-		if err != nil {
-			return err
-		}
-		value, err := service.UpgradeTarLink(command.Context(), progress.report)
-		if err != nil {
-			return err
-		}
-		if !value.UpgradeAvailable {
-			_, err = fmt.Fprintf(r.Stdout, "TarLink %s is already up to date.\n", value.Current)
-		} else {
-			_, err = fmt.Fprintf(r.Stdout, "TarLink %s → %s\nTarLink upgraded to %s\n", value.Current, value.Latest, value.Latest)
-		}
+func (r Runner) upgradeTarLink(ctx context.Context, service app.Service, progress *progressRenderer) error {
+	value, err := service.UpgradeTarLink(ctx, progress.report)
+	if err != nil {
 		return err
-	}}
-	configureCommand(command, usage)
-	return command
+	}
+	if !value.UpgradeAvailable {
+		_, err = fmt.Fprintf(r.Stdout, "TarLink %s is already up to date.\n", value.Current)
+	} else {
+		_, err = fmt.Fprintf(r.Stdout, "TarLink %s → %s\nTarLink upgraded to %s\n", value.Current, value.Latest, value.Latest)
+	}
+	return err
 }
 
 func (r Runner) doctorCommand() *cobra.Command {

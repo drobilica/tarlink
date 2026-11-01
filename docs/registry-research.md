@@ -111,11 +111,12 @@ execute application binaries, or automatically accept a release.
 
 ## Agent registry changes
 
-Use `tarlink registry update` (or `--json`) to refresh the official catalog and
-check all declared application platforms/channels for upstream release
-candidates. This is an advisory scan; it does not edit manifests, commit, or
-open pull requests. See [registry freshness](registry-freshness.md) for coverage,
-skips, and failure reporting.
+Use `tarlink registry update` (optionally `-n 5` and `--json`) to refresh the
+official catalog and check all declared application platforms/channels for
+releases newer than their current registry heads. To prepare verified additions
+in a local checkout, use `tarlink registry update --apply --registry <path>`,
+starting with `--dry-run`. Neither mode commits or opens pull requests. See
+[registry freshness](registry-freshness.md) for coverage, skips, and failure reporting.
 
 Start from a clean registry task branch based on current `origin/main` and
 record its starting SHA. The research backlog remains optional; adding an app

@@ -22,6 +22,7 @@ import (
 // absent reports it as unavailable. Maintainer commands must not require the
 // application runtime (Service).
 type RegistryTools struct {
+	Apply      app.RegistryApplyService
 	Validation app.RegistryValidationService
 	Editing    app.RegistryEditingService
 	Research   app.ResearchService

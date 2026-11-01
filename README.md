@@ -25,7 +25,7 @@ tarlink
 
 The installer resolves the latest stable release and verifies its official
 binary against `checksums.txt`. Updates to TarLink itself are explicit:
-`tarlink self-update`
+`tarlink update`
 verifies and atomically replaces the canonical owned binary.
 
 To remove TarLink and every managed application:

@@ -4,7 +4,8 @@ Check every application in the official registry with:
 
 ```sh
 tarlink registry update
-tarlink registry update --json
+tarlink registry update -n 5
+tarlink registry update -n 5 --json
 ```
 
 This command first refreshes and validates the official registry, then checks
@@ -14,6 +15,14 @@ on the host platform. Disabled applications and applications without an approved
 source are reported as `skipped`, with `disabled` or `no_approved_upstream`
 reasons. It does not infer upstream sources from manifest URLs.
 
+Use `-n <count>` (or `--number <count>`) to cap the report at that many
+newer missing releases per app/platform across its channels. The count must be
+positive; omitting it reports all candidates within the existing lookup bound. Candidates
+are sorted newest first by publication time, preserving discovery order for ties
+or absent timestamps. The limit applies after filtering approved releases and
+channels, equally to text and JSON. It limits output, not API requests or registry
+entries.
+
 Each app/platform result is `candidates`, `no-candidates`, `skipped`, or `error`.
 The schema-version-1 JSON report includes the validated catalog revision,
 registry checked-at time, and all results. Failed upstream checks preserve
@@ -22,12 +31,51 @@ A failed registry refresh aborts before upstream checks, even if a previous
 cache exists. `--offline` is unsupported.
 
 Candidates are published releases missing from that platform/channel's approved
-set, including potentially older intentionally omitted releases. They are
-research leads, not proof of a newer or compatible application version. Each
-check examines up to the first 100 releases returned by GitHub, with the existing
+set and newer than its current registry head. Dotted numeric versions are
+compared numerically, so `1.10` follows `1.9`; other identifiers require upstream
+publication times for both the candidate and current head. Missing chronology
+produces an error requiring manual review, rather than a historical list.
+Candidates still require compatibility review. Each check examines up to the first 100 releases returned by GitHub, with the existing
 4 MiB response bound. Requests reject redirects and have a 30-second timeout.
 API errors, including rate limits, produce failed checks rather than a clean
-result. Registry manifests, Git state, and installed applications are not changed.
+result. The scan does not change registry manifests, Git state, or installed
+applications.
+
+To prepare updates in an explicit local checkout:
+
+```sh
+tarlink registry update --apply --registry ../tarlink-registry --dry-run
+tarlink registry update --apply --registry ../tarlink-registry
+```
+
+This maintainer mode validates the selected local tree and compares it directly
+with freshly fetched approved upstream releases; it does not refresh the official
+catalog cache. It selects only the newest published release per declared channel
+and adds it only when newer than the current head and absent from history. It
+never backfills older missing releases or downgrades a numeric version.
+`-n` cannot be combined with `--apply`.
+
+Every platform of the current channel release must have exactly one upstream
+asset matching its platform and archive format. Assets must be canonical GitHub
+release URLs in the compiled approved repository. Downloads use bounded HTTPS
+acquisition and safe static inspection; published supported digests are verified,
+and missing upstream digests are handled by computing the registry
+algorithm's digest from the exact bytes, as in existing maintainer onboarding. Invalid or mismatched published
+digests fail. Executable paths, archive format, runtime references, and desktop
+configuration are preserved. Changed executable/icon paths, nested archives,
+ambiguous assets, unsupported formats, or inspection blockers require manual review.
+
+The preview performs the same acquisition, inspection, and staged tree validation
+without modifying the checkout. Apply adds release entries and advances channel
+heads using the existing owned-tree lock, concurrent-edit checks, atomic manifest
+replacement, and directory flush. Existing history is retained. Each application's
+manifest is published separately; a failure leaves that application unchanged,
+while other applications can succeed. JSON and text report per-app outcomes and
+errors cause a nonzero exit. As with existing registry edits, a directory-flush
+failure after publication is reported with `edit.written: true`.
+Review the resulting diff and submit it through normal registry review: this
+command does not commit, push, publish, or install anything. `--offline` is
+unsupported in both modes.
 
 For a single host-platform application, use
 `tarlink registry freshness <app> --json`.
@@ -56,7 +104,8 @@ change the channel recorded in the registry.
 
 The result is advisory metadata. It does not contain trusted artifact URLs or
 checksums, does not modify registry files, and cannot approve or install a
-release. A maintainer selects the exact official upstream HTTPS artifact,
-calculates and records its digest, and submits it for normal official-registry
+release. The explicit local apply mode composes discovery with the existing
+maintainer acquisition, inspection, and registry editing services. A maintainer
+selects the exact official upstream HTTPS artifact, calculates and records its digest, and submits it for normal official-registry
 review. Upstream checksum publication is optional. There is no daemon or
 scheduled updater.

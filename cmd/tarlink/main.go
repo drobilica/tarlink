@@ -64,6 +64,7 @@ func main() {
 	if cli.RegistryMaintainerCommand(os.Args[1:]) {
 		maintainer := app.NewMaintainer(layout, client)
 		runner.Registry = cli.RegistryTools{
+			Apply:      maintainer,
 			Validation: maintainer,
 			Editing:    maintainer,
 			Research:   maintainer,

@@ -67,7 +67,7 @@ application:`, 1)
 {"tag_name":"v3.0.0","prerelease":true},
 {"tag_name":"v4.0.0","draft":true}]`), nil
 	})}}
-	report, err := checkRegistryUpdates(context.Background(), catalog, client)
+	report, err := checkRegistryUpdates(context.Background(), catalog, client, RegistryUpdateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +130,7 @@ func TestRegistryUpdateContinuesAfterFailureAndSupportsCancellation(t *testing.T
 				}
 				return maintainerResponse(http.StatusOK, `[{"tag_name":"v1.2.3"}]`), nil
 			})}}
-			report, err := checkRegistryUpdates(ctx, catalog, client)
+			report, err := checkRegistryUpdates(ctx, catalog, client, RegistryUpdateOptions{})
 			if err == nil || len(report.Results) == 0 || report.Results[0].Status != "error" || report.Results[0].Error == "" {
 				t.Fatalf("report=%+v err=%v", report, err)
 			}
@@ -169,7 +169,7 @@ func TestUpdateRegistryRefreshesOfficialSnapshotWithoutInstalling(t *testing.T) 
 	// The scan must cover the registry's Linux platform even on another host.
 	core.goos, core.goarch = "darwin", "arm64"
 	for i := 0; i < 2; i++ {
-		report, err := core.UpdateRegistry(context.Background(), nil)
+		report, err := core.UpdateRegistry(context.Background(), RegistryUpdateOptions{}, nil)
 		if err != nil || len(report.Results) != 1 || report.Results[0].Status != "candidates" || report.CheckedAt.IsZero() {
 			t.Fatalf("report=%+v err=%v", report, err)
 		}
@@ -181,11 +181,11 @@ func TestUpdateRegistryRefreshesOfficialSnapshotWithoutInstalling(t *testing.T) 
 		t.Fatalf("scan wrote application state: %v %v", states, err)
 	}
 	failRefresh = true
-	if report, err := core.UpdateRegistry(context.Background(), nil); err == nil || len(report.Results) != 0 || apiCalls != 2 {
+	if report, err := core.UpdateRegistry(context.Background(), RegistryUpdateOptions{}, nil); err == nil || len(report.Results) != 0 || apiCalls != 2 {
 		t.Fatalf("failed refresh used stale snapshot: report=%+v err=%v", report, err)
 	}
 	core.EnableOffline()
-	if _, err := core.UpdateRegistry(context.Background(), nil); !errors.Is(err, download.ErrOffline) {
+	if _, err := core.UpdateRegistry(context.Background(), RegistryUpdateOptions{}, nil); !errors.Is(err, download.ErrOffline) {
 		t.Fatalf("offline error=%v", err)
 	}
 }
@@ -208,7 +208,7 @@ func TestRegistryUpdateOrdersChannelsAndRetainsPartialCandidates(t *testing.T) {
 		}
 		return maintainerResponse(http.StatusOK, `[{"tag_name":"v3.0.0","prerelease":true}]`), nil
 	})}}
-	report, err := checkRegistryUpdates(context.Background(), catalog, client)
+	report, err := checkRegistryUpdates(context.Background(), catalog, client, RegistryUpdateOptions{})
 	if err == nil || len(report.Results) != 1 || report.Results[0].Status != "error" || len(report.Results[0].Candidates) != 1 || report.Results[0].Candidates[0].Channel != "nightly" {
 		t.Fatalf("partial channel result lost: %+v err=%v", report, err)
 	}
@@ -232,11 +232,57 @@ func TestUpdateRegistryRejectsUpstreamRedirectsAndBoundsRequests(t *testing.T) {
 		response.Header.Set("Location", "http://untrusted.invalid/releases")
 		return response, nil
 	})
-	report, err := core.UpdateRegistry(context.Background(), nil)
+	report, err := core.UpdateRegistry(context.Background(), RegistryUpdateOptions{}, nil)
 	if err == nil || apiCalls != 1 || len(report.Results) != 1 || report.Results[0].Status != "error" {
 		t.Fatalf("report=%+v calls=%d err=%v", report, apiCalls, err)
 	}
 	if core.syncer.Client.HTTP.CheckRedirect != nil || core.syncer.Client.HTTP.Timeout != 0 {
 		t.Fatal("scan changed the shared registry download client")
+	}
+}
+
+func TestRegistryUpdateLimitsNewestMissingCandidatesPerPlatform(t *testing.T) {
+	root := t.TempDir()
+	for _, id := range []string{"godot", "tiled"} {
+		writeOnboardingManifest(t, filepath.Join(root, "apps", id, "manifest.yaml"), strings.ReplaceAll(strings.Replace(onboardingValidManifest, "name: Foo", "name: "+id, 1), "foo", id))
+	}
+	catalog, err := registry.ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &freshness.Client{HTTP: &http.Client{Transport: maintainerRoundTrip(func(*http.Request) (*http.Response, error) {
+		return maintainerResponse(http.StatusOK, `[
+ {"tag_name":"v0.1","published_at":"2020-01-01T00:00:00Z"},
+ {"tag_name":"v1.2.3","published_at":"2026-01-01T00:00:00Z"},
+ {"tag_name":"v9.0","published_at":"2025-01-01T00:00:00Z","prerelease":true},
+ {"tag_name":"v2.0","published_at":"2024-01-01T00:00:00Z"},
+ {"tag_name":"v3.0","published_at":"2023-01-01T00:00:00Z"},
+ {"tag_name":"v1.0"}]`), nil
+	})}}
+	for _, limit := range []int{0, 1, 2, 5} {
+		report, err := checkRegistryUpdates(context.Background(), catalog, client, RegistryUpdateOptions{Limit: limit})
+		if err != nil || len(report.Results) != 2 {
+			t.Fatalf("report=%+v err=%v", report, err)
+		}
+		want := []string{"2.0", "3.0"}
+		if limit > 0 && limit < len(want) {
+			want = want[:limit]
+		}
+		for _, result := range report.Results {
+			var got []string
+			for _, candidate := range result.Candidates {
+				got = append(got, candidate.Version)
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("limit=%d app=%s got=%v want=%v", limit, result.App, got, want)
+			}
+		}
+	}
+}
+
+func TestRegistryUpdateRejectsNegativeLimitBeforeNetwork(t *testing.T) {
+	core := &Core{}
+	if _, err := core.UpdateRegistry(context.Background(), RegistryUpdateOptions{Limit: -1}, nil); err == nil {
+		t.Fatal("negative limit accepted")
 	}
 }
