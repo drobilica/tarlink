@@ -360,3 +360,20 @@ func TestRegistryUpdateAssetPlatformRequiresArchitecture(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryApplyMatchesCanonicalRepositoryCase(t *testing.T) {
+	root, m, _, _ := registryApplyFixture(t)
+	previous, err := os.ReadFile(filepath.Join(root, "apps", "godot", "manifest.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	document, err := manifest.ParseBytes(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &research.Client{Refresh: true, CacheRoot: t.TempDir(), HTTP: m.client.HTTP}
+	updated, versions, err := prepareRegistryUpdate(t.Context(), client, "GoDotEngine/GoDot-Builds", previous, document)
+	if err != nil || len(updated) == 0 || len(versions) != 1 {
+		t.Fatalf("versions=%v updated=%d err=%v", versions, len(updated), err)
+	}
+}
