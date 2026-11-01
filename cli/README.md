@@ -24,6 +24,7 @@ Generated from Cobra. Regenerate with `./scripts/update-cli-readme.sh`.
     - `tarlink registry freshness <app> [flags]` — Inspect upstream release freshness
     - `tarlink registry icons <path> [flags]` — Audit registry desktop icons
     - `tarlink registry inspect <target> [flags]` — Inspect an upstream artifact
+    - `tarlink registry update [flags]` — Check all registry applications for upstream releases
     - `tarlink registry validate <path>` — Validate a registry tree
   - `tarlink repair <app>` — Restore an exact installed package and missing integration
   - `tarlink repository` — Manage static artifact repositories

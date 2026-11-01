@@ -68,6 +68,7 @@ const registryHelp = `Registry maintenance commands:
   tarlink registry validate <path>
   tarlink registry check <path> [--app <id> | --old-root <path> | --all-artifacts]
   tarlink registry freshness <app> [--json]
+  tarlink registry update [--json]
   tarlink registry inspect <owner/repo | release-asset-url | https-artifact-url | manifest.yaml | directory> [--json] [--refresh]
   tarlink registry add <owner/repo | release-asset-url> [--non-interactive] [--json] [--dry-run] [--output <path> | --registry <path>] [--executable <path>] [--icon <path> | --no-icon]
   tarlink registry enable <app> --registry <path> [--dry-run] [--json]
@@ -988,16 +989,16 @@ func (r Runner) registryCommand() *cobra.Command {
 			return err
 		}
 		if len(args) != 0 {
-			return invalidCommand("usage: tarlink registry <validate|check|freshness|inspect|add|enable|disable|candidates|blockers|icons> ...")
+			return invalidCommand("usage: tarlink registry <validate|check|freshness|update|inspect|add|enable|disable|candidates|blockers|icons> ...")
 		}
 		_, err := io.WriteString(r.Stdout, registryHelp)
 		return err
 	}}
 	command.SetFlagErrorFunc(func(*cobra.Command, error) error {
-		return invalidCommand("usage: tarlink registry <validate|check|freshness|inspect|add|enable|disable|candidates|blockers|icons> ...")
+		return invalidCommand("usage: tarlink registry <validate|check|freshness|update|inspect|add|enable|disable|candidates|blockers|icons> ...")
 	})
 	command.SetHelpFunc(func(command *cobra.Command, _ []string) { _, _ = io.WriteString(command.OutOrStdout(), registryHelp) })
-	command.AddCommand(r.registryValidateCommand(), r.registryCheckCommand(), r.registryFreshnessCommand(), r.registryInspectCommand(), r.registryAddCommand(), r.registryEnabledCommand(true), r.registryEnabledCommand(false), r.registryCandidatesCommand(), r.registryBlockersCommand(), r.registryIconsCommand())
+	command.AddCommand(r.registryValidateCommand(), r.registryCheckCommand(), r.registryFreshnessCommand(), r.registryUpdateCommand(), r.registryInspectCommand(), r.registryAddCommand(), r.registryEnabledCommand(true), r.registryEnabledCommand(false), r.registryCandidatesCommand(), r.registryBlockersCommand(), r.registryIconsCommand())
 	return command
 }
 

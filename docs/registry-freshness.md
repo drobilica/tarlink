@@ -1,5 +1,37 @@
 # Registry freshness discovery
 
+Check every application in the official registry with:
+
+```sh
+tarlink registry update
+tarlink registry update --json
+```
+
+This command first refreshes and validates the official registry, then checks
+every declared application platform and channel against its compiled approved
+GitHub upstream. It includes applications that are not installed or available
+on the host platform. Disabled applications and applications without an approved
+source are reported as `skipped`, with `disabled` or `no_approved_upstream`
+reasons. It does not infer upstream sources from manifest URLs.
+
+Each app/platform result is `candidates`, `no-candidates`, `skipped`, or `error`.
+The schema-version-1 JSON report includes the validated catalog revision,
+registry checked-at time, and all results. Failed upstream checks preserve
+successful results and return a nonzero exit status; cancellation stops the scan.
+A failed registry refresh aborts before upstream checks, even if a previous
+cache exists. `--offline` is unsupported.
+
+Candidates are published releases missing from that platform/channel's approved
+set, including potentially older intentionally omitted releases. They are
+research leads, not proof of a newer or compatible application version. Each
+check examines up to the first 100 releases returned by GitHub, with the existing
+4 MiB response bound. Requests reject redirects and have a 30-second timeout.
+API errors, including rate limits, produce failed checks rather than a clean
+result. Registry manifests, Git state, and installed applications are not changed.
+
+For a single host-platform application, use
+`tarlink registry freshness <app> --json`.
+
 `internal/freshness` is a TarLink-provided, read-only maintainer tool for
 discovering GitHub Releases candidates. A caller supplies an explicit
 `owner/repository`, application ID, channel, and the versions already approved
