@@ -192,9 +192,14 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 					}
 					result.Candidates = append(result.Candidates, candidates...)
 				}
-				// Stable sorting preserves discovery order when publication times tie
-				// or are absent. Version strings need not be semantic versions.
+				// Prefer usable platform candidates before applying the report limit.
+				// Stable sorting preserves discovery order within each readiness group
+				// when publication times tie or are absent.
 				sort.SliceStable(result.Candidates, func(i, j int) bool {
+					left, right := result.Candidates[i].Assets, result.Candidates[j].Assets
+					if left != nil && right != nil && (left.Status == "matched") != (right.Status == "matched") {
+						return left.Status == "matched"
+					}
 					return result.Candidates[i].PublishedAt.After(result.Candidates[j].PublishedAt)
 				})
 				if options.Limit > 0 && len(result.Candidates) > options.Limit {

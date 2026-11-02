@@ -192,6 +192,35 @@ func prepareRegistryUpdate(ctx context.Context, client *research.Client, reposit
 			}
 		}
 		return false
+	}, func(prerelease bool, assetNames []string) bool {
+		matchedChannel := false
+		for channel, head := range channels {
+			if (channel == "stable") == prerelease {
+				continue
+			}
+			for _, release := range document.Release.Releases {
+				releaseChannel := release.Channel
+				if releaseChannel == "" {
+					releaseChannel = "stable"
+				}
+				if releaseChannel != channel || release.Version != head.Current {
+					continue
+				}
+				for platform, artifact := range release.Artifacts {
+					format := artifact.Archive
+					if format == "" {
+						format = document.Release.Archive
+					}
+					// Ambiguity remains an error, never a reason to silently
+					// choose an older release. Only absent platforms are skipped.
+					if assessRegistryAssets(document.ID, platform, format, assetNames).Status == "missing" {
+						return false
+					}
+				}
+				matchedChannel = true
+			}
+		}
+		return matchedChannel
 	})
 	if err != nil {
 		return nil, nil, err

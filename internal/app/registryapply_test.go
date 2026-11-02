@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -413,5 +414,126 @@ func TestRegistryApplyTargetAndSummary(t *testing.T) {
 	report, err = m.ApplyRegistryUpdates(context.Background(), RegistryApplyOptions{Root: root, App: "godot"})
 	if err != nil || report.Summary.Unchanged != 1 {
 		t.Fatalf("%+v %v", report, err)
+	}
+}
+
+func TestRegistryApplySelectsNewestPlatformRelease(t *testing.T) {
+	for _, kind := range []string{"windows-only", "ambiguous", "bad-digest", "prerelease", "already-current"} {
+		t.Run(kind, func(t *testing.T) {
+			root, m, releases, downloads := registryApplyFixture(t)
+			newest := (*releases)[0]
+			newest.ID = 30
+			newest.Tag = "v3.0"
+			newest.PublishedAt = newest.PublishedAt.Add(time.Hour)
+			newest.Assets = append([]research.Asset(nil), newest.Assets...)
+			newest.Assets[0].ID = 40
+			newest.Assets[0].URL = strings.ReplaceAll(newest.Assets[0].URL, "v2.0", "v3.0")
+			switch kind {
+			case "windows-only", "already-current":
+				newest.Assets = nil
+			case "ambiguous":
+				other := newest.Assets[0]
+				other.ID++
+				other.Name = "godot-other-linux-amd64.AppImage"
+				other.URL = strings.ReplaceAll(other.URL, "godot-linux-amd64.AppImage", other.Name)
+				newest.Assets = append(newest.Assets, other)
+			case "bad-digest":
+				newest.Assets[0].Digest = "sha256:" + strings.Repeat("0", 64)
+			case "prerelease":
+				newest.Prerelease = true
+			}
+			if kind == "already-current" {
+				(*releases)[0].Assets = nil
+			}
+			*releases = append([]research.Release{newest}, *releases...)
+			before := registryEditSnapshot(t, root)
+			report, err := m.ApplyRegistryUpdates(t.Context(), RegistryApplyOptions{Root: root})
+			if kind == "ambiguous" || kind == "bad-digest" {
+				if err == nil || !reflect.DeepEqual(before, registryEditSnapshot(t, root)) {
+					t.Fatalf("unsafe fallback: %+v %v", report, err)
+				}
+				return
+			}
+			if kind == "already-current" {
+				// With no matching assets anywhere, preserve the newest release's blocker.
+				if err == nil || report.Results[0].Reason != "missing_platform_asset" || *downloads != 0 {
+					t.Fatalf("%+v %v downloads=%d", report, err, *downloads)
+				}
+				return
+			}
+			if err != nil || report.Results[0].Status != "updated" || !reflect.DeepEqual(report.Results[0].Versions, []string{"stable:2.0"}) || *downloads != 1 {
+				t.Fatalf("%+v %v downloads=%d", report, err, *downloads)
+			}
+			report, err = m.ApplyRegistryUpdates(t.Context(), RegistryApplyOptions{Root: root})
+			if err != nil || report.Results[0].Status != "no-change" || *downloads != 1 {
+				t.Fatalf("repeat %+v %v downloads=%d", report, err, *downloads)
+			}
+		})
+	}
+}
+
+func TestRegistryReviewedArchitectureNames(t *testing.T) {
+	for _, tc := range []struct{ app, name, platform, format, want string }{
+		{"steam-rom-manager", "Steam-ROM-Manager-2.6.2.AppImage", "linux-amd64", "appimage", "matched"},
+		{"steam-rom-manager", "Steam-ROM-Manager-2.6.2-arm64.AppImage", "linux-amd64", "appimage", "missing"},
+		{"steam-rom-manager", "Steam-ROM-Manager-2.6.2-arm64.AppImage", "linux-arm64", "appimage", "matched"},
+		{"steam-rom-manager", "srm-cli-2.6.2-linux-x64.tar.gz", "linux-amd64", "appimage", "missing"},
+		{"r2modman", "r2modman-3.2.21.AppImage", "linux-amd64", "appimage", "matched"},
+		{"material-maker", "material_maker_1_8_linux.tar.gz", "linux-amd64", "tar.gz", "matched"},
+		{"pt-pc", "P.T.PC.Port-portable-linux.zip", "linux-amd64", "zip", "matched"},
+		{"pt-pc", "P.T.PC.Port-portable-windows.zip", "linux-amd64", "zip", "missing"},
+		{"pt-pc", "P.T.PC.Port.Setup-linux", "linux-amd64", "zip", "missing"},
+		{"godot", "r2modman-3.2.21.AppImage", "linux-amd64", "appimage", "missing"},
+		{"r2modman", "r2modman-3.2.21.AppImage", "linux-arm64", "appimage", "missing"},
+	} {
+		if got := assessRegistryAssets(tc.app, tc.platform, tc.format, []string{tc.name}); got.Status != tc.want {
+			t.Fatalf("%+v: %+v", tc, got)
+		}
+	}
+}
+
+func TestRegistryApplyReviewedPlatformStillVerifiesELF(t *testing.T) {
+	for _, machine := range []uint16{0x3e, 0xb7} {
+		t.Run(fmt.Sprintf("machine-%x", machine), func(t *testing.T) {
+			root, m, releases, _ := registryApplyFixture(t)
+			oldPath := filepath.Join(root, "apps", "godot", "manifest.yaml")
+			data, err := os.ReadFile(oldPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(filepath.Dir(oldPath)); err != nil {
+				t.Fatal(err)
+			}
+			writeOnboardingManifest(t, filepath.Join(root, "apps", "r2modman", "manifest.yaml"), strings.ReplaceAll(string(data), "godot", "r2modman"))
+			payload := appImageELF(machine)
+			sum := sha256.Sum256(payload)
+			asset := &(*releases)[0].Assets[0]
+			asset.Name = "r2modman-2.0.AppImage"
+			asset.URL = "https://github.com/ebkr/r2modmanPlus/releases/download/v2.0/" + asset.Name
+			asset.Digest = "sha256:" + hex.EncodeToString(sum[:])
+			asset.Size = int64(len(payload))
+			m.client.HTTP.Transport = maintainerRoundTrip(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Host == "api.github.com" {
+					data, err := json.Marshal(releases)
+					if err != nil {
+						t.Fatal(err)
+					}
+					return maintainerResponse(200, string(data)), nil
+				}
+				if r.URL.String() != asset.URL {
+					t.Fatalf("unexpected asset %s", r.URL)
+				}
+				return maintainerResponse(200, string(payload)), nil
+			})
+			before := registryEditSnapshot(t, root)
+			report, err := m.ApplyRegistryUpdates(t.Context(), RegistryApplyOptions{Root: root})
+			if machine == 0x3e {
+				if err != nil || report.Results[0].Status != "updated" {
+					t.Fatalf("%+v %v", report, err)
+				}
+			} else if err == nil || !strings.Contains(report.Results[0].Detail, "UNSUPPORTED_ARCH") || !reflect.DeepEqual(before, registryEditSnapshot(t, root)) {
+				t.Fatalf("wrong architecture accepted: %+v %v", report, err)
+			}
+		})
 	}
 }
