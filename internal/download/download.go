@@ -159,6 +159,8 @@ type Result struct {
 }
 
 type Client struct {
+	// RedactErrors suppresses URL-bearing network errors for private signed redirects.
+	RedactErrors bool
 	// Offline permits verified cache and filesystem sources only. Every HTTP
 	// entry point also rejects traffic before opening a destination or socket.
 	Offline       bool
@@ -915,6 +917,9 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 		if contextErr := ctx.Err(); contextErr != nil {
 			return Result{}, contextErr
 		}
+		if c.RedactErrors {
+			return Result{}, fmt.Errorf("%w: private request failed", ErrNetwork)
+		}
 		return Result{}, fmt.Errorf("%w: %w", ErrNetwork, err)
 	}
 	defer resp.Body.Close()
@@ -955,6 +960,9 @@ func (c *Client) fetch(ctx context.Context, rawURL, destination string, maxBytes
 			return Result{}, contextErr
 		}
 		if errors.Is(err, ErrNetwork) {
+			if c.RedactErrors {
+				return Result{}, fmt.Errorf("%w: private response failed", ErrNetwork)
+			}
 			return Result{}, err
 		}
 		return Result{}, fmt.Errorf("%w: write download: %v", ErrDestinationWrite, err)

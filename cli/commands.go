@@ -46,6 +46,7 @@ Launch:
 
 Catalog:
   refresh      Refresh the application catalog
+  private      Explicit private Recit enrollment and lifecycle
 
 Maintenance:
   verify       Compare installed payloads with local integrity baselines
@@ -239,7 +240,7 @@ func (r Runner) rootCommand(progress *progressRenderer, tuiStdout, tuiStderr io.
 		r.lockCommand(), r.updateCommand(progress), r.repairCommand(progress), r.pinCommand(true), r.pinCommand(false),
 		r.doctorCommand(), r.verifyCommand(), r.listCommand(), r.installedCommand(),
 		r.infoCommand(), r.versionsCommand(), r.rollbackCommand(progress), r.uninstallCommand(progress),
-		r.registryCommand(), r.repositoryCommand(),
+		r.registryCommand(), r.repositoryCommand(), r.privateCommand(progress),
 	)
 	return root
 }

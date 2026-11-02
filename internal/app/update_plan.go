@@ -213,6 +213,10 @@ func cloneUpdateEntry(entry UpdatePlanEntry) UpdatePlanEntry {
 }
 
 func (core *Core) resolvePlannedUpdate(catalog *registry.Catalog, selector Selector, installed state.State) (*manifest.Manifest, error) {
+	if installed.Authority != "" {
+		return nil, &Error{Code: CodeInvalidArguments, Op: "plan update " + selector.App, Err: errors.New("private authority requires explicit tarlink private update")}
+	}
+
 	goos, goarch := core.platform()
 	target := selector.Target
 	if target == "" {

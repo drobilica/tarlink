@@ -131,6 +131,7 @@ type RepairService interface {
 type ProgressSink func(Progress)
 
 type Application struct {
+	Authority            string            `json:"authority,omitempty"`
 	ID                   string            `json:"id"`
 	Name                 string            `json:"name"`
 	Summary              string            `json:"summary"`

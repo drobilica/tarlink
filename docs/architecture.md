@@ -58,7 +58,7 @@ bounded download ── digest verification ── staging directory
                                            active version
 ```
 
-The official registry is the only catalog and artifact-approval authority. TarLink directly enumerates each strict `apps/<id>/manifest.yaml` and resolves only its exact canonical platform entry; there is no generated index, compatibility filename fallback, architecture fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves its normalized `apps/` and optional `runtimes/` data into a private generation, records the successful checked-at value as private generation metadata, validates and flushes that generation, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations. Historical releases remain registry-approved metadata; they do not imply local retention, and channel heads are never inferred by version sorting.
+The official registry is the default catalog and artifact-approval authority. The separately enrolled [private Recit authority](private-recit.md) is available only through explicit private commands and does not enter the official catalog. TarLink directly enumerates each strict `apps/<id>/manifest.yaml` and resolves only its exact canonical platform entry; there is no generated index, compatibility filename fallback, architecture fallback, secondary approved-source policy, or registry-local parser. A sync validates a staged repository archive, moves its normalized `apps/` and optional `runtimes/` data into a private generation, records the successful checked-at value as private generation metadata, validates and flushes that generation, and atomically changes the relative `current` pointer. Registry refresh retains only the current and immediately previous generations. Historical releases remain registry-approved metadata; they do not imply local retention, and channel heads are never inferred by version sorting.
 
 Static artifact repositories supply bytes, never approval. Acquisition checks
 verified local cache objects, then configured repositories in order, then the
@@ -259,3 +259,14 @@ errors, and returns nonzero when any update fails.
 
 Network and archive limits are part of the
 [security contract](security-model.md).
+
+## Explicit private Recit composition
+
+`internal/privatecatalog` owns one fixed, explicitly enrolled repository identity,
+private bounded metadata reads, strict v5 projection and credential-confined asset
+transport. `Core.PrivateOperation` builds a separate downloader/installer using
+that authority and private artifact cache, then delegates to the existing locked,
+transactional lifecycle. It does not merge private manifests into official cache
+or discovery. Installed state, lock export and effective package fingerprints
+retain authority; changing authority during update/repair is rejected. Private
+lock replay is intentionally refused rather than silently enrolling a source.

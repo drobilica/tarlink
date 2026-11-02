@@ -53,6 +53,9 @@ func (manager *Manager) repairUnlocked(ctx context.Context, item *manifest.Manif
 	if err := installed.ValidateForLayout(manager.Layout); err != nil {
 		return outcome, err
 	}
+	if installed.Authority != item.Authority {
+		return outcome, errors.New("package authority cannot change during repair")
+	}
 	if installed.Current != item.Release.Version || installed.CurrentFingerprint != fingerprint || installed.Channel != item.Release.Channel {
 		return outcome, errors.New("repair requires the exact installed package fingerprint and channel")
 	}

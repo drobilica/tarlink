@@ -30,6 +30,7 @@ const (
 )
 
 type LockEntry struct {
+	Authority   string `yaml:"authority,omitempty"`
 	ID          string `yaml:"id"`
 	Channel     string `yaml:"channel"`
 	Version     string `yaml:"version"`
@@ -55,6 +56,9 @@ func (l Lockfile) Validate() error {
 	seen := make(map[string]bool, len(l.Applications))
 	last := ""
 	for _, e := range l.Applications {
+		if err := manifest.ValidateAuthority(e.ID, e.Authority); err != nil {
+			return err
+		}
 		if err := filesystem.ValidateID(e.ID); err != nil {
 			return fmt.Errorf("lock application %q: %w", e.ID, err)
 		}
@@ -134,7 +138,7 @@ func ParseLock(data []byte) (Lockfile, error) {
 		if entry.Kind != yaml.MappingNode {
 			return Lockfile{}, errors.New("lock application must be a mapping")
 		}
-		fields := map[string]bool{"id": true, "channel": true, "version": true, "fingerprint": true}
+		fields := map[string]bool{"id": true, "channel": true, "version": true, "fingerprint": true, "authority": true}
 		entrySeen := map[string]bool{}
 		for i := 0; i < len(entry.Content); i += 2 {
 			k := entry.Content[i]
@@ -143,8 +147,11 @@ func ParseLock(data []byte) (Lockfile, error) {
 			}
 			entrySeen[k.Value] = true
 		}
-		if len(entrySeen) != 4 {
+		if !entrySeen["id"] || !entrySeen["channel"] || !entrySeen["version"] || !entrySeen["fingerprint"] {
 			return Lockfile{}, errors.New("lock application is missing required fields")
+		}
+		if entrySeen["authority"] && !lockScalar(mappingValue(entry, "authority"), "!!str") {
+			return Lockfile{}, errors.New("lock authority must be a string")
 		}
 		for _, field := range []string{"id", "channel", "version", "fingerprint"} {
 			if !lockScalar(mappingValue(entry, field), "!!str") {
@@ -202,7 +209,7 @@ func (core *Core) WriteLock(ctx context.Context, output string) error {
 	platform := goos + "/" + goarch
 	lock := Lockfile{Schema: LockSchema, Platform: platform, Applications: make([]LockEntry, 0, len(states))}
 	for _, s := range states {
-		lock.Applications = append(lock.Applications, LockEntry{ID: s.App, Channel: s.Channel, Version: s.Current, Fingerprint: s.CurrentFingerprint})
+		lock.Applications = append(lock.Applications, LockEntry{Authority: s.Authority, ID: s.App, Channel: s.Channel, Version: s.Current, Fingerprint: s.CurrentFingerprint})
 	}
 	sort.Slice(lock.Applications, func(i, j int) bool { return lock.Applications[i].ID < lock.Applications[j].ID })
 	if err := lock.Validate(); err != nil {
@@ -361,6 +368,9 @@ func (core *Core) InstallLock(ctx context.Context, input string, forcePath bool,
 }
 
 func (core *Core) resolveExactLock(ctx context.Context, entry LockEntry) (*manifest.Manifest, error) {
+	if entry.Authority != "" {
+		return nil, errors.New("private lock entry requires explicit private install/repair; lock replay cannot enroll authority")
+	}
 	catalog, err := core.catalog(ctx, nil)
 	if err != nil {
 		return nil, err

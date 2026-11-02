@@ -6,6 +6,7 @@ This page describes the implemented trust boundaries and controls.
 
 - TarLink code and release workflow.
 - The reviewed official TarLink registry.
+- Only after explicit enrollment: the exact private Recit GitHub repository and fixed catalog described in [private Recit delivery](private-recit.md).
 - Exact digest-pinned official Valve Steam Linux Runtime deployments admitted
   by the reviewed registry and the compiled Valve v2 adapter.
 - The local user account running TarLink.
@@ -68,3 +69,15 @@ This page describes the implemented trust boundaries and controls.
 ## Outside the boundary
 
 TarLink does not sandbox installed applications. After activation, an application runs with the user's permissions. A malicious process already running as the same user can mutate that user's TarLink directories and is outside the local-attacker boundary; the ownership checks are designed for accidental state corruption, unexpected objects, and cooperating TarLink concurrency. The mutable official registry is trusted and not signed: compromise of that registry alone can replace both an artifact URL and its digest. Self-upgrade similarly trusts the official GitHub release channel but never installs without checksum verification and ownership validation. Informational `verification.source` metadata is not an independent authenticity guarantee; signed registry metadata would require a separate design.
+
+## Private Recit-specific threats
+
+Enrollment rejects another repository ID/name or public visibility. Metadata
+redirects are refused; asset redirects permit only GitHub release storage and
+strip credentials. A copied artifact with wrong bytes fails the ordinary digest
+check. Missing/expired credentials fail online operations without fallback.
+Authority-bound state and fingerprints reject public/private takeover during
+updates or repair; a lock file cannot enroll a source. Explicit offline use relies
+on previously authorized local bytes and cannot discover remote revocation.
+Private repository compromise remains authority compromise, just as public
+registry compromise does; a colocated checksum is not an independent trust root.
