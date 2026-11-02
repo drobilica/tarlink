@@ -142,7 +142,7 @@ func (r Runner) registryUpdateCommand() *cobra.Command {
 	command.Flags().BoolVar(&apply, "apply", false, "add the newest missing releases to an explicit local checkout")
 	command.Flags().BoolVar(&dryRun, "dry-run", false, "verify and preview local updates without editing manifests")
 	command.Flags().StringVar(&root, "registry", "", "local registry checkout for --apply")
-	command.Flags().IntVarP(&limit, "number", "n", 0, "show at most this many newest missing releases per app/platform")
+	command.Flags().IntVarP(&limit, "number", "n", 0, "show at most this many newest missing releases per app/platform (default 1)")
 	command.Flags().BoolVar(&jsonOutput, "json", false, "write JSON")
 	configureCommand(command, usage)
 	return command

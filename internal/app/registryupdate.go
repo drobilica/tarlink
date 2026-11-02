@@ -24,7 +24,7 @@ type RegistryUpdateService interface {
 // RegistryUpdateOptions controls the advisory report, never registry contents.
 type RegistryUpdateOptions struct {
 	App string
-	// Limit caps missing releases per app/platform across channels; zero means all.
+	// Limit caps missing releases per app/platform across channels; zero defaults to one.
 	Limit int
 }
 
@@ -119,6 +119,10 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 		}
 	}
 	client = client.ForScan()
+	if options.Limit == 0 {
+		options.Limit = 1
+	}
+	client.RecentOnly = options.Limit == 1
 	ids := make([]string, 0, len(catalog.Variants))
 	for id := range catalog.Variants {
 		if options.App != "" && id != options.App {
