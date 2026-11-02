@@ -29,11 +29,12 @@ JSON results identify the selected repository and rule when one applies.
 
 Use `-n <count>` (or `--number <count>`) to cap the report at that many
 newer missing releases per app/platform across its channels. The count must be
-positive; omitting it reports all candidates within the existing lookup bound. Candidates
+positive; omitting it reports only the newest candidate per app/platform. Candidates
 are sorted newest first by publication time, preserving discovery order for ties
 or absent timestamps. The limit applies after filtering approved releases and
-channels, equally to text and JSON. It limits output, not API requests or registry
-entries.
+channels, equally to text and JSON. The default and `-n 1` inspect only the first
+page of up to 50 releases per repository. Larger counts permit a second page, up to 100 releases. The count
+does not change registry entries.
 
 Each app/platform result is `candidates`, `no-candidates`, `skipped`, or `error`.
 The schema-version-1 JSON report includes the validated catalog revision,
@@ -57,8 +58,10 @@ Each registry-update candidate reports an `assets` assessment: `matched`,
 filename. The summary counts candidates with and without one filename match.
 This assesses the current channel head's platform and archive format; it does
 not verify downloaded bytes, executable paths, or compatibility. Candidates still
-require compatibility review. Discovery and apply examine up to
-100 releases using at most two pages of 50 releases, each bounded to 4 MiB.
+require compatibility review. Default discovery examines up to 50 releases in
+one request per repository.
+Explicit larger counts and apply examine up to 100 releases using at most two
+pages of 50 releases, each bounded to 4 MiB.
 Advisory requests reject redirects and have a 30-second timeout per request.
 API errors produce failed checks rather than a clean result. Reasons distinguish
 `repository_moved`, `repository_not_found`, `rate_limited`,

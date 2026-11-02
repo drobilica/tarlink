@@ -268,7 +268,9 @@ func TestRegistryUpdateLimitsNewestMissingCandidatesPerPlatform(t *testing.T) {
 			t.Fatalf("report=%+v err=%v", report, err)
 		}
 		want := []string{"2.0", "3.0"}
-		if limit > 0 && limit < len(want) {
+		if limit == 0 {
+			want = want[:1]
+		} else if limit < len(want) {
 			want = want[:limit]
 		}
 		for _, result := range report.Results {
@@ -318,5 +320,38 @@ func TestRegistryUpdateTargetAndAssetReadiness(t *testing.T) {
 	_, err = checkRegistryUpdates(context.Background(), catalog, client, RegistryUpdateOptions{App: "missing"})
 	if err == nil || calls != 1 {
 		t.Fatalf("calls=%d %v", calls, err)
+	}
+}
+
+func TestRegistryUpdateDefaultDoesNotFetchHistoricalPage(t *testing.T) {
+	root := t.TempDir()
+	writeOnboardingManifest(t, filepath.Join(root, "apps", "godot", "manifest.yaml"), strings.ReplaceAll(onboardingValidManifest, "foo", "godot"))
+	catalog, err := registry.ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, limit := range []int{0, 1, 2} {
+		calls := 0
+		client := &freshness.Client{HTTP: &http.Client{Transport: maintainerRoundTrip(func(r *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 2 {
+				return maintainerResponse(http.StatusOK, `[]`), nil
+			}
+			// A full first page used to trigger another request even for -n 1.
+			body := `[{"tag_name":"v3.0","published_at":"2026-01-01T00:00:00Z"},` + strings.Repeat(`{"tag_name":"v2.0","published_at":"2025-01-01T00:00:00Z"},`, 48) + `{"tag_name":"v1.2.3"}]`
+			return maintainerResponse(http.StatusOK, body), nil
+		})}}
+		report, err := checkRegistryUpdates(t.Context(), catalog, client, RegistryUpdateOptions{Limit: limit})
+		wantCalls, wantCandidates := 1, 1
+		if limit == 2 {
+			wantCalls, wantCandidates = 2, 2
+		}
+		if err != nil || calls != wantCalls || len(report.Results) != 1 {
+			t.Fatalf("limit=%d calls=%d report=%+v err=%v", limit, calls, report, err)
+		}
+		candidates := report.Results[0].Candidates
+		if len(candidates) != wantCandidates || candidates[0].Version != "3.0" {
+			t.Fatalf("limit=%d candidates=%+v", limit, candidates)
+		}
 	}
 }

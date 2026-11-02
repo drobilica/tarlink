@@ -77,9 +77,11 @@ type Report struct {
 // Client accesses only GitHub's public Releases API. HTTP may be replaced in
 // tests; production callers should use http.DefaultClient or a bounded client.
 type Client struct {
-	HTTP  *http.Client
-	mu    sync.Mutex
-	cache map[string]releaseLookup
+	// RecentOnly bounds discovery to the first page of release metadata.
+	RecentOnly bool
+	HTTP       *http.Client
+	mu         sync.Mutex
+	cache      map[string]releaseLookup
 }
 
 type releaseLookup struct {
@@ -90,10 +92,12 @@ type releaseLookup struct {
 // ForScan creates disposable memoization scoped to one explicit scan.
 func (c *Client) ForScan() *Client {
 	var client *http.Client
+	var recentOnly bool
 	if c != nil {
 		client = c.HTTP
+		recentOnly = c.RecentOnly
 	}
-	return &Client{HTTP: client, cache: make(map[string]releaseLookup)}
+	return &Client{HTTP: client, RecentOnly: recentOnly, cache: make(map[string]releaseLookup)}
 }
 
 type githubRelease struct {
@@ -200,7 +204,11 @@ func (c *Client) fetch(ctx context.Context, repository string) ([]githubRelease,
 		return nil, err
 	}
 	var releases []githubRelease
-	for page := 1; page <= 2; page++ {
+	pages := 2
+	if c != nil && c.RecentOnly {
+		pages = 1
+	}
+	for page := 1; page <= pages; page++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s?per_page=50&page=%d", apiURL, page), nil)
 		if err != nil {
 			return nil, err
