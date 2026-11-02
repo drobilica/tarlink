@@ -45,6 +45,7 @@ type ExecutableIntegration struct {
 }
 
 type State struct {
+	Authority           string `json:"authority,omitempty"`
 	Schema              int    `json:"schema"`
 	App                 string `json:"app"`
 	Current             string `json:"current"`
@@ -80,6 +81,9 @@ func (e Executable) WantsBinLink() bool { return e.CreateBinLink == nil || *e.Cr
 var ErrCorrupt = errors.New("corrupt state")
 
 func (s State) Validate() error {
+	if err := manifest.ValidateAuthority(s.App, s.Authority); err != nil {
+		return fmt.Errorf("%w: %v", ErrCorrupt, err)
+	}
 	if s.Schema != Schema {
 		return fmt.Errorf("%w: unsupported schema %d", ErrCorrupt, s.Schema)
 	}

@@ -26,7 +26,7 @@ func (core *Core) Repair(ctx context.Context, appID string, sink ProgressSink) (
 		return Result{}, classify("repair "+appID, err)
 	}
 	core.emit(sink, ProgressResolving, appID, 0, 0)
-	item, err := core.resolveExactLock(ctx, LockEntry{ID: appID, Channel: installed.Channel, Version: installed.Current, Fingerprint: installed.CurrentFingerprint})
+	item, err := core.resolveExactLock(ctx, LockEntry{Authority: installed.Authority, ID: appID, Channel: installed.Channel, Version: installed.Current, Fingerprint: installed.CurrentFingerprint})
 	if err != nil {
 		return Result{}, classify("resolve repair "+appID, err)
 	}

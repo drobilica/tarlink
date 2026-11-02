@@ -4,7 +4,7 @@ TarLink relies on a narrow manifest language, verified bytes, constrained extrac
 
 ## Network and registry
 
-- The official registry URL is compiled into the program. Alternate registries and arbitrary manifest locations are not accepted.
+- The official registry URL is compiled into the program. Arbitrary registries and manifest locations are not accepted. The separately enrolled [private Recit authority](private-recit.md) is the sole narrowly scoped exception, available only through explicit private lifecycle commands.
 - Registry and release traffic uses HTTPS. Release redirects must remain valid HTTPS URLs and are capped at five; a digest authenticates the final bytes independently of redirect hosting.
 - Connect, TLS handshake, response-header, and overall timeouts bound waits.
 - Registry update discovery selects only compiled reviewed GitHub repository rules. Manifest URLs are diagnostic evidence for uncovered sources, never authority for new API or artifact requests. Metadata requests reject redirects, examine at most 100 releases in two pages capped at 4 MiB each, and use a 30-second request timeout. Optional `GH_TOKEN` authentication is confined to the fixed GitHub API endpoint. Per-scan memoization is disposable and cannot approve or install candidates.
@@ -49,7 +49,7 @@ metadata or bypass digest, resource-limit, ownership or extraction controls.
 Materialization verifies again on use, including after preflight. See
 [Offline acquisition](architecture.md#offline-acquisition).
 
-The official registry is the artifact-approval boundary. Schema-v5
+The official registry is the default artifact-approval boundary. The explicit private Recit route has its own fixed, enrolled authority and never alters official catalog resolution. Schema-v5
 `verification.source` records an official upstream release or artifact origin
 for reviewer context; it is not an assertion
 that upstream published a checksum. TarLink does not fetch or cryptographically
@@ -187,3 +187,13 @@ self-update, distinguish benign changes from corruption, or verify shared
 runtimes. The local user can modify both payload and inventory; this is no new
 trust root or protection against a compromised local account. Concurrent writes
 can require a rerun. See [Installed payload verification](architecture.md#installed-payload-verification).
+
+## Private Recit exception
+
+The separately reviewed [private Recit contract](private-recit.md) binds one
+immutable GitHub repository ID, fixed owner/name/catalog path and application ID.
+Credentials are confined to fixed API requests, stripped from artifact redirects,
+and never persisted. State/fingerprint authority prevents private/public takeover.
+Private bytes and catalog metadata stay in separate private cache paths; ordinary
+static artifact repositories remain byte-only sources. Explicit offline private
+operations require already validated private authority and verified cached bytes.

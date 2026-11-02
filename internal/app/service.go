@@ -534,7 +534,7 @@ func (core *Core) List(ctx context.Context) ([]Application, error) {
 	result := make([]Application, 0, len(states))
 	for _, installed := range states {
 		value := Application{
-			ID: installed.App, Name: installed.App, InstalledVersion: installed.Current,
+			Authority: installed.Authority, ID: installed.App, Name: installed.App, InstalledVersion: installed.Current,
 			PreviousVersion: installed.Previous, InstalledChannel: installed.Channel, Pinned: installed.Pinned,
 		}
 		if catalogErr == nil {
@@ -829,8 +829,12 @@ func (core *Core) installedStates() ([]state.State, error) {
 }
 
 func applicationFrom(item *manifest.Manifest, installed *state.State) Application {
+	if installed != nil && installed.Authority != item.Authority {
+		return Application{Authority: installed.Authority, ID: installed.App, Name: installed.App, InstalledVersion: installed.Current, InstalledFingerprint: installed.CurrentFingerprint, PreviousVersion: installed.Previous, PreviousFingerprint: installed.PreviousFingerprint, InstalledChannel: installed.Channel, Pinned: installed.Pinned}
+	}
+
 	value := Application{
-		ID: item.ID, Name: item.Name, Summary: item.Summary, Homepage: item.Homepage,
+		Authority: item.Authority, ID: item.ID, Name: item.Name, Summary: item.Summary, Homepage: item.Homepage,
 		Categories: append([]string(nil), item.Categories...), Requirements: append([]string(nil), item.Requirements...), RegistryVersion: item.Release.Version,
 		DefaultChannel: item.ReleaseHistory.DefaultChannel,
 		ChannelHeads:   make(map[string]string, len(item.ReleaseHistory.Channels)),

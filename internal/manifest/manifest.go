@@ -34,7 +34,19 @@ const (
 
 var idPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
+// PrivateRecitAuthority is selected only by explicit private enrollment, never YAML.
+const PrivateRecitAuthority = "github-private:1442652140:drobilica/recit:catalog/recit/manifest.yaml:recit"
+
+func ValidateAuthority(app, authority string) error {
+	if authority != "" && (app != "recit" || authority != PrivateRecitAuthority) {
+		return errors.New("unapproved package authority")
+	}
+	return nil
+}
+
 type Manifest struct {
+	Authority string `json:"authority,omitempty"`
+
 	Schema       int      `json:"schema"`
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
@@ -1089,6 +1101,9 @@ func (r Runtime) Validate() error {
 // before encoding. The returned form is self-describing: sha256:<lowercase
 // hexadecimal digest>.
 func (m Manifest) ResolvedPackageFingerprint() (string, error) {
+	if err := ValidateAuthority(m.ID, m.Authority); err != nil {
+		return "", err
+	}
 	if err := m.Validate(); err != nil {
 		return "", err
 	}
@@ -1179,6 +1194,10 @@ func (m Manifest) ResolvedPackageFingerprint() (string, error) {
 	writeFingerprintString(&encoded, m.Desktop.Icon.URL)
 	writeFingerprintString(&encoded, m.Desktop.Icon.SHA256)
 
+	if m.Authority != "" {
+		encoded.WriteString("tarlink/private-authority/v1\x00")
+		writeFingerprintString(&encoded, m.Authority)
+	}
 	digest := sha256.Sum256(encoded.Bytes())
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
 }

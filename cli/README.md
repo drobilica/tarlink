@@ -12,6 +12,11 @@ Generated from Cobra. Regenerate with `./scripts/update-cli-readme.sh`.
   - `tarlink list [flags]` — List available applications
   - `tarlink lock [flags]` — Write an installed-state lock snapshot
   - `tarlink pin <app>` — Pin an installed application
+  - `tarlink private` — Explicit private Recit enrollment and lifecycle
+    - `tarlink private enroll --repository-id ID [flags]` — Enroll the approved private Recit GitHub authority
+    - `tarlink private install recit[@version]` — install Recit from its enrolled private authority
+    - `tarlink private repair recit[@version]` — repair Recit from its enrolled private authority
+    - `tarlink private update recit[@version]` — update Recit from its enrolled private authority
   - `tarlink refresh` — Refresh the application catalog
   - `tarlink registry` — Registry validation and maintainer tools
     - `tarlink registry add <owner/repo | release-asset-url> [flags]` — Construct a candidate manifest

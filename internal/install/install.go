@@ -216,6 +216,9 @@ func (manager *Manager) updateUnlocked(ctx context.Context, item *manifest.Manif
 	if err != nil {
 		return Outcome{}, err
 	}
+	if installed.Authority != item.Authority {
+		return Outcome{}, errors.New("package authority cannot change during update")
+	}
 	if expected != nil && !reflect.DeepEqual(installed, *expected) {
 		return Outcome{}, fmt.Errorf("%w: installed state changed since update planning", ErrConflict)
 	}
@@ -1365,7 +1368,8 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		pinned = *options.Pinned
 	}
 	newState := state.State{
-		Schema: state.Schema, App: item.ID, Current: item.Release.Version, CurrentFingerprint: itemFingerprint, Previous: oldVersion,
+		Authority: item.Authority,
+		Schema:    state.Schema, App: item.ID, Current: item.Release.Version, CurrentFingerprint: itemFingerprint, Previous: oldVersion,
 		PreviousFingerprint: func() string {
 			if installed != nil {
 				return installed.CurrentFingerprint
