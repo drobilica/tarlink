@@ -247,7 +247,7 @@ func prepareRegistryUpdate(ctx context.Context, client *research.Client, reposit
 			asset := assets[0]
 			// Only exact assets under the reviewed upstream repository are eligible.
 			target, err := research.ParseReleaseAssetURL(asset.URL)
-			if err != nil || string(target.Repository) != repository || target.Tag != latest.Tag || target.Asset != asset.Name {
+			if err != nil || !strings.EqualFold(string(target.Repository), repository) || target.Tag != latest.Tag || target.Asset != asset.Name {
 				return nil, nil, errors.New("asset does not belong to the approved repository release")
 			}
 			provenance := research.EvaluateProvenance(latest.Repository, *latest, asset)
