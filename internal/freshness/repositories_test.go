@@ -43,3 +43,11 @@ func TestRepositoryPreservesReviewedMappings(t *testing.T) {
 		t.Fatalf("unknown repository mapping = ok:%t err:%v", ok, err)
 	}
 }
+
+func TestLoadRulesRejectsInvalidAssetPlatforms(t *testing.T) {
+	for _, rule := range []string{"linux-386: '^app$'", "linux-amd64: 'app'", "linux-amd64: '^[$'", "linux-amd64: '^path/app$'"} {
+		if _, err := LoadRules([]byte("- app: demo\n  repository: owner/project\n  asset-platforms:\n    " + rule + "\n")); err == nil {
+			t.Fatalf("accepted %s", rule)
+		}
+	}
+}

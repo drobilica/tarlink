@@ -29,10 +29,13 @@ JSON results identify the selected repository and rule when one applies.
 
 Use `-n <count>` (or `--number <count>`) to cap the report at that many
 newer missing releases per app/platform across its channels. The count must be
-positive; omitting it reports only the newest candidate per app/platform. Candidates
-are sorted newest first by publication time, preserving discovery order for ties
-or absent timestamps. The limit applies after filtering approved releases and
-channels, equally to text and JSON. The default and `-n 1` inspect only the first
+positive; omitting it reports one candidate per app/platform, preferring the
+newest candidate with a matching artifact. Candidates
+with one matching platform artifact are listed first, then candidates with
+missing or ambiguous assets. Within each group they are sorted newest first by
+publication time, preserving discovery order for ties or absent timestamps. The
+limit applies after filtering approved releases and channels, equally to text
+and JSON. The default and `-n 1` inspect only the first
 page of up to 50 releases per repository. Larger counts permit a second page, up to 100 releases. The count
 does not change registry entries.
 
@@ -85,12 +88,18 @@ tarlink registry update --apply --registry ../tarlink-registry --app xemu
 
 This maintainer mode validates the selected local tree and compares it directly
 with freshly fetched approved upstream releases; it does not refresh the official
-catalog cache. It selects only the newest published release per declared channel
-and adds it only when newer than the current head and absent from history. It
+catalog cache. It selects the newest published release per declared channel with
+assets for
+every currently declared platform, within the bounded discovery window, and
+adds it only when newer than the current head and absent from history. Newer
+Windows-only releases therefore do not hide an available Linux update. A release
+with ambiguous assets remains an error; failed digest or inspection checks never
+cause selection of an older release. If no release has all required platform
+assets, the newest release supplies the missing-asset diagnostic. It
 never backfills older missing releases or downgrades a numeric version.
 `-n` cannot be combined with `--apply`. Both modes accept `--app <id>` to
 check only that application's declared platforms and channels. Unknown IDs fail
-before upstream release requests. Apply validates release metadata for the newest
+before upstream release requests. Apply validates release metadata for the selected
 stable/prerelease releases and current registry heads; unrelated older duplicate
 release objects do not block an update. Duplicates within the selected set still
 fail validation.
@@ -99,8 +108,12 @@ Every platform of the current channel release must have exactly one upstream
 asset matching its platform, archive format, and any reviewed application asset
 rules (prefixes and explicit exclusions). This prevents shared repositories from
 mixing assets for different apps.
-AppImage filenames identify Linux implicitly but must still name the architecture;
-the acquired binary is independently inspected for that architecture.
+AppImage filenames identify Linux implicitly. Architecture must be explicit in
+the name or identified by an anchored, reviewed `asset-platforms` filename rule
+in the compiled upstream configuration. Steam ROM Manager, r2modman, Material
+Maker, and P.T. use such rules for their architecture-free Linux filenames.
+Rules are scoped to the application and never inherit the host architecture;
+the acquired binary is independently inspected for the selected architecture.
 `missing_platform_asset` and `ambiguous_platform_asset` explain when selection
 needs manual review, listing matching and rejected filenames with reasons.
 Reviewed rules exclude DKR's SteamDeck build, Rage Racer's editor, and xemu's

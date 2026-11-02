@@ -301,20 +301,22 @@ type discoveryFile struct {
 }
 
 func (c *Client) Discover(ctx context.Context, raw string) ([]Release, error) {
-	return c.discover(ctx, raw, nil)
+	return c.discover(ctx, raw, nil, nil)
 }
 
-// DiscoverForUpdate validates the newest release in each channel and current
-// registry heads. Unrelated historical assets cannot block a current update.
+// DiscoverForUpdate validates the newest eligible release in each channel and
+// current registry heads. The caller assesses filenames only; all selected
+// metadata and acquired bytes still undergo normal validation. Unrelated
+// historical assets cannot block a current update.
 // keepCurrent is supplied by the maintainer's compiled version rules.
-func (c *Client) DiscoverForUpdate(ctx context.Context, raw string, keepCurrent func(string) bool) ([]Release, error) {
+func (c *Client) DiscoverForUpdate(ctx context.Context, raw string, keepCurrent func(string) bool, eligible func(bool, []string) bool) ([]Release, error) {
 	if keepCurrent == nil {
 		return nil, errors.New("current release selector is required")
 	}
-	return c.discover(ctx, raw, keepCurrent)
+	return c.discover(ctx, raw, keepCurrent, eligible)
 }
 
-func (c *Client) discover(ctx context.Context, raw string, keepCurrent func(string) bool) ([]Release, error) {
+func (c *Client) discover(ctx context.Context, raw string, keepCurrent func(string) bool, eligible func(bool, []string) bool) ([]Release, error) {
 	repo, err := ParseRepository(raw)
 	if err != nil {
 		return nil, err
@@ -395,6 +397,23 @@ refresh:
 		for _, release := range rawReleases {
 			if !release.Draft && release.PublishedAt.After(newest[release.Prerelease]) {
 				newest[release.Prerelease] = release.PublishedAt
+			}
+		}
+		// Prefer the newest release carrying every required platform. Retain
+		// the newest release when none qualifies so callers report the blocker.
+		ready := map[bool]time.Time{}
+		if eligible != nil {
+			for _, release := range rawReleases {
+				names := make([]string, 0, len(release.Assets))
+				for _, asset := range release.Assets {
+					names = append(names, asset.Name)
+				}
+				if !release.Draft && eligible(release.Prerelease, names) && release.PublishedAt.After(ready[release.Prerelease]) {
+					ready[release.Prerelease] = release.PublishedAt
+				}
+			}
+			for channel, published := range ready {
+				newest[channel] = published
 			}
 		}
 		selected := make([]apiRelease, 0, len(rawReleases))
@@ -1331,8 +1350,8 @@ const (
 var inspectParserHook func() error
 
 // Inspect analyzes one verified or locally sourced artifact. The expectedArch
-// must come from TargetArchitecture, which derives it from artifact-name
-// evidence only; "" means the asset name does not determine an architecture
+// must come from explicit artifact-name evidence or a compiled reviewed
+// platform rule; "" means the asset name does not determine an architecture
 // and is handled explicitly, never by falling back to the host architecture.
 func Inspect(ctx context.Context, artifact Artifact, format archive.Format, expectedArch string) (Inspection, error) {
 	if artifact.Path == "" {
@@ -1343,8 +1362,8 @@ func Inspect(ctx context.Context, artifact Artifact, format archive.Format, expe
 
 // InspectAsset reacquires and verifies the exact immutable asset immediately
 // before parsing. A cache mutation is treated as corruption and retried once.
-// The expectedArch must come from TargetArchitecture, which derives it from
-// artifact-name evidence only; "" means the asset name does not determine an
+// The expectedArch must come from explicit artifact-name evidence or a compiled
+// reviewed platform rule; "" means the asset name does not determine an
 // architecture and is handled explicitly, never by falling back to the host
 // architecture.
 func (c *Client) InspectAsset(ctx context.Context, asset Asset, p Provenance, format archive.Format, expectedArch string) (Inspection, error) {

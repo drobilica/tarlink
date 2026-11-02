@@ -3,6 +3,7 @@ package freshness
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -71,3 +72,18 @@ func MatchesAsset(appID, asset string) bool {
 type Issue struct{ Reason, Detail string }
 
 func (e *Issue) Error() string { return e.Detail }
+
+// AssetPlatform resolves only compiled, reviewed filename conventions. It never
+// inherits the host architecture; acquisition must still inspect the ELF bytes.
+func AssetPlatform(appID, name string) string {
+	platform := ""
+	for candidate, pattern := range approvedRules[appID].AssetPlatforms {
+		if matched, _ := regexp.MatchString(pattern, name); matched {
+			if platform != "" {
+				return ""
+			}
+			platform = candidate
+		}
+	}
+	return platform
+}

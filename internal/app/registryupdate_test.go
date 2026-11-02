@@ -355,3 +355,22 @@ func TestRegistryUpdateDefaultDoesNotFetchHistoricalPage(t *testing.T) {
 		}
 	}
 }
+
+func TestRegistryUpdateLimitPrefersAvailablePlatform(t *testing.T) {
+	root := t.TempDir()
+	writeOnboardingManifest(t, filepath.Join(root, "apps", "godot", "manifest.yaml"), strings.ReplaceAll(onboardingValidManifest, "foo", "godot"))
+	catalog, err := registry.ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &freshness.Client{HTTP: &http.Client{Transport: maintainerRoundTrip(func(*http.Request) (*http.Response, error) {
+		return maintainerResponse(http.StatusOK, `[
+ {"tag_name":"v3.0","published_at":"2026-03-01T00:00:00Z","assets":[{"name":"godot-windows-x64.zip"}]},
+ {"tag_name":"v2.0","published_at":"2026-02-01T00:00:00Z","assets":[{"name":"godot-linux-amd64.zip"}]},
+ {"tag_name":"v1.2.3","published_at":"2026-01-01T00:00:00Z"}]`), nil
+	})}}
+	report, err := checkRegistryUpdates(t.Context(), catalog, client, RegistryUpdateOptions{})
+	if err != nil || len(report.Results) != 1 || len(report.Results[0].Candidates) != 1 || report.Results[0].Candidates[0].Version != "2.0" {
+		t.Fatalf("%+v %v", report, err)
+	}
+}

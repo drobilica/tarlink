@@ -95,6 +95,8 @@
   repository: EXL/Magic-Sushi
 - app: material-maker
   repository: RodZill4/material-maker
+  asset-platforms:
+    linux-amd64: '^material_maker_[0-9]+(_[0-9]+)*_linux\.tar\.gz$'
 - app: mega-man-64-recompiled
   repository: MegaMan64Recomp/MegaMan64Recompiled
 - app: mega-man-x-snes-recomp
@@ -145,12 +147,16 @@
   asset-prefix: PropCycle-
 - app: pt-pc
   repository: LoreanXavier/pt-pc
+  asset-platforms:
+    linux-amd64: '^P\.T\.PC\.Port-portable-linux\.zip$'
 - app: qualetize-gui
   repository: ulalume/qualetize_gui
 - app: quiver-launcher
   repository: tgeorgiadis/quiver-launcher
 - app: r2modman
   repository: ebkr/r2modmanPlus
+  asset-platforms:
+    linux-amd64: '^r2modman-[0-9]+(\.[0-9]+)*\.AppImage$'
 - app: rage-racer-pc
   repository: khasinski/rage-racer-pc
   asset-exclude: -Editor-
@@ -180,6 +186,8 @@
   repository: HarbourMasters/Starship
 - app: steam-rom-manager
   repository: SteamGridDB/steam-rom-manager
+  asset-platforms:
+    linux-amd64: '^Steam-ROM-Manager-[0-9]+(\.[0-9]+)*\.AppImage$'
 - app: street-fighter-alpha-3-recomp
   repository: TechnicallyComputers/Street-Fighter-Alpha-3-Recomp
 - app: street-fighter-ex2-plus-recomp

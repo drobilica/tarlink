@@ -14,15 +14,19 @@ func assessRegistryAssets(appID, platform, format string, names []string) freshn
 	sort.Strings(names)
 	for _, name := range names {
 		reason := ""
+		assetPlatform := registryUpdateAssetPlatform(name)
+		if assetPlatform == "" {
+			assetPlatform = freshness.AssetPlatform(appID, name)
+		}
 		switch {
 		case !freshness.MatchesAsset(appID, name):
 			reason = "excluded by reviewed application rule"
 		case registryAssetFormat(name) != format:
 			reason = fmt.Sprintf("format %q does not match %q", registryAssetFormat(name), format)
-		case registryUpdateAssetPlatform(name) == "":
+		case assetPlatform == "":
 			reason = "no unambiguous Linux architecture in filename"
-		case registryUpdateAssetPlatform(name) != platform:
-			reason = "platform " + registryUpdateAssetPlatform(name) + " does not match " + platform
+		case assetPlatform != platform:
+			reason = "platform " + assetPlatform + " does not match " + platform
 		}
 		if reason == "" {
 			result.Matches = append(result.Matches, name)

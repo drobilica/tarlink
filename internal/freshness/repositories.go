@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
@@ -18,12 +19,13 @@ var (
 )
 
 type approvedUpstream struct {
-	App           string `yaml:"app"`
-	Repository    string `yaml:"repository"`
-	VersionPrefix string `yaml:"version-prefix"`
-	VersionSuffix string `yaml:"version-suffix"`
-	AssetPrefix   string `yaml:"asset-prefix"`
-	AssetExclude  string `yaml:"asset-exclude"`
+	App            string            `yaml:"app"`
+	Repository     string            `yaml:"repository"`
+	VersionPrefix  string            `yaml:"version-prefix"`
+	VersionSuffix  string            `yaml:"version-suffix"`
+	AssetPrefix    string            `yaml:"asset-prefix"`
+	AssetExclude   string            `yaml:"asset-exclude"`
+	AssetPlatforms map[string]string `yaml:"asset-platforms"`
 }
 
 // LoadRules validates the compiled provider, version and asset rules.
@@ -58,6 +60,17 @@ func LoadRules(data []byte) (map[string]approvedUpstream, error) {
 		for _, value := range []string{entry.VersionPrefix, entry.VersionSuffix, entry.AssetPrefix, entry.AssetExclude} {
 			if len(value) > 80 || strings.ContainsAny(value, "/\\\n\r\t ") {
 				return nil, fmt.Errorf("invalid discovery rule for %q", entry.App)
+			}
+		}
+		for platform, pattern := range entry.AssetPlatforms {
+			if platform != "linux-amd64" && platform != "linux-arm64" {
+				return nil, fmt.Errorf("invalid asset platform %q for %q", platform, entry.App)
+			}
+			if len(pattern) > 200 || !strings.HasPrefix(pattern, "^") || !strings.HasSuffix(pattern, "$") || strings.ContainsAny(pattern, "/\n\r\t ") {
+				return nil, fmt.Errorf("invalid asset platform pattern for %q", entry.App)
+			}
+			if _, err := regexp.Compile(pattern); err != nil {
+				return nil, fmt.Errorf("invalid asset platform pattern for %q: %w", entry.App, err)
 			}
 		}
 		for _, other := range result {
