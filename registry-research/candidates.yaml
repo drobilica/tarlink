@@ -132,3 +132,117 @@ candidates:
       - {label: red-alert, url: https://github.com/OpenRA/OpenRA/releases/download/release-20250330/OpenRA-Red-Alert-x86_64.AppImage}
       - {label: dune-2000, url: https://github.com/OpenRA/OpenRA/releases/download/release-20250330/OpenRA-Dune-2000-x86_64.AppImage}
     notes: The stable release provides official x86_64 AppImages for the three separately admitted mod targets; no arm64 AppImage is published.
+  # Video inclusion review, 2026-11-02. Condemned 2 intentionally excluded.
+  # Registry origin/main 1239e7c5aa84bb45859da7360ae18b3b25275c64 already
+  # contains dnzh-recomp 0.0.3 for linux-amd64 and linux-arm64; no new candidate.
+  - id: black-xbe-recomp
+    upstream: TGP482/Black-XBERecomp
+    last_checked: {release_tag: V3, release_id: 427929954}
+    status: blocked
+    blockers: [WINDOWS_ONLY]
+    reconsider_when: [new-upstream-release]
+    evidence_links:
+      - {label: release, url: https://github.com/TGP482/Black-XBERecomp/releases/tag/V3}
+      - {label: requirements, url: https://github.com/TGP482/Black-XBERecomp}
+      - {label: alternative-starter, url: https://github.com/portingpete/Black-2006-Recomp/releases/tag/v0.1.0-alpha.5}
+    notes: >-
+      BLACK's V3 release publishes BLACK-XBERecomp.zip; upstream documents a Windows
+      10 x64 executable using Direct3D 12 and first-start game-code compilation.
+      No native Linux game artifact is published. The separate portingpete alpha.5
+      starter (release 420734529) includes a native Linux launcher but requires
+      build tools, setup and Wine/Proton for the Windows game; it is not a portable
+      native Linux game package. Reconsider when a suitable Linux release exists.
+  - id: the-darkness-recomp
+    upstream: portingpete/The-Darkness-Recomp
+    last_checked: {release_tag: v0.1.8, release_id: 425537596}
+    status: blocked
+    blockers: [WINDOWS_ONLY, SETUP_SCRIPT_REQUIRED, SYSTEM_INTEGRATION_REQUIRED]
+    reconsider_when: [new-upstream-release]
+    evidence_links:
+      - {label: release, url: https://github.com/portingpete/The-Darkness-Recomp/releases/tag/v0.1.8}
+      - {label: linux-setup, url: https://github.com/portingpete/The-Darkness-Recomp/blob/v0.1.8/STEAM_DECK.md}
+    notes: >-
+      The Steam Deck AppImage is an installer for the Windows game, not a native
+      Linux game payload. Release instructions require Python 3.10+, KDialog or
+      Zenity, a user-selected installation parent, UMU/GE-Proton acquisition and
+      desktop-launcher creation; first play may download Steam Runtime. This does
+      not fit TarLink's existing portable application/runtime contract. An AppImage
+      filename and upstream checksums alone do not make this installer admissible.
+  - id: alien-resurrection
+    upstream: DiegoDeDios/AlienReRecomp
+    last_checked: {release_tag: v0.1.8, release_id: 423102286}
+    status: ready
+    reconsider_when: [new-upstream-release]
+    evidence_links:
+      - {label: release, url: https://github.com/DiegoDeDios/AlienReRecomp/releases/tag/v0.1.8}
+      - {label: linux-amd64, url: https://github.com/DiegoDeDios/AlienReRecomp/releases/download/v0.1.8/AlienResurrection-0.1.8-linux-x86_64.tar.gz}
+    notes: >-
+      Recommended for manifest review on linux-amd64. Bounded TarLink inspection
+      safely extracted the exact archive and computed SHA-256
+      12c5790d50dee8a64ed03b5f7780f14e4a75612773b6dbc5b252d0f0545b007d,
+      matching GitHub's asset digest. AlienResurrection is an amd64 ELF with
+      $ORIGIN/lib RUNPATH; libSDL3.so.0 is bundled and the only unresolved SONAMEs
+      are ld-linux-x86-64.so.2, libc.so.6 and libm.so.6. Upstream requires glibc
+      2.35+ and a Vulkan driver; no Linux arm64 asset is published. The release
+      describes an interpreter reading the user's own USA disc image, rather
+      than distributing recompiled game code. Original game data remains external.
+      A linux-amd64 manifest passed full registry structural validation, desktop
+      icon audit and changed-artifact lifecycle materialization against registry
+      base 1239e7c5aa84bb45859da7360ae18b3b25275c64. It uses a desktop entry with
+      the system-default icon: upstream's only PNG is 1024x1024, which exceeds
+      TarLink's supported raster sizes. Admission still requires the registry PR
+      checks and merge. No application binary was executed; no gameplay tested.
+  - id: uncharted-linux
+    upstream: spacepepperoni/uncharted_Linux
+    last_checked: {release_tag: v0.3.11-linux.157, release_id: 430700521}
+    status: ready
+    reconsider_when: [new-upstream-release, manual]
+    evidence_links:
+      - {label: release, url: https://github.com/spacepepperoni/uncharted_Linux/releases/tag/v0.3.11-linux.157}
+      - {label: linux-appimage, url: https://github.com/spacepepperoni/uncharted_Linux/releases/download/v0.3.11-linux.157/Uncharted-x86_64.AppImage}
+      - {label: requirements, url: https://github.com/spacepepperoni/uncharted_Linux}
+      - {label: alternative-linux-fork, url: https://github.com/Pepin208/uncharted_pc_linux/releases/tag/v0.3.9-linux}
+    notes: >-
+      Native Linux candidate for all three games in The Nathan Drake Collection,
+      not three separate packages. TarLink downloaded the opaque AppImage and
+      computed SHA-256 2c12b34bf5cd7acc9e4301547b9cd30e2c8d1cae687a5f7a4070ce001703c25c,
+      matching GitHub's asset digest. Full registry structural validation, icon
+      audit and changed-artifact lifecycle materialization passed for the
+      AppImage on linux-amd64 against registry base
+      1239e7c5aa84bb45859da7360ae18b3b25275c64. This authoritatively resolves the
+      advisory PLATFORM ambiguity without changing discovery or extraction rules.
+      The manifest uses the AppImage and a commit-pinned 256x256 upstream PNG.
+      The published AppRun sets BB_DATA_DIR to XDG_DATA_HOME/uncharted-linux
+      (default ~/.local/share/uncharted-linux), keeping writable data outside the
+      image. That release's AppRun checks glibc >=2.38; README still says 2.41+.
+      Distribution compatibility is not established by lifecycle checks; Vulkan
+      1.3 and suitable GPU/VRAM remain upstream requirements. The tar.gz was
+      rejected with UNSAFE_ARTIFACT_LAYOUT and is not used. Pepin208's separate
+      v0.3.9-linux AppImage (release 426323981) also matched SHA-256
+      3274c11c13bf094a8e964ca3fd2d15f79ff78f9cd137612de67b8e27bcc770c6,
+      but is not the selected package. Original decrypted collection data remains
+      user-provided. AppImages were never executed, mounted or extracted; no
+      gameplay tested. Admission still requires registry PR checks and merge.
+  - id: scda-xbe-recomp
+    upstream: TGP482/SCDA-XBERecomp
+    last_checked: {release_tag: V3, release_id: 427982090}
+    status: blocked
+    blockers: [WINDOWS_ONLY]
+    reconsider_when: [new-upstream-release]
+    evidence_links:
+      - {label: release, url: https://github.com/TGP482/SCDA-XBERecomp/releases/tag/V3}
+      - {label: requirements, url: https://github.com/TGP482/SCDA-XBERecomp}
+      - {label: proton-launch, url: https://github.com/TGP482/SCDA-XBERecomp/issues/5}
+      - {label: proton-rendering, url: https://github.com/TGP482/SCDA-XBERecomp/issues/20}
+    notes: >-
+      This is the original Xbox version of Double Agent, distinct from the
+      existing commercial Windows version. V3 publishes SCDA-XBERecomp.zip;
+      upstream explicitly targets Windows 10 x64, Direct3D 12 and XAudio2, with
+      first-start game-code compilation. No native Linux release is published.
+      A future native Linux artifact is required before packaging review;
+      Wine/Proton integration is outside the current TarLink contract. Upstream
+      issue 5 reports successful SteamOS Desktop/Game Mode use with Microsoft's
+      d3dcompiler_47.dll and a native,builtin override; issue 20 reports remaining
+      black textures on Steam Deck. Manual Steam/Proton use is a separate viable
+      route to try, not verified TarLink support. Steam Linux Runtime runs native
+      ELF programs and is not Proton; it cannot launch this Windows executable.
