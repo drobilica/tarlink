@@ -27,6 +27,7 @@ type RegistryApplyService interface {
 	ApplyRegistryUpdates(context.Context, RegistryApplyOptions) (RegistryApplyReport, error)
 }
 type RegistryApplyOptions struct {
+	App    string
 	Root   string
 	DryRun bool
 }
@@ -34,6 +35,7 @@ type RegistryApplyReport struct {
 	SchemaVersion int                   `json:"schema_version"`
 	DryRun        bool                  `json:"dry_run"`
 	Results       []RegistryApplyResult `json:"results"`
+	Summary       RegistryApplySummary  `json:"summary"`
 }
 type RegistryApplyResult struct {
 	App        string              `json:"app"`
@@ -45,8 +47,34 @@ type RegistryApplyResult struct {
 	Edit       *RegistryEditReport `json:"edit,omitempty"`
 }
 
-func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryApplyOptions) (RegistryApplyReport, error) {
-	report := RegistryApplyReport{SchemaVersion: 1, DryRun: options.DryRun, Results: []RegistryApplyResult{}}
+type RegistryApplySummary struct {
+	Total       int `json:"total"`
+	Updated     int `json:"updated"`
+	WouldUpdate int `json:"would_update"`
+	Unchanged   int `json:"unchanged"`
+	Skipped     int `json:"skipped"`
+	Errors      int `json:"errors"`
+}
+
+func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryApplyOptions) (report RegistryApplyReport, applyErr error) {
+	report = RegistryApplyReport{SchemaVersion: 1, DryRun: options.DryRun, Results: []RegistryApplyResult{}}
+	defer func() {
+		report.Summary.Total = len(report.Results)
+		for _, result := range report.Results {
+			switch result.Status {
+			case "updated":
+				report.Summary.Updated++
+			case "would-update":
+				report.Summary.WouldUpdate++
+			case "no-change":
+				report.Summary.Unchanged++
+			case "skipped":
+				report.Summary.Skipped++
+			case "error":
+				report.Summary.Errors++
+			}
+		}
+	}()
 	if options.Root == "" {
 		return report, errors.New("local registry path is required")
 	}
@@ -61,6 +89,11 @@ func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryA
 	if err != nil {
 		return report, err
 	}
+	if options.App != "" {
+		if _, ok := catalog.Variants[options.App]; !ok {
+			return report, fmt.Errorf("unknown registry application %q", options.App)
+		}
+	}
 	cache, err := os.MkdirTemp("", "tarlink-registry-update-*")
 	if err != nil {
 		return report, err
@@ -74,11 +107,14 @@ func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryA
 	if httpClient.Timeout <= 0 || httpClient.Timeout > 30*time.Second {
 		httpClient.Timeout = 30 * time.Second
 	}
-	// This private cache starts empty for every apply and avoids repeated lookups
-	// for shared repositories without reusing metadata from earlier invocations.
+	// This private artifact cache starts empty for every apply. Release metadata
+	// is freshly fetched and narrowed to the heads relevant to each application.
 	client := &research.Client{CacheRoot: cache, HTTP: httpClient}
 	ids := make([]string, 0, len(catalog.Variants))
 	for id := range catalog.Variants {
+		if options.App != "" && id != options.App {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -145,15 +181,22 @@ func (m *Maintainer) ApplyRegistryUpdates(ctx context.Context, options RegistryA
 }
 
 func prepareRegistryUpdate(ctx context.Context, client *research.Client, repository string, previous []byte, document *manifest.Document) ([]byte, []string, error) {
-	releases, err := client.Discover(ctx, repository)
-	if err != nil {
-		return nil, nil, err
-	}
-	sort.SliceStable(releases, func(i, j int) bool { return releases[i].PublishedAt.After(releases[j].PublishedAt) })
 	channels := map[string]manifest.ChannelHead{"stable": {Current: document.Release.Current}}
 	if document.Release.Current == "" {
 		channels = document.Release.Channels
 	}
+	releases, err := client.DiscoverForUpdate(ctx, repository, func(tag string) bool {
+		for _, head := range channels {
+			if freshness.ReleaseVersion(repository, tag) == freshness.ReleaseVersion(repository, head.Current) {
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	sort.SliceStable(releases, func(i, j int) bool { return releases[i].PublishedAt.After(releases[j].PublishedAt) })
 	names := make([]string, 0, len(channels))
 	for channel := range channels {
 		names = append(names, channel)
@@ -231,19 +274,21 @@ func prepareRegistryUpdate(ctx context.Context, client *research.Client, reposit
 			if format == "" {
 				format = document.Release.Archive
 			}
+			names := make([]string, 0, len(latest.Assets))
+			for _, asset := range latest.Assets {
+				names = append(names, asset.Name)
+			}
+			assessment := assessRegistryAssets(document.ID, platform, format, names)
+			if assessment.Status != "matched" {
+				return nil, nil, &freshness.Issue{Reason: assessment.Status + "_platform_asset", Detail: fmt.Sprintf("%s/%s: %s", channel, platform, describeRegistryAssets(assessment))}
+			}
 			var assets []research.Asset
 			for _, asset := range latest.Assets {
-				if freshness.MatchesAsset(document.ID, asset.Name) && registryUpdateAssetPlatform(asset.Name) == platform && registryAssetFormat(asset.Name) == format {
+				if asset.Name == assessment.Matches[0] {
 					assets = append(assets, asset)
 				}
 			}
-			if len(assets) != 1 {
-				reason := "ambiguous_platform_asset"
-				if len(assets) == 0 {
-					reason = "missing_platform_asset"
-				}
-				return nil, nil, &freshness.Issue{Reason: reason, Detail: fmt.Sprintf("%s/%s: expected one %s asset for %s, found %d; review upstream asset names and the built-in rule", channel, platform, format, document.ID, len(assets))}
-			}
+
 			asset := assets[0]
 			// Only exact assets under the reviewed upstream repository are eligible.
 			target, err := research.ParseReleaseAssetURL(asset.URL)

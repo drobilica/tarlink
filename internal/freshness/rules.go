@@ -64,7 +64,7 @@ func Resolve(appID string, artifactURLs []string) (Decision, error) {
 // prefix before the existing platform, format, digest and inspection checks.
 func MatchesAsset(appID, asset string) bool {
 	rule, ok := approvedRules[appID]
-	return !ok || rule.AssetPrefix == "" || strings.HasPrefix(asset, rule.AssetPrefix)
+	return !ok || ((rule.AssetPrefix == "" || strings.HasPrefix(asset, rule.AssetPrefix)) && (rule.AssetExclude == "" || !strings.Contains(asset, rule.AssetExclude)))
 }
 
 // Issue gives reports a stable reason code and an actionable explanation.

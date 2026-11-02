@@ -301,12 +301,26 @@ type discoveryFile struct {
 }
 
 func (c *Client) Discover(ctx context.Context, raw string) ([]Release, error) {
+	return c.discover(ctx, raw, nil)
+}
+
+// DiscoverForUpdate validates the newest release in each channel and current
+// registry heads. Unrelated historical assets cannot block a current update.
+// keepCurrent is supplied by the maintainer's compiled version rules.
+func (c *Client) DiscoverForUpdate(ctx context.Context, raw string, keepCurrent func(string) bool) ([]Release, error) {
+	if keepCurrent == nil {
+		return nil, errors.New("current release selector is required")
+	}
+	return c.discover(ctx, raw, keepCurrent)
+}
+
+func (c *Client) discover(ctx context.Context, raw string, keepCurrent func(string) bool) ([]Release, error) {
 	repo, err := ParseRepository(raw)
 	if err != nil {
 		return nil, err
 	}
 	cache := ""
-	if c != nil && c.CacheRoot != "" {
+	if keepCurrent == nil && c != nil && c.CacheRoot != "" {
 		cache = filepath.Join(c.CacheRoot, "discovery", cacheName(string(repo))+".json")
 	}
 	if c != nil && !c.Refresh && cache != "" {
@@ -375,6 +389,21 @@ refresh:
 		if len(batch) < 50 {
 			break
 		}
+	}
+	if keepCurrent != nil {
+		newest := map[bool]time.Time{}
+		for _, release := range rawReleases {
+			if !release.Draft && release.PublishedAt.After(newest[release.Prerelease]) {
+				newest[release.Prerelease] = release.PublishedAt
+			}
+		}
+		selected := make([]apiRelease, 0, len(rawReleases))
+		for _, release := range rawReleases {
+			if !release.Draft && (release.PublishedAt.Equal(newest[release.Prerelease]) || keepCurrent(release.Tag)) {
+				selected = append(selected, release)
+			}
+		}
+		rawReleases = selected
 	}
 	result := make([]Release, 0, len(rawReleases))
 	for _, in := range rawReleases {

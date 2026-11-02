@@ -45,14 +45,28 @@ type ApprovedRelease struct {
 	Channel string
 }
 
+// AssetAssessment checks names only; matched assets still require verification.
+type AssetAssessment struct {
+	Status   string          `json:"status"`
+	Platform string          `json:"platform"`
+	Format   string          `json:"format"`
+	Matches  []string        `json:"matches"`
+	Rejected []RejectedAsset `json:"rejected"`
+}
+type RejectedAsset struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
+}
 type Candidate struct {
-	App         string    `json:"app"`
-	Repository  string    `json:"repository"`
-	Channel     string    `json:"channel"`
-	Version     string    `json:"version"`
-	UpstreamURL string    `json:"upstream_url"`
-	PublishedAt time.Time `json:"published_at,omitempty"`
-	Prerelease  bool      `json:"prerelease"`
+	AssetNames  []string         `json:"-"`
+	Assets      *AssetAssessment `json:"assets,omitempty"`
+	App         string           `json:"app"`
+	Repository  string           `json:"repository"`
+	Channel     string           `json:"channel"`
+	Version     string           `json:"version"`
+	UpstreamURL string           `json:"upstream_url"`
+	PublishedAt time.Time        `json:"published_at,omitempty"`
+	Prerelease  bool             `json:"prerelease"`
 }
 
 // Report is the complete read-only result for one invocation.
@@ -83,6 +97,9 @@ func (c *Client) ForScan() *Client {
 }
 
 type githubRelease struct {
+	Assets []struct {
+		Name string `json:"name"`
+	} `json:"assets"`
 	TagName     string    `json:"tag_name"`
 	HTMLURL     string    `json:"html_url"`
 	Draft       bool      `json:"draft"`
@@ -146,7 +163,11 @@ func (c *Client) Discover(ctx context.Context, target Target) ([]Candidate, erro
 				continue
 			}
 		}
-		result = append(result, Candidate{App: target.App, Repository: target.Repository, Channel: target.Channel, Version: version, UpstreamURL: release.HTMLURL, PublishedAt: release.PublishedAt, Prerelease: release.Prerelease})
+		assetNames := make([]string, 0, len(release.Assets))
+		for _, asset := range release.Assets {
+			assetNames = append(assetNames, asset.Name)
+		}
+		result = append(result, Candidate{AssetNames: assetNames, App: target.App, Repository: target.Repository, Channel: target.Channel, Version: version, UpstreamURL: release.HTMLURL, PublishedAt: release.PublishedAt, Prerelease: release.Prerelease})
 	}
 	return result, nil
 }

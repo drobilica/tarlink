@@ -6,6 +6,7 @@ Check every application in the official registry with:
 tarlink registry update
 tarlink registry update -n 5
 tarlink registry update -n 5 --json
+tarlink registry update --app xemu --json
 ```
 
 This command first refreshes and validates the official registry, then checks
@@ -51,7 +52,12 @@ produces an error requiring manual review, rather than a historical list.
 Godot uses its official `godotengine/godot-builds` repository; numeric
 `-stable` tags map to registry versions without that suffix in discovery and apply.
 
-Candidates still require compatibility review. Discovery and apply examine up to
+Each registry-update candidate reports an `assets` assessment: `matched`,
+`missing`, or `ambiguous`, with matching filenames and a reason for each rejected
+filename. The summary counts candidates with and without one filename match.
+This assesses the current channel head's platform and archive format; it does
+not verify downloaded bytes, executable paths, or compatibility. Candidates still
+require compatibility review. Discovery and apply examine up to
 100 releases using at most two pages of 50 releases, each bounded to 4 MiB.
 Advisory requests reject redirects and have a 30-second timeout per request.
 API errors produce failed checks rather than a clean result. Reasons distinguish
@@ -71,6 +77,7 @@ To prepare updates in an explicit local checkout:
 ```sh
 tarlink registry update --apply --registry ../tarlink-registry --dry-run
 tarlink registry update --apply --registry ../tarlink-registry
+tarlink registry update --apply --registry ../tarlink-registry --app xemu
 ```
 
 This maintainer mode validates the selected local tree and compares it directly
@@ -78,15 +85,23 @@ with freshly fetched approved upstream releases; it does not refresh the officia
 catalog cache. It selects only the newest published release per declared channel
 and adds it only when newer than the current head and absent from history. It
 never backfills older missing releases or downgrades a numeric version.
-`-n` cannot be combined with `--apply`.
+`-n` cannot be combined with `--apply`. Both modes accept `--app <id>` to
+check only that application's declared platforms and channels. Unknown IDs fail
+before upstream release requests. Apply validates release metadata for the newest
+stable/prerelease releases and current registry heads; unrelated older duplicate
+release objects do not block an update. Duplicates within the selected set still
+fail validation.
 
 Every platform of the current channel release must have exactly one upstream
 asset matching its platform, archive format, and any reviewed application asset
-prefix. This prevents shared repositories from mixing assets for different apps.
+rules (prefixes and explicit exclusions). This prevents shared repositories from
+mixing assets for different apps.
 AppImage filenames identify Linux implicitly but must still name the architecture;
 the acquired binary is independently inspected for that architecture.
 `missing_platform_asset` and `ambiguous_platform_asset` explain when selection
-needs manual review. Assets must be canonical GitHub
+needs manual review, listing matching and rejected filenames with reasons.
+Reviewed rules exclude DKR's SteamDeck build, Rage Racer's editor, and xemu's
+debug builds, and select Sonic3Recomp for Sonic 3. Assets must be canonical GitHub
 release URLs in the compiled approved repository. Downloads use bounded HTTPS
 acquisition and safe static inspection; published supported digests are verified,
 and missing upstream digests are handled by computing the registry
@@ -101,7 +116,9 @@ heads using the existing owned-tree lock, concurrent-edit checks, atomic manifes
 replacement, and directory flush. Existing history is retained. Each application's
 manifest is published separately; a failure leaves that application unchanged,
 while other applications can succeed. JSON and text report per-app outcomes and
-errors cause a nonzero exit. As with existing registry edits, a directory-flush
+errors cause a nonzero exit. The final tally separates updated, would-update,
+unchanged, skipped, and failed apps; partial failures retain successful results.
+As with existing registry edits, a directory-flush
 failure after publication is reported with `edit.written: true`.
 Review the resulting diff and submit it through normal registry review: this
 command does not commit, push, publish, or install anything. `--offline` is
