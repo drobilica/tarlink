@@ -22,7 +22,11 @@ calculated pin, prefer SHA-256; existing valid SHA-256 and SHA-512 releases do
 not need to be rehashed. Keep schema-v5 `verification.source` as an honest
 official upstream release page or artifact-origin HTTPS URL. It is
 informational metadata, not independent checksum provenance. Never fabricate a
-checksum URL.
+checksum URL. When GitHub publishes a supported asset digest and inspection
+verifies it, `registry inspect`, `registry add`, and `registry update --apply`
+preserve the exact release-asset API URL as `verification.source`, for any
+GitHub repository. Without that evidence, generated manifests retain the
+official artifact-origin URL; they do not claim a published checksum exists.
 
 Registry CI resolves the latest published stable TarLink release at the start
 of each workflow run and uses that released binary for structural validation
