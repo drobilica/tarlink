@@ -23,6 +23,7 @@ type approvedUpstream struct {
 	VersionPrefix string `yaml:"version-prefix"`
 	VersionSuffix string `yaml:"version-suffix"`
 	AssetPrefix   string `yaml:"asset-prefix"`
+	AssetExclude  string `yaml:"asset-exclude"`
 }
 
 // LoadRules validates the compiled provider, version and asset rules.
@@ -54,7 +55,7 @@ func LoadRules(data []byte) (map[string]approvedUpstream, error) {
 		if _, exists := result[entry.App]; exists {
 			return nil, fmt.Errorf("duplicate approved freshness mapping for %q", entry.App)
 		}
-		for _, value := range []string{entry.VersionPrefix, entry.VersionSuffix, entry.AssetPrefix} {
+		for _, value := range []string{entry.VersionPrefix, entry.VersionSuffix, entry.AssetPrefix, entry.AssetExclude} {
 			if len(value) > 80 || strings.ContainsAny(value, "/\\\n\r\t ") {
 				return nil, fmt.Errorf("invalid discovery rule for %q", entry.App)
 			}

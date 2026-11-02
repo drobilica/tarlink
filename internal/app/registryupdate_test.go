@@ -289,3 +289,34 @@ func TestRegistryUpdateRejectsNegativeLimitBeforeNetwork(t *testing.T) {
 		t.Fatal("negative limit accepted")
 	}
 }
+
+func TestRegistryUpdateTargetAndAssetReadiness(t *testing.T) {
+	root := t.TempDir()
+	for _, id := range []string{"godot", "tiled"} {
+		writeOnboardingManifest(t, filepath.Join(root, "apps", id, "manifest.yaml"), strings.Replace(strings.ReplaceAll(onboardingValidManifest, "foo", id), "name: Foo", "name: "+id, 1))
+	}
+	catalog, err := registry.ValidateTree(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	client := &freshness.Client{HTTP: &http.Client{Transport: maintainerRoundTrip(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if !strings.Contains(r.URL.Path, "godot") {
+			t.Fatalf("unselected repository requested: %s", r.URL)
+		}
+		return maintainerResponse(http.StatusOK, `[{"tag_name":"v2.0","assets":[{"name":"godot-linux-amd64.zip"},{"name":"godot-linux-arm64.zip"}]}]`), nil
+	})}}
+	report, err := checkRegistryUpdates(context.Background(), catalog, client, RegistryUpdateOptions{App: "godot"})
+	if err != nil || calls != 1 || len(report.Results) != 1 || report.Summary.MatchedAssets != 1 {
+		t.Fatalf("%+v calls=%d %v", report, calls, err)
+	}
+	a := report.Results[0].Candidates[0].Assets
+	if a == nil || a.Status != "matched" || len(a.Rejected) != 1 || a.Format != "zip" {
+		t.Fatalf("%+v", a)
+	}
+	_, err = checkRegistryUpdates(context.Background(), catalog, client, RegistryUpdateOptions{App: "missing"})
+	if err == nil || calls != 1 {
+		t.Fatalf("calls=%d %v", calls, err)
+	}
+}

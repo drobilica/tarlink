@@ -377,3 +377,41 @@ func TestRegistryApplyMatchesCanonicalRepositoryCase(t *testing.T) {
 		t.Fatalf("versions=%v updated=%d err=%v", versions, len(updated), err)
 	}
 }
+
+func TestRegistryApplyIgnoresUnrelatedDuplicateHistory(t *testing.T) {
+	root, m, releases, _ := registryApplyFixture(t)
+	old := research.Release{ID: 90, Tag: "v0.1", PublishedAt: time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)}
+	*releases = append(*releases, old, old)
+	report, err := m.ApplyRegistryUpdates(context.Background(), RegistryApplyOptions{Root: root, DryRun: true})
+	if err != nil || report.Results[0].Status != "would-update" {
+		t.Fatalf("%+v %v", report, err)
+	}
+	// Conflicting selected metadata must still fail without writing a manifest.
+	*releases = append(*releases, (*releases)[0])
+	before := registryEditSnapshot(t, root)
+	report, err = m.ApplyRegistryUpdates(context.Background(), RegistryApplyOptions{Root: root})
+	if err == nil || report.Results[0].Status != "error" || !reflect.DeepEqual(before, registryEditSnapshot(t, root)) {
+		t.Fatalf("%+v %v", report, err)
+	}
+}
+
+func TestRegistryApplyTargetAndSummary(t *testing.T) {
+	root, m, _, downloads := registryApplyFixture(t)
+	writeOnboardingManifest(t, filepath.Join(root, "apps", "foo", "manifest.yaml"), strings.Replace(onboardingValidManifest, "name: Foo", "name: Other", 1))
+	report, err := m.ApplyRegistryUpdates(context.Background(), RegistryApplyOptions{Root: root, App: "godot", DryRun: true})
+	if err != nil || report.Summary.Total != 1 || report.Summary.WouldUpdate != 1 || *downloads != 1 {
+		t.Fatalf("%+v %v", report, err)
+	}
+	report, err = m.ApplyRegistryUpdates(context.Background(), RegistryApplyOptions{Root: root, App: "missing"})
+	if err == nil || len(report.Results) != 0 || *downloads != 1 {
+		t.Fatalf("%+v %v", report, err)
+	}
+	report, err = m.ApplyRegistryUpdates(context.Background(), RegistryApplyOptions{Root: root})
+	if err != nil || report.Summary.Total != 2 || report.Summary.Updated != 1 || report.Summary.Skipped != 1 {
+		t.Fatalf("%+v %v", report, err)
+	}
+	report, err = m.ApplyRegistryUpdates(context.Background(), RegistryApplyOptions{Root: root, App: "godot"})
+	if err != nil || report.Summary.Unchanged != 1 {
+		t.Fatalf("%+v %v", report, err)
+	}
+}

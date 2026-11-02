@@ -149,3 +149,17 @@ func TestRegistryApplyCLIReturnsPartialFailure(t *testing.T) {
 		t.Fatalf("code=%d output=%s", code, out.String())
 	}
 }
+
+func TestRegistryUpdateAppSelector(t *testing.T) {
+	scan := &registryUpdateService{}
+	code := (Runner{Service: scan, Stdout: io.Discard, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "update", "--app", "godot"})
+	if code != 0 || scan.options.App != "godot" {
+		t.Fatalf("%d %+v", code, scan.options)
+	}
+	apply := &registryApplyFake{}
+	var out bytes.Buffer
+	code = (Runner{Registry: RegistryTools{Apply: apply}, Stdout: &out, Stderr: io.Discard}).Run(context.Background(), []string{"registry", "update", "--apply", "--registry", "/checkout", "--app", "godot"})
+	if code != 0 || apply.options.App != "godot" || !strings.Contains(out.String(), "Results:") {
+		t.Fatalf("%d %+v %s", code, apply.options, out.String())
+	}
+}

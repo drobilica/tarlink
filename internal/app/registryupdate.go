@@ -23,6 +23,7 @@ type RegistryUpdateService interface {
 
 // RegistryUpdateOptions controls the advisory report, never registry contents.
 type RegistryUpdateOptions struct {
+	App string
 	// Limit caps missing releases per app/platform across channels; zero means all.
 	Limit int
 }
@@ -36,12 +37,14 @@ type RegistryUpdateReport struct {
 }
 
 type RegistryUpdateSummary struct {
-	Total        int            `json:"total"`
-	Candidates   int            `json:"candidates"`
-	NoCandidates int            `json:"no_candidates"`
-	Skipped      int            `json:"skipped"`
-	Errors       int            `json:"errors"`
-	SkipReasons  map[string]int `json:"skip_reasons"`
+	MatchedAssets int            `json:"candidates_with_asset_match"`
+	BlockedAssets int            `json:"candidates_without_asset_match"`
+	Total         int            `json:"total"`
+	Candidates    int            `json:"candidates"`
+	NoCandidates  int            `json:"no_candidates"`
+	Skipped       int            `json:"skipped"`
+	Errors        int            `json:"errors"`
+	SkipReasons   map[string]int `json:"skip_reasons"`
 }
 
 type RegistryUpdateResult struct {
@@ -88,6 +91,15 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 	defer func() {
 		report.Summary = RegistryUpdateSummary{Total: len(report.Results), SkipReasons: map[string]int{}}
 		for _, r := range report.Results {
+			for _, candidate := range r.Candidates {
+				if candidate.Assets != nil {
+					if candidate.Assets.Status == "matched" {
+						report.Summary.MatchedAssets++
+					} else {
+						report.Summary.BlockedAssets++
+					}
+				}
+			}
 			switch r.Status {
 			case "candidates":
 				report.Summary.Candidates++
@@ -101,9 +113,17 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 			}
 		}
 	}()
+	if options.App != "" {
+		if _, ok := catalog.Variants[options.App]; !ok {
+			return report, fmt.Errorf("unknown registry application %q", options.App)
+		}
+	}
 	client = client.ForScan()
 	ids := make([]string, 0, len(catalog.Variants))
 	for id := range catalog.Variants {
+		if options.App != "" && id != options.App {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -155,6 +175,16 @@ func checkRegistryUpdates(ctx context.Context, catalog *registry.Catalog, client
 						result.Error = fmt.Sprintf("%s: %v", channel, err)
 						failures = append(failures, fmt.Errorf("%s/%s/%s: %w", id, result.Platform, channel, err))
 						break
+					}
+					for i := range candidates {
+						format := ""
+						for _, release := range item.ReleaseHistory.Releases {
+							if release.Channel == channel && release.Version == item.ReleaseHistory.Channels[channel].Current {
+								format = release.Archive
+							}
+						}
+						assessment := assessRegistryAssets(id, result.Platform, format, candidates[i].AssetNames)
+						candidates[i].Assets = &assessment
 					}
 					result.Candidates = append(result.Candidates, candidates...)
 				}

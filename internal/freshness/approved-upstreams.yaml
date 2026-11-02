@@ -44,6 +44,7 @@
 - app: diddy-kong-racing-recompiled
   repository: ThatGuyMcd/DKR-R
   version-prefix: Version
+  asset-exclude: -SteamDeck-
 - app: dinosaur-planet-recompiled
   repository: DinosaurPlanetRecomp/dino-recomp
 - app: dirt-dash
@@ -152,6 +153,7 @@
   repository: ebkr/r2modmanPlus
 - app: rage-racer-pc
   repository: khasinski/rage-racer-pc
+  asset-exclude: -Editor-
 - app: rave-racer
   repository: spacestate1/namco22-decompile
   asset-prefix: RaveRacer-
@@ -169,6 +171,7 @@
   repository: cdlewis/snowboardkids2-recomp
 - app: sonic-3-recompiled
   repository: mstan/Sonic3AndKnucklesRecomp
+  asset-prefix: Sonic3Recomp-
 - app: sssv-recompiled
   repository: Cellenseres/SSSV_Recomp
 - app: starfox-enhanced
@@ -209,6 +212,7 @@
   version-prefix: trx-
 - app: xemu
   repository: xemu-project/xemu
+  asset-exclude: -dbg-
 - app: xrevive
   repository: Teraflopping/xrevive
 - app: yu-gi-oh-forbidden-memories-recompiled
