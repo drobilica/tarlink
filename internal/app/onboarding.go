@@ -51,20 +51,21 @@ type RegistryDirectoryInspection struct {
 // RegistryCandidate separates mechanical facts from unresolved maintainer
 // decisions. It is shared by inspect and add so their answers cannot drift.
 type RegistryCandidate struct {
-	Repository       string   `json:"repository,omitempty"`
-	Release          string   `json:"release,omitempty"`
-	Asset            string   `json:"asset,omitempty"`
-	URL              string   `json:"url,omitempty"`
-	Platform         string   `json:"platform,omitempty"`
-	Archive          string   `json:"archive,omitempty"`
-	SHA256           string   `json:"sha256,omitempty"`
-	Executable       string   `json:"executable,omitempty"`
-	Icon             string   `json:"icon,omitempty"`
-	RemoteIconURL    string   `json:"remote_icon_url,omitempty"`
-	RemoteIconSHA256 string   `json:"remote_icon_sha256,omitempty"`
-	Executables      []string `json:"executable_candidates,omitempty"`
-	Icons            []string `json:"icon_candidates,omitempty"`
-	Nested           []string `json:"nested_archive_candidates,omitempty"`
+	Repository         string   `json:"repository,omitempty"`
+	Release            string   `json:"release,omitempty"`
+	Asset              string   `json:"asset,omitempty"`
+	URL                string   `json:"url,omitempty"`
+	Platform           string   `json:"platform,omitempty"`
+	Archive            string   `json:"archive,omitempty"`
+	SHA256             string   `json:"sha256,omitempty"`
+	VerificationSource string   `json:"verification_source,omitempty"`
+	Executable         string   `json:"executable,omitempty"`
+	Icon               string   `json:"icon,omitempty"`
+	RemoteIconURL      string   `json:"remote_icon_url,omitempty"`
+	RemoteIconSHA256   string   `json:"remote_icon_sha256,omitempty"`
+	Executables        []string `json:"executable_candidates,omitempty"`
+	Icons              []string `json:"icon_candidates,omitempty"`
+	Nested             []string `json:"nested_archive_candidates,omitempty"`
 }
 
 type RegistryRequiredInput struct {
@@ -319,7 +320,7 @@ func candidateFromResearch(result ResearchResult, assetURL string) (RegistryCand
 	if inspection == nil {
 		return RegistryCandidate{}, []RegistryRequiredInput{{Field: "artifact", Reason: "missing_analysis"}}
 	}
-	candidate := RegistryCandidate{Repository: string(result.Repository), Release: result.Release.Tag, Asset: result.Asset.Name, URL: assetURL, Archive: inspection.ArtifactType, SHA256: inspection.ComputedDigests["sha256"], Executables: append([]string(nil), inspection.Executables...), Icons: append([]string(nil), inspection.Icons...), Nested: append([]string(nil), inspection.Nested...)}
+	candidate := RegistryCandidate{Repository: string(result.Repository), Release: result.Release.Tag, Asset: result.Asset.Name, URL: assetURL, VerificationSource: registryVerificationSource(result.Provenance, assetURL), Archive: inspection.ArtifactType, SHA256: inspection.ComputedDigests["sha256"], Executables: append([]string(nil), inspection.Executables...), Icons: append([]string(nil), inspection.Icons...), Nested: append([]string(nil), inspection.Nested...)}
 	if result.Analysis != nil {
 		for _, a := range result.Analysis.Artifacts {
 			if a.Asset.ID == result.Asset.ID {
@@ -430,7 +431,7 @@ func (m *Maintainer) deriveRegistryCandidate(ctx context.Context, target researc
 	if err != nil {
 		return RegistryCandidate{}, nil, err
 	}
-	candidate := RegistryCandidate{Repository: string(target.Repository), Release: release.Tag, Asset: asset.Name, URL: target.URL, Platform: research.InferPlatform(asset.Name), Archive: inspection.ArtifactType, SHA256: inspection.ComputedDigests["sha256"], Executables: append([]string(nil), inspection.Executables...), Icons: append([]string(nil), inspection.Icons...), Nested: append([]string(nil), inspection.Nested...)}
+	candidate := RegistryCandidate{Repository: string(target.Repository), Release: release.Tag, Asset: asset.Name, URL: target.URL, VerificationSource: registryVerificationSource(provenance, target.URL), Platform: research.InferPlatform(asset.Name), Archive: inspection.ArtifactType, SHA256: inspection.ComputedDigests["sha256"], Executables: append([]string(nil), inspection.Executables...), Icons: append([]string(nil), inspection.Icons...), Nested: append([]string(nil), inspection.Nested...)}
 	if candidate.Archive == "appimage" {
 		candidate.Executable = "appimage"
 		candidate.Executables = []string{"appimage"}
@@ -615,7 +616,20 @@ func inspectDirectory(root string) (RegistryDirectoryInspection, error) {
 	return result, nil
 }
 
+// registryVerificationSource preserves the upstream evidence already checked by
+// inspection. Missing published digests retain an honest artifact origin.
+func registryVerificationSource(provenance research.Provenance, artifactURL string) string {
+	if provenance.Verdict == research.Acceptable && provenance.AssetID > 0 {
+		return fmt.Sprintf("https://api.github.com/repos/%s/releases/assets/%d", provenance.Repository, provenance.AssetID)
+	}
+	return artifactURL
+}
+
 func candidateDocument(candidate RegistryCandidate, options RegistryAddOptions) (*manifest.Document, error) {
+	source := candidate.VerificationSource
+	if source == "" {
+		source = candidate.URL
+	}
 	if candidate.Platform == "" || candidate.Archive == "" || candidate.Executable == "" {
 		return nil, errors.New("candidate has unresolved required fields")
 	}
@@ -634,7 +648,7 @@ func candidateDocument(candidate RegistryCandidate, options RegistryAddOptions) 
 			Releases: []manifest.ReleaseDefinition{{
 				Version: candidate.Release,
 				Artifacts: map[string]manifest.Artifact{
-					candidate.Platform: {URL: candidate.URL, Verification: manifest.ArtifactVerification{Digest: candidate.SHA256, Source: candidate.URL}},
+					candidate.Platform: {URL: candidate.URL, Verification: manifest.ArtifactVerification{Digest: candidate.SHA256, Source: source}},
 				},
 			}},
 		},

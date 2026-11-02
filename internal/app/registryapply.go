@@ -337,7 +337,7 @@ func prepareRegistryUpdate(ctx context.Context, client *research.Client, reposit
 			if digest == "" {
 				return nil, nil, errors.New("artifact inspection did not compute the registry verification digest")
 			}
-			old.URL, old.Verification = asset.URL, manifest.ArtifactVerification{Digest: digest, Source: asset.URL}
+			old.URL, old.Verification = asset.URL, manifest.ArtifactVerification{Digest: digest, Source: registryVerificationSource(provenance, asset.URL)}
 			addition.Artifacts[platform] = old
 		}
 		document.Release.Releases = append(document.Release.Releases, addition)
