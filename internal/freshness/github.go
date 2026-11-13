@@ -311,11 +311,11 @@ func responseIssue(response *http.Response) error {
 		detail = "The reviewed GitHub repository was not found or is no longer public; verify its source rule."
 	case http.StatusTooManyRequests:
 		reason = "rate_limited"
-		detail = "GitHub API quota is exhausted; wait for reset or use GH_TOKEN for authenticated metadata discovery."
+		detail = "GitHub API quota is exhausted; wait for reset or set GH_TOKEN (for example GH_TOKEN=$(gh auth token)) for authenticated metadata discovery."
 	case http.StatusForbidden:
 		if response.Header.Get("X-RateLimit-Remaining") == "0" || response.Header.Get("Retry-After") != "" {
 			reason = "rate_limited"
-			detail = "GitHub API quota is exhausted; wait for reset or use GH_TOKEN for authenticated metadata discovery."
+			detail = "GitHub API quota is exhausted; wait for reset or set GH_TOKEN (for example GH_TOKEN=$(gh auth token)) for authenticated metadata discovery."
 		}
 	case http.StatusUnauthorized:
 		reason = "authentication_failed"
