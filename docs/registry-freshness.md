@@ -75,8 +75,16 @@ Within one scan, shared repositories are fetched once and reused across apps,
 platforms, and channels, with filtering applied separately. The next scan fetches
 fresh metadata. Set `GH_TOKEN` to use authenticated GitHub API quotas for large
 scans; the credential is sent only to the fixed GitHub API endpoint, never to
-registry or artifact downloads, and is not stored in reports or caches. The scan
-does not change registry manifests, Git state, or installed applications.
+registry or artifact downloads, and is not stored in reports or caches. TarLink
+does not run `gh` or read its keyring; a maintainer signed in with the GitHub CLI
+can pass that credential explicitly:
+
+```sh
+GH_TOKEN=$(gh auth token) tarlink registry update
+```
+
+The scan does not change registry manifests, Git state, or installed
+applications.
 
 To prepare updates in an explicit local checkout:
 
