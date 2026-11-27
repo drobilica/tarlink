@@ -81,6 +81,25 @@ func (e Executable) WantsBinLink() bool { return e.CreateBinLink == nil || *e.Cr
 var ErrCorrupt = errors.New("corrupt state")
 
 func (s State) Validate() error {
+	for _, validate := range []func() error{
+		s.validateIdentity,
+		s.validateVersions,
+		s.validateResolution,
+		s.validateExecutables,
+		s.validateDesktop,
+		s.validateIcon,
+		s.validatePreviousIcon,
+	} {
+		if err := validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateIdentity checks the package authority, state schema, and
+// application ID.
+func (s State) validateIdentity() error {
 	if err := manifest.ValidateAuthority(s.App, s.Authority); err != nil {
 		return fmt.Errorf("%w: %v", ErrCorrupt, err)
 	}
@@ -90,25 +109,39 @@ func (s State) Validate() error {
 	if err := filesystem.ValidateID(s.App); err != nil {
 		return fmt.Errorf("%w: app: %v", ErrCorrupt, err)
 	}
+	return nil
+}
+
+// validateVersions checks the current and previous version/fingerprint
+// package identities.
+func (s State) validateVersions() error {
 	if err := filesystem.ValidateVersion(s.Current); err != nil {
 		return fmt.Errorf("%w: current version: %v", ErrCorrupt, err)
 	}
 	if err := validateFingerprint(s.CurrentFingerprint); err != nil {
 		return fmt.Errorf("%w: current fingerprint: %v", ErrCorrupt, err)
 	}
-	if s.Previous != "" {
-		if err := filesystem.ValidateVersion(s.Previous); err != nil {
-			return fmt.Errorf("%w: previous version: %v", ErrCorrupt, err)
+	if s.Previous == "" {
+		if s.PreviousFingerprint != "" {
+			return fmt.Errorf("%w: previous fingerprint requires previous version", ErrCorrupt)
 		}
-		if err := validateFingerprint(s.PreviousFingerprint); err != nil {
-			return fmt.Errorf("%w: previous fingerprint: %v", ErrCorrupt, err)
-		}
-		if s.Previous == s.Current && s.PreviousFingerprint == s.CurrentFingerprint {
-			return fmt.Errorf("%w: current and previous versions must differ", ErrCorrupt)
-		}
-	} else if s.PreviousFingerprint != "" {
-		return fmt.Errorf("%w: previous fingerprint requires previous version", ErrCorrupt)
+		return nil
 	}
+	if err := filesystem.ValidateVersion(s.Previous); err != nil {
+		return fmt.Errorf("%w: previous version: %v", ErrCorrupt, err)
+	}
+	if err := validateFingerprint(s.PreviousFingerprint); err != nil {
+		return fmt.Errorf("%w: previous fingerprint: %v", ErrCorrupt, err)
+	}
+	if s.Previous == s.Current && s.PreviousFingerprint == s.CurrentFingerprint {
+		return fmt.Errorf("%w: current and previous versions must differ", ErrCorrupt)
+	}
+	return nil
+}
+
+// validateResolution checks the channel, runtime, and artifact kind resolved
+// for the current installation and the retained previous one.
+func (s State) validateResolution() error {
 	if err := ValidateChannel(s.Channel); err != nil {
 		return fmt.Errorf("%w: channel: %v", ErrCorrupt, err)
 	}
@@ -145,6 +178,12 @@ func (s State) Validate() error {
 	if s.Artifact != "tar.gz" && s.Artifact != "tar.xz" && s.Artifact != "zip" && s.Artifact != "appimage" {
 		return fmt.Errorf("%w: unsupported artifact kind", ErrCorrupt)
 	}
+	return nil
+}
+
+// validateExecutables checks the executable list and its one-to-one
+// integration records.
+func (s State) validateExecutables() error {
 	if len(s.Executables) == 0 {
 		return fmt.Errorf("%w: executable list is empty", ErrCorrupt)
 	}
@@ -169,6 +208,12 @@ func (s State) Validate() error {
 			return fmt.Errorf("%w: executable integration does not match executable state", ErrCorrupt)
 		}
 	}
+	return nil
+}
+
+// validateDesktop checks that owned desktop and icon paths are absolute and
+// clean, and that desktop entry ownership matches the desktop toggle.
+func (s State) validateDesktop() error {
 	for name, path := range map[string]string{
 		"desktop entry":      s.Integration.DesktopEntry,
 		"icon file":          s.Integration.IconFile,
@@ -197,6 +242,11 @@ func (s State) Validate() error {
 	if !s.DesktopEnabled && (s.Integration.DesktopEntry != "" || s.Integration.DesktopSHA256 != "") {
 		return fmt.Errorf("%w: desktop ownership fields must be empty when desktop integration is disabled", ErrCorrupt)
 	}
+	return nil
+}
+
+// validateIcon checks the current icon ownership record.
+func (s State) validateIcon() error {
 	if s.Integration.IconFile != "" && (len(s.Integration.IconSHA256) != 64 || strings.ToLower(s.Integration.IconSHA256) != s.Integration.IconSHA256) {
 		return fmt.Errorf("%w: icon ownership digest is invalid", ErrCorrupt)
 	}
@@ -230,6 +280,11 @@ func (s State) Validate() error {
 	if !s.DesktopEnabled && s.Integration.IconFile != "" {
 		return fmt.Errorf("%w: icon ownership fields require desktop integration", ErrCorrupt)
 	}
+	return nil
+}
+
+// validatePreviousIcon checks the retained previous icon ownership record.
+func (s State) validatePreviousIcon() error {
 	if s.Integration.PreviousIconFile == "" && (s.Integration.PreviousIconSHA256 != "" || s.Integration.PreviousIconSource != "") {
 		return fmt.Errorf("%w: previous icon ownership fields are inconsistent", ErrCorrupt)
 	}
