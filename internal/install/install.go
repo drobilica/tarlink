@@ -1312,13 +1312,17 @@ func (manager *Manager) publishPackage(item *manifest.Manifest, fingerprint, app
 	} else if !os.IsNotExist(err) {
 		return "", "", err
 	}
-	// The version directory this run creates has its own undo; the package undo
-	// removes only a version directory that already existed.
+	// Each directory this run creates (app root, version directory) has its own
+	// undo; the package undo removes only the package. An existing version
+	// directory must be an owned real directory, never a symlink.
 	parentCreated := false
 	if parent := filepath.Dir(finalPath); parent != appRoot {
 		if _, err := os.Lstat(parent); os.IsNotExist(err) {
 			parentCreated = true
 		} else if err != nil {
+			return "", "", err
+		} else if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, parent); err != nil {
+			// A planted symlink here would send the package outside the tree.
 			return "", "", err
 		}
 		if err := os.MkdirAll(parent, 0o700); err != nil {
@@ -1332,22 +1336,15 @@ func (manager *Manager) publishPackage(item *manifest.Manifest, fingerprint, app
 	if err := os.Rename(applicationRoot, finalPath); err != nil {
 		return "", "", fmt.Errorf("publish version: %w", err)
 	}
+	undo.push(func() error {
+		if err := filesystem.SafeRemove(appRoot, finalPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
 	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, finalPath); err != nil {
 		return "", "", err
 	}
-	undo.push(func() error {
-		var errs []error
-		if err := filesystem.SafeRemove(appRoot, finalPath); err != nil && !os.IsNotExist(err) {
-			errs = append(errs, err)
-		}
-		if filepath.Dir(finalPath) != appRoot && !parentCreated {
-			errs = append(errs, removeEmptyDirectory(filepath.Dir(finalPath)))
-		}
-		if appRootCreated {
-			errs = append(errs, removeEmptyDirectory(appRoot))
-		}
-		return errors.Join(errs...)
-	})
 	if err := syncDirectory(appRoot); err != nil {
 		return "", "", err
 	}

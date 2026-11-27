@@ -415,3 +415,63 @@ func TestUpdateReportsSupersededPackageCleanupFailureOnce(t *testing.T) {
 	}
 	assertCurrent(t, layout, "fixture", "v3")
 }
+
+func TestFailedInstallReportsApplicationRootLeftBehind(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	injected := errors.New("injected integration failure")
+	// The apps directory becomes read-only after the package was published, so
+	// the application root this install created cannot be removed again.
+	lockDirectoryAt(t, manager, "after_integration", injected, layout.Apps)
+
+	_, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, nil)
+	if !errors.Is(err, injected) || !errors.Is(err, integration.ErrRollbackIncomplete) {
+		t.Fatalf("Install() error = %v, want the injected failure and ErrRollbackIncomplete", err)
+	}
+	if !strings.Contains(err.Error(), filepath.Join(layout.Apps, "fixture")) {
+		t.Fatalf("Install() error = %v, want it to name the application root left behind", err)
+	}
+}
+
+func TestUpdateRefusesSymlinkedVersionDirectory(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	v2 := v2Server.manifest("v2")
+	fingerprint, err := v2.ResolvedPackageFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	packagePath, err := layout.PackagePath("fixture", "v2", fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Something planted the version directory as a link to a directory outside
+	// TarLink's tree. The update must not publish the package through it.
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Dir(packagePath)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := manager.UpdateWithOptions(context.Background(), v2, Options{Channel: "stable"}, nil); err == nil {
+		t.Fatal("update through a symlinked version directory succeeded")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("update wrote %d entries outside the tree: %v", len(entries), entries)
+	}
+	assertCurrent(t, layout, "fixture", "v1")
+	installed, err := state.LoadForApp(layout, "fixture")
+	if err != nil || installed.Current != "v1" {
+		t.Fatalf("state after refused update = %+v, %v", installed, err)
+	}
+}
