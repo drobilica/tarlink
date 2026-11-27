@@ -38,14 +38,22 @@ func (e *RollbackError) Unwrap() []error {
 	return []error{e.Err, ErrRollbackIncomplete, e.Rollback}
 }
 
-// Cause returns the failure that started the rollback, skipping any nested
-// RollbackError wrappers.
-func (e *RollbackError) Cause() error {
-	var inner *RollbackError
-	if errors.As(e.Err, &inner) {
-		return inner.Cause()
+// RollbackCause returns the failure that started a rollback when err is a
+// RollbackError, possibly behind single-error wrappers such as fmt.Errorf with
+// one %w. If the chain branches first (errors.Join, several %w), err is
+// returned unchanged so errors beside the rollback still count.
+func RollbackCause(err error) error {
+	for current := err; current != nil; {
+		if rollback, ok := current.(*RollbackError); ok {
+			return RollbackCause(rollback.Err)
+		}
+		wrapper, ok := current.(interface{ Unwrap() error })
+		if !ok {
+			return err
+		}
+		current = wrapper.Unwrap()
 	}
-	return e.Err
+	return err
 }
 
 // removeAll removes each path in order, ignoring paths that are already gone,
@@ -356,12 +364,14 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		if previous.Icon == "" {
+			// created can be true with an error when the file was published
+			// but a later sync failed; it is undone like any other change.
 			created, createErr := atomicCreateIcon(paths.IconFile, content)
-			if createErr != nil {
-				return Paths{}, nil, JoinRollback(createErr, rollback())
-			}
 			if created {
 				undo = append(undo, func() error { return os.Remove(paths.IconFile) })
+			}
+			if createErr != nil {
+				return Paths{}, nil, JoinRollback(createErr, rollback())
 			}
 		} else if paths.IconFile == previousPaths.IconFile {
 			old, readErr := os.ReadFile(previousPaths.IconFile)
@@ -380,12 +390,14 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 			if readErr != nil {
 				return Paths{}, nil, JoinRollback(readErr, rollback())
 			}
+			// created can be true with an error when the file was published
+			// but a later sync failed; it is undone like any other change.
 			created, createErr := atomicCreateIcon(paths.IconFile, content)
-			if createErr != nil {
-				return Paths{}, nil, JoinRollback(createErr, rollback())
-			}
 			if created {
 				undo = append(undo, func() error { return os.Remove(paths.IconFile) })
+			}
+			if createErr != nil {
+				return Paths{}, nil, JoinRollback(createErr, rollback())
 			}
 			oldCopy := append([]byte(nil), old...)
 			undo = append(undo, func() error {
@@ -418,11 +430,11 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 			}
 		} else {
 			created, err := ensureDesktop(paths.DesktopEntry, spec.ID, content)
-			if err != nil {
-				return Paths{}, nil, JoinRollback(err, rollback())
-			}
 			if created {
 				undo = append(undo, func() error { return os.Remove(paths.DesktopEntry) })
+			}
+			if err != nil {
+				return Paths{}, nil, JoinRollback(err, rollback())
 			}
 		}
 	} else if previous.DesktopEnabled {
@@ -490,6 +502,9 @@ func SwitchIcon(current, next Spec) (func() error, error) {
 	if current.Icon == "" {
 		created, err := atomicCreateIcon(nextPaths.IconFile, content)
 		if err != nil {
+			if created {
+				return nil, JoinRollback(err, removeAll([]string{nextPaths.IconFile}))
+			}
 			return nil, err
 		}
 		if !created {
@@ -509,6 +524,9 @@ func SwitchIcon(current, next Spec) (func() error, error) {
 	}
 	created, err := atomicCreateIcon(nextPaths.IconFile, content)
 	if err != nil {
+		if created {
+			return nil, JoinRollback(err, removeAll([]string{nextPaths.IconFile}))
+		}
 		return nil, err
 	}
 	removeCreated := func() error {
@@ -558,7 +576,11 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 	if spec.Icon != "" {
 		createdIcon, err = ensureIcon(spec, paths.IconFile)
 		if err != nil {
-			return Paths{}, nil, JoinRollback(err, removeAll(created))
+			undo := created
+			if createdIcon {
+				undo = append(append([]string(nil), created...), paths.IconFile)
+			}
+			return Paths{}, nil, JoinRollback(err, removeAll(undo))
 		}
 		if afterPublication != nil {
 			afterPublication("icon")
@@ -1141,8 +1163,12 @@ func validateDesktopForRemoval(path, id, expectedSHA256 string) error {
 	return validateDesktop(path, id, expectedSHA256)
 }
 
+// createSync flushes the directory after atomicCreate publishes a file. It is
+// syncDirectory in production; tests replace it to fail after publication.
+var createSync = syncDirectory
+
 func atomicCreate(path string, content []byte, mode os.FileMode) (bool, error) {
-	return atomicCreateWithSync(path, content, mode, syncDirectory)
+	return atomicCreateWithSync(path, content, mode, createSync)
 }
 
 func atomicCreateWithSync(path string, content []byte, mode os.FileMode, syncDir func(string) error) (bool, error) {

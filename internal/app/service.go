@@ -946,11 +946,7 @@ func classify(operation string, err error) error {
 	}
 	// A failed undo is reported in the message, but the code describes the
 	// failure that started the rollback, not whichever undo step failed.
-	cause := err
-	var rollback *integration.RollbackError
-	if errors.As(err, &rollback) {
-		cause = rollback.Cause()
-	}
+	cause := integration.RollbackCause(err)
 	code := ErrorCode("")
 	switch {
 	case errors.Is(cause, install.ErrAlreadyInstalled):

@@ -797,10 +797,17 @@ func TestJoinRollbackKeepsCauseAndUndoFailure(t *testing.T) {
 	if got.Error() != want {
 		t.Fatalf("message = %q, want %q", got.Error(), want)
 	}
-	outer := JoinRollback(fmt.Errorf("activate: %w", got), errors.New("outer undo"))
-	var rollback *RollbackError
-	if !errors.As(outer, &rollback) || rollback.Cause() != cause {
-		t.Fatalf("Cause() of nested rollback error = %v, want the original cause", rollback)
+	outer := fmt.Errorf("update: %w", JoinRollback(fmt.Errorf("activate: %w", got), errors.New("outer undo")))
+	if RollbackCause(outer) != cause {
+		t.Fatalf("RollbackCause(nested) = %v, want the original cause", RollbackCause(outer))
+	}
+	// Errors beside a rollback still count, so a branching chain is kept whole.
+	sibling := errors.Join(got, ErrConflict)
+	if RollbackCause(sibling) != sibling {
+		t.Fatalf("RollbackCause(joined) = %v, want the joined error unchanged", RollbackCause(sibling))
+	}
+	if plain := errors.New("plain"); RollbackCause(plain) != plain {
+		t.Fatal("RollbackCause changed an error without a rollback")
 	}
 }
 
@@ -984,5 +991,140 @@ func TestDetachOwnedReportsFileLeftDetached(t *testing.T) {
 	}
 	if got, readErr := os.ReadFile(detached); readErr != nil || string(got) != "user file" || !strings.Contains(err.Error(), detached) {
 		t.Fatalf("detached file %q = %q, %v; error %v should name it", detached, got, readErr, err)
+	}
+}
+
+// failSyncFor makes the directory flush after publishing a file under dir fail,
+// so the file exists but its creation reports an error.
+func failSyncFor(t *testing.T, dir string) error {
+	t.Helper()
+	injected := errors.New("injected directory sync failure")
+	original := createSync
+	createSync = func(path string) error {
+		if strings.HasPrefix(path, dir) {
+			return injected
+		}
+		return original(path)
+	}
+	t.Cleanup(func() { createSync = original })
+	return injected
+}
+
+func TestUpdateRemovesIconPublishedBeforeSyncFailure(t *testing.T) {
+	root := t.TempDir()
+	previous := testSpec(root)
+	if _, _, err := Ensure(previous); err != nil {
+		t.Fatal(err)
+	}
+	next := iconSpec(t, root)
+	injected := failSyncFor(t, next.IconDirectory)
+	if _, _, err := Update(next, previous); !errors.Is(err, injected) || errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("Update error = %v, want the sync failure with a complete rollback", err)
+	}
+	if _, err := os.Lstat(ExpectedPaths(next).IconFile); !os.IsNotExist(err) {
+		t.Fatalf("icon published before the failure remains: %v", err)
+	}
+}
+
+func TestEnsureRemovesIconPublishedBeforeSyncFailure(t *testing.T) {
+	spec := iconSpec(t, t.TempDir())
+	injected := failSyncFor(t, spec.IconDirectory)
+	if _, _, err := Ensure(spec); !errors.Is(err, injected) || errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("Ensure error = %v, want the sync failure with a complete rollback", err)
+	}
+	if _, err := os.Lstat(ExpectedPaths(spec).IconFile); !os.IsNotExist(err) {
+		t.Fatalf("icon published before the failure remains: %v", err)
+	}
+	if _, err := os.Lstat(ExpectedPaths(spec).Executables[0].Link); !os.IsNotExist(err) {
+		t.Fatalf("bin link remains after failed Ensure: %v", err)
+	}
+}
+
+func TestSwitchIconRemovesIconPublishedBeforeSyncFailure(t *testing.T) {
+	root := t.TempDir()
+	current := iconSpec(t, root)
+	if _, _, err := Ensure(current); err != nil {
+		t.Fatal(err)
+	}
+	next := current
+	next.Icon = "share/icon.svg"
+	content := []byte("<svg/>")
+	if err := os.WriteFile(filepath.Join(next.ApplicationRoot, next.Icon), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	next.IconSHA256 = hex.EncodeToString(digest[:])
+	injected := failSyncFor(t, next.IconDirectory)
+	if _, err := SwitchIcon(current, next); !errors.Is(err, injected) || errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("SwitchIcon error = %v, want the sync failure with a complete rollback", err)
+	}
+	if _, err := os.Lstat(ExpectedPaths(next).IconFile); !os.IsNotExist(err) {
+		t.Fatalf("icon published before the failure remains: %v", err)
+	}
+	if _, err := os.Stat(ExpectedPaths(current).IconFile); err != nil {
+		t.Fatalf("current icon was removed: %v", err)
+	}
+}
+
+func TestSwitchIconToFirstIconRemovesIconPublishedBeforeSyncFailure(t *testing.T) {
+	root := t.TempDir()
+	current := testSpec(root)
+	if _, _, err := Ensure(current); err != nil {
+		t.Fatal(err)
+	}
+	next := iconSpec(t, root)
+	injected := failSyncFor(t, next.IconDirectory)
+	if _, err := SwitchIcon(current, next); !errors.Is(err, injected) || errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("SwitchIcon error = %v, want the sync failure with a complete rollback", err)
+	}
+	if _, err := os.Lstat(ExpectedPaths(next).IconFile); !os.IsNotExist(err) {
+		t.Fatalf("icon published before the failure remains: %v", err)
+	}
+}
+
+func TestUpdateRenamingIconRemovesIconPublishedBeforeSyncFailure(t *testing.T) {
+	root := t.TempDir()
+	previous := iconSpec(t, root)
+	if _, _, err := Ensure(previous); err != nil {
+		t.Fatal(err)
+	}
+	next := previous
+	next.Icon = "share/icon.svg"
+	content := []byte("<svg/>")
+	if err := os.WriteFile(filepath.Join(next.ApplicationRoot, next.Icon), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	next.IconSHA256 = hex.EncodeToString(digest[:])
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
+	injected := failSyncFor(t, next.IconDirectory)
+	if _, _, err := Update(next, previous); !errors.Is(err, injected) || errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("Update error = %v, want the sync failure with a complete rollback", err)
+	}
+	if _, err := os.Lstat(ExpectedPaths(next).IconFile); !os.IsNotExist(err) {
+		t.Fatalf("icon published before the failure remains: %v", err)
+	}
+	if _, err := os.Stat(ExpectedPaths(previous).IconFile); err != nil {
+		t.Fatalf("previous icon was removed: %v", err)
+	}
+}
+
+func TestUpdateEnablingDesktopRemovesEntryPublishedBeforeSyncFailure(t *testing.T) {
+	root := t.TempDir()
+	previous := testSpec(root)
+	previous.DesktopEnabled = false
+	previous.DesktopSHA256 = ""
+	if _, _, err := Ensure(previous); err != nil {
+		t.Fatal(err)
+	}
+	next := previous
+	next.DesktopEnabled = true
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
+	injected := failSyncFor(t, next.DesktopDirectory)
+	if _, _, err := Update(next, previous); !errors.Is(err, injected) || errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("Update error = %v, want the sync failure with a complete rollback", err)
+	}
+	if _, err := os.Lstat(ExpectedPaths(next).DesktopEntry); !os.IsNotExist(err) {
+		t.Fatalf("desktop entry published before the failure remains: %v", err)
 	}
 }

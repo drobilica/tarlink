@@ -470,6 +470,16 @@ func TestRuntimeSubjectProgressKeepsRuntimeIdentity(t *testing.T) {
 	}
 }
 
+func TestClassifyKeepsErrorsBesideAnIncompleteRollback(t *testing.T) {
+	// One entry failed with a conflict while another failed with a plain error
+	// whose undo also failed: the conflict still decides the code.
+	rollback := integration.JoinRollback(errors.New("validation failed"), syscall.EACCES)
+	err := classify("uninstall", errors.Join(rollback, integration.ErrConflict))
+	if got := CodeOf(err); got != CodeConflict {
+		t.Fatalf("code = %q, want %q (err: %v)", got, CodeConflict, err)
+	}
+}
+
 func TestClassifyUsesTheFailureThatStartedAnIncompleteRollback(t *testing.T) {
 	for _, test := range []struct {
 		name  string
