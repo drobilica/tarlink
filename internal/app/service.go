@@ -944,44 +944,43 @@ func classify(operation string, err error) error {
 	if errors.As(err, &typed) {
 		return err
 	}
-	// A failed undo is reported in the message, but the code describes the
-	// failure that started the rollback, not whichever undo step failed.
-	cause := integration.RollbackCause(err)
+	// A failed undo is reported in the message, but the code describes what
+	// failed, never which undo step also failed (see integration.CauseIs).
 	code := ErrorCode("")
 	switch {
-	case errors.Is(cause, install.ErrAlreadyInstalled):
+	case integration.CauseIs(err, install.ErrAlreadyInstalled):
 		code = CodeAlreadyInstalled
-	case errors.Is(cause, install.ErrNotInstalled):
+	case integration.CauseIs(err, install.ErrNotInstalled):
 		code = CodeNotInstalled
-	case errors.Is(cause, install.ErrNoUpdate):
+	case integration.CauseIs(err, install.ErrNoUpdate):
 		code = CodeNoUpdate
-	case errors.Is(cause, install.ErrPinned):
+	case integration.CauseIs(err, install.ErrPinned):
 		code = CodePinned
-	case errors.Is(cause, install.ErrNoPrevious):
+	case integration.CauseIs(err, install.ErrNoPrevious):
 		code = CodeNoUpdate
-	case errors.Is(cause, locking.ErrConflict):
+	case integration.CauseIs(err, locking.ErrConflict):
 		code = CodeLockConflict
-	case errors.Is(cause, state.ErrCorrupt):
+	case integration.CauseIs(err, state.ErrCorrupt):
 		code = CodeStateCorrupt
-	case errors.Is(cause, download.ErrChecksumMismatch):
+	case integration.CauseIs(err, download.ErrChecksumMismatch):
 		code = CodeChecksum
-	case errors.Is(cause, download.ErrTooLarge):
+	case integration.CauseIs(err, download.ErrTooLarge):
 		code = CodeNetwork
-	case errors.Is(cause, download.ErrOffline):
+	case integration.CauseIs(err, download.ErrOffline):
 		code = CodeNetwork
-	case errors.Is(cause, download.ErrNetwork):
+	case integration.CauseIs(err, download.ErrNetwork):
 		code = CodeNetwork
-	case errors.Is(cause, archive.ErrInvalidFormat), errors.Is(cause, archive.ErrPath), errors.Is(cause, archive.ErrLimit), errors.Is(cause, archive.ErrEntryType), errors.Is(cause, archive.ErrCollision), errors.Is(cause, archive.ErrDestination):
+	case integration.CauseIs(err, archive.ErrInvalidFormat), integration.CauseIs(err, archive.ErrPath), integration.CauseIs(err, archive.ErrLimit), integration.CauseIs(err, archive.ErrEntryType), integration.CauseIs(err, archive.ErrCollision), integration.CauseIs(err, archive.ErrDestination):
 		code = CodeArchive
-	case errors.Is(cause, integration.ErrConflict), errors.Is(cause, install.ErrConflict):
+	case integration.CauseIs(err, integration.ErrConflict), integration.CauseIs(err, install.ErrConflict):
 		code = CodeConflict
-	case errors.Is(cause, registry.ErrUnavailable):
+	case integration.CauseIs(err, registry.ErrUnavailable):
 		code = CodeRegistry
-	case errors.Is(cause, upgrade.ErrNotOwned), errors.Is(cause, upgrade.ErrDevelopment):
+	case integration.CauseIs(err, upgrade.ErrNotOwned), integration.CauseIs(err, upgrade.ErrDevelopment):
 		code = CodeConflict
-	case errors.Is(cause, upgrade.ErrUnsupportedAsset):
+	case integration.CauseIs(err, upgrade.ErrUnsupportedAsset):
 		code = CodeUnsupportedPlatform
-	case errors.Is(cause, syscall.EACCES), errors.Is(cause, syscall.EPERM):
+	case integration.CauseIs(err, syscall.EACCES), integration.CauseIs(err, syscall.EPERM):
 		code = CodePermission
 	case strings.Contains(operation, "registry"):
 		code = CodeRegistry

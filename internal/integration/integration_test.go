@@ -797,17 +797,20 @@ func TestJoinRollbackKeepsCauseAndUndoFailure(t *testing.T) {
 	if got.Error() != want {
 		t.Fatalf("message = %q, want %q", got.Error(), want)
 	}
-	outer := fmt.Errorf("update: %w", JoinRollback(fmt.Errorf("activate: %w", got), errors.New("outer undo")))
-	if RollbackCause(outer) != cause {
-		t.Fatalf("RollbackCause(nested) = %v, want the original cause", RollbackCause(outer))
+	if !CauseIs(got, cause) || CauseIs(got, undo) {
+		t.Fatal("CauseIs must match the cause and ignore the undo failure")
 	}
-	// Errors beside a rollback still count, so a branching chain is kept whole.
-	sibling := errors.Join(got, ErrConflict)
-	if RollbackCause(sibling) != sibling {
-		t.Fatalf("RollbackCause(joined) = %v, want the joined error unchanged", RollbackCause(sibling))
+	nested := fmt.Errorf("update: %w", JoinRollback(fmt.Errorf("activate: %w", got), errors.New("outer undo")))
+	if !CauseIs(nested, cause) {
+		t.Fatal("CauseIs must find the cause through nested rollbacks")
 	}
-	if plain := errors.New("plain"); RollbackCause(plain) != plain {
-		t.Fatal("RollbackCause changed an error without a rollback")
+	// Errors beside a rollback still count; its undo errors never do.
+	joined := errors.Join(JoinRollback(cause, ErrConflict), os.ErrPermission)
+	if !CauseIs(joined, os.ErrPermission) || CauseIs(joined, ErrConflict) {
+		t.Fatal("CauseIs must match joined siblings but not a rollback's undo error")
+	}
+	if !CauseIs(fmt.Errorf("x: %w", os.ErrNotExist), os.ErrNotExist) || CauseIs(errors.New("plain"), os.ErrNotExist) {
+		t.Fatal("CauseIs must behave like errors.Is without rollbacks")
 	}
 }
 

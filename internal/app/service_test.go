@@ -480,6 +480,16 @@ func TestClassifyKeepsErrorsBesideAnIncompleteRollback(t *testing.T) {
 	}
 }
 
+func TestClassifyIgnoresUndoErrorsWhenARollbackIsJoined(t *testing.T) {
+	// An update failed, its undo hit EACCES, and releasing the lock failed too:
+	// the undo's permission error must not become the code.
+	rollback := integration.JoinRollback(errors.New("disk write failed"), syscall.EACCES)
+	err := classify("update", errors.Join(rollback, errors.New("release lock")))
+	if got := CodeOf(err); got != "" {
+		t.Fatalf("code = %q, want no code (err: %v)", got, err)
+	}
+}
+
 func TestClassifyUsesTheFailureThatStartedAnIncompleteRollback(t *testing.T) {
 	for _, test := range []struct {
 		name  string

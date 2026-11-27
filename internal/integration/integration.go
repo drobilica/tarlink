@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/drobilica/tarlink/internal/filesystem"
@@ -38,22 +39,41 @@ func (e *RollbackError) Unwrap() []error {
 	return []error{e.Err, ErrRollbackIncomplete, e.Rollback}
 }
 
-// RollbackCause returns the failure that started a rollback when err is a
-// RollbackError, possibly behind single-error wrappers such as fmt.Errorf with
-// one %w. If the chain branches first (errors.Join, several %w), err is
-// returned unchanged so errors beside the rollback still count.
-func RollbackCause(err error) error {
-	for current := err; current != nil; {
-		if rollback, ok := current.(*RollbackError); ok {
-			return RollbackCause(rollback.Err)
-		}
-		wrapper, ok := current.(interface{ Unwrap() error })
-		if !ok {
-			return err
-		}
-		current = wrapper.Unwrap()
+// CauseIs reports whether target matches err the way errors.Is does, but it
+// never looks inside RollbackError.Rollback. Callers use it to classify a
+// failure by what went wrong, not by which undo step also failed, even when
+// the rollback is joined with other errors.
+func CauseIs(err, target error) bool {
+	if err == nil || target == nil {
+		return err == target
 	}
-	return err
+	comparable := reflect.TypeOf(target).Comparable()
+	for err != nil {
+		if rollback, ok := err.(*RollbackError); ok {
+			err = rollback.Err
+			continue
+		}
+		if comparable && err == target {
+			return true
+		}
+		if matcher, ok := err.(interface{ Is(error) bool }); ok && matcher.Is(target) {
+			return true
+		}
+		switch wrapper := err.(type) {
+		case interface{ Unwrap() error }:
+			err = wrapper.Unwrap()
+		case interface{ Unwrap() []error }:
+			for _, branch := range wrapper.Unwrap() {
+				if CauseIs(branch, target) {
+					return true
+				}
+			}
+			return false
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // removeAll removes each path in order, ignoring paths that are already gone,
