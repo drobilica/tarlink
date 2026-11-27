@@ -23,6 +23,7 @@ import (
 	"github.com/drobilica/tarlink/internal/manifest"
 	taruntime "github.com/drobilica/tarlink/internal/runtime"
 	"github.com/drobilica/tarlink/internal/state"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -1267,10 +1268,21 @@ func (undo activationUndo) unwind(err error) error {
 	return err
 }
 
+// removeEmptyDirectory removes a directory this run created. A directory that
+// is already gone or still holds other content (an existing installation, or a
+// payload whose own removal failed and was reported) is not an undo failure.
+func removeEmptyDirectory(path string) error {
+	err := os.Remove(path)
+	if err == nil || os.IsNotExist(err) || errors.Is(err, unix.ENOTEMPTY) || errors.Is(err, unix.EEXIST) {
+		return nil
+	}
+	return err
+}
+
 // publishPackage moves the staged application root into its versioned package
-// directory, creating the application root when it is absent. It pushes
-// best-effort undos that remove the application root it created and the
-// published package directory.
+// directory, creating the application root and version directory when they
+// are absent. It pushes undos that remove the application root and version
+// directory it created and the published package directory.
 func (manager *Manager) publishPackage(item *manifest.Manifest, fingerprint, applicationRoot string, progress SubjectProgress, undo *activationUndo) (string, string, error) {
 	appRoot := filepath.Join(manager.Layout.Apps, item.ID)
 	appRootCreated := false
@@ -1287,7 +1299,7 @@ func (manager *Manager) publishPackage(item *manifest.Manifest, fingerprint, app
 	}
 	undo.push(func() error {
 		if appRootCreated {
-			_ = os.Remove(appRoot)
+			return removeEmptyDirectory(appRoot)
 		}
 		return nil
 	})
@@ -1300,9 +1312,20 @@ func (manager *Manager) publishPackage(item *manifest.Manifest, fingerprint, app
 	} else if !os.IsNotExist(err) {
 		return "", "", err
 	}
+	// The version directory this run creates has its own undo; the package undo
+	// removes only a version directory that already existed.
+	parentCreated := false
 	if parent := filepath.Dir(finalPath); parent != appRoot {
+		if _, err := os.Lstat(parent); os.IsNotExist(err) {
+			parentCreated = true
+		} else if err != nil {
+			return "", "", err
+		}
 		if err := os.MkdirAll(parent, 0o700); err != nil {
 			return "", "", err
+		}
+		if parentCreated {
+			undo.push(func() error { return removeEmptyDirectory(parent) })
 		}
 	}
 	manager.report(progress, "installing", 0, 0)
@@ -1313,14 +1336,17 @@ func (manager *Manager) publishPackage(item *manifest.Manifest, fingerprint, app
 		return "", "", err
 	}
 	undo.push(func() error {
-		_ = filesystem.SafeRemove(appRoot, finalPath)
-		if filepath.Dir(finalPath) != appRoot {
-			_ = os.Remove(filepath.Dir(finalPath))
+		var errs []error
+		if err := filesystem.SafeRemove(appRoot, finalPath); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+		if filepath.Dir(finalPath) != appRoot && !parentCreated {
+			errs = append(errs, removeEmptyDirectory(filepath.Dir(finalPath)))
 		}
 		if appRootCreated {
-			_ = os.Remove(appRoot)
+			errs = append(errs, removeEmptyDirectory(appRoot))
 		}
-		return nil
+		return errors.Join(errs...)
 	})
 	if err := syncDirectory(appRoot); err != nil {
 		return "", "", err

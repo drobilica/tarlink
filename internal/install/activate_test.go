@@ -15,6 +15,7 @@ import (
 	"github.com/drobilica/tarlink/internal/download"
 	"github.com/drobilica/tarlink/internal/filesystem"
 	"github.com/drobilica/tarlink/internal/integration"
+	"github.com/drobilica/tarlink/internal/manifest"
 	"github.com/drobilica/tarlink/internal/state"
 )
 
@@ -221,21 +222,31 @@ func TestFailedInstallRollsBackActivationBeforeIntegration(t *testing.T) {
 	if !errors.Is(err, injected) || !errors.Is(err, integration.ErrRollbackIncomplete) {
 		t.Fatalf("Install() error = %v, want the injected failure and ErrRollbackIncomplete", err)
 	}
-	// The current-link restore runs first and is joined first; the integration
-	// cleanup runs after it and wraps the result.
-	var outer *integration.RollbackError
-	if !errors.As(err, &outer) {
-		t.Fatalf("Install() error = %T, want *integration.RollbackError", err)
+	// Undo steps are joined in the order they run: the current-link restore
+	// first, then the integration cleanup, then the removal of the version
+	// directory this install created (which also fails here because the app
+	// root is read-only). Each wraps the previous.
+	layers := []string{}
+	cause := err
+	for {
+		var rollback *integration.RollbackError
+		if !errors.As(cause, &rollback) {
+			break
+		}
+		layers = append([]string{rollback.Rollback.Error()}, layers...)
+		cause = rollback.Err
 	}
-	var inner *integration.RollbackError
-	if !errors.As(outer.Err, &inner) || inner.Err != injected {
-		t.Fatalf("Install() error = %v, want the current-link restore failure nested inside the integration cleanup failure", err)
+	if cause != injected || len(layers) != 3 {
+		t.Fatalf("Install() error = %v, want three rollback layers around the injected failure", err)
 	}
-	if inner.Rollback == nil || !strings.Contains(inner.Rollback.Error(), filepath.Join(layout.Apps, "fixture", "current")) {
-		t.Fatalf("inner rollback error = %v, want the current-link restore failure", inner.Rollback)
-	}
-	if outer.Rollback == nil || !strings.Contains(outer.Rollback.Error(), layout.Desktop) {
-		t.Fatalf("outer rollback error = %v, want the desktop integration cleanup failure", outer.Rollback)
+	for index, want := range []string{
+		filepath.Join(layout.Apps, "fixture", "current"),
+		layout.Desktop,
+		filepath.Join(layout.Apps, "fixture"),
+	} {
+		if !strings.Contains(layers[index], want) {
+			t.Fatalf("rollback layer %d = %q, want it to mention %s", index, layers[index], want)
+		}
 	}
 }
 
@@ -255,7 +266,7 @@ func TestFailedInstallReportsIncompleteIntegrationCleanupAndStillRemovesPayload(
 	}
 }
 
-func TestFailedInstallPayloadCleanupIsBestEffort(t *testing.T) {
+func TestFailedInstallReportsPayloadLeftBehind(t *testing.T) {
 	layout := testLayout(t)
 	server := newArtifactServer(t, fixtureArchive(t, "v1"))
 	manager := managerFor(t, layout, server)
@@ -272,8 +283,10 @@ func TestFailedInstallPayloadCleanupIsBestEffort(t *testing.T) {
 	lockDirectoryAt(t, manager, "before_state", injected, packagePath)
 
 	_, err = manager.InstallWithOptions(context.Background(), item, Options{Channel: "stable"}, nil)
-	if !errors.Is(err, injected) || errors.Is(err, integration.ErrRollbackIncomplete) {
-		t.Fatalf("Install() error = %v, want only the injected failure", err)
+	// The package directory could not be removed: the leftover would block the
+	// next install as an untracked directory, so the failure must be reported.
+	if !errors.Is(err, injected) || !errors.Is(err, integration.ErrRollbackIncomplete) {
+		t.Fatalf("Install() error = %v, want the injected failure and ErrRollbackIncomplete", err)
 	}
 	if _, err := os.Lstat(packagePath); err != nil {
 		t.Fatalf("locked package directory = %v, want it left in place", err)
@@ -287,4 +300,118 @@ func TestFailedInstallPayloadCleanupIsBestEffort(t *testing.T) {
 	if _, err := state.LoadForApp(layout, "fixture"); !os.IsNotExist(err) {
 		t.Fatalf("state exists after failed install: %v", err)
 	}
+}
+
+func TestFailedPublishRemovesCreatedVersionAndApplicationRoots(t *testing.T) {
+	layout := testLayout(t)
+	server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, server)
+	// "installing" is reported after the version directory is created and
+	// immediately before the staged payload is renamed into it; removing the
+	// stage there makes the rename fail.
+	progress := Progress(func(stage string, _, _ int64) {
+		if stage != "installing" {
+			return
+		}
+		stages, err := filepath.Glob(filepath.Join(layout.Apps, ".staging-fixture-*"))
+		if err != nil || len(stages) != 1 {
+			t.Fatalf("staging directories = %v, %v", stages, err)
+		}
+		if err := os.RemoveAll(stages[0]); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	_, err := manager.InstallWithOptions(context.Background(), server.manifest("v1"), Options{Channel: "stable"}, progress)
+	if err == nil || !strings.Contains(err.Error(), "publish version") || errors.Is(err, integration.ErrRollbackIncomplete) {
+		t.Fatalf("Install() error = %v, want only the publish failure", err)
+	}
+	if _, err := os.Lstat(filepath.Join(layout.Apps, "fixture")); !os.IsNotExist(err) {
+		t.Fatalf("application root remains after failed publish: %v", err)
+	}
+}
+
+func TestUpdateRecordsPreviousRuntime(t *testing.T) {
+	manager, item, repository, objects, _ := offlineClosureFixture(t)
+	for _, object := range objects {
+		offlinePublish(t, repository, object)
+	}
+	ctx := context.Background()
+	if _, err := manager.InstallWithOptions(ctx, item, Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	firstRuntime := *item.Runtime
+
+	application := fixtureArchive(t, "offline-2")
+	applicationDigest := sha256.Sum256(application)
+	applicationObject := offlineObject{digest: hex.EncodeToString(applicationDigest[:]), body: application}
+	offlinePublish(t, repository, applicationObject)
+	next := *item
+	nextRuntime := firstRuntime
+	nextRuntime.Version = "2.0"
+	nextReference := &manifest.RuntimeReference{ID: nextRuntime.ID, Version: nextRuntime.Version}
+	next.Release.Version = "2.0"
+	next.Release.Verification.Digest = applicationObject.digest
+	next.RuntimeRef, next.Runtime = nextReference, &nextRuntime
+	next.Release.RuntimeRef, next.Release.Runtime = nextReference, &nextRuntime
+	next.ReleaseHistory.Channels = map[string]manifest.ChannelHead{"stable": {Current: "2.0"}}
+	next.ReleaseHistory.Releases = []manifest.Release{next.Release}
+
+	updated, err := manager.UpdateWithOptions(ctx, &next, Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.State.PreviousRuntime == nil || !reflect.DeepEqual(*updated.State.PreviousRuntime, firstRuntime) {
+		t.Fatalf("previous runtime = %#v, want %#v", updated.State.PreviousRuntime, firstRuntime)
+	}
+	if updated.State.Runtime == nil || !reflect.DeepEqual(*updated.State.Runtime, nextRuntime) {
+		t.Fatalf("runtime = %#v, want %#v", updated.State.Runtime, nextRuntime)
+	}
+	if updated.State.Runtime == next.Runtime {
+		t.Fatal("state runtime aliases the manifest runtime")
+	}
+	stored, err := state.LoadForApp(manager.Layout, item.ID)
+	if err != nil || !reflect.DeepEqual(stored.PreviousRuntime, updated.State.PreviousRuntime) {
+		t.Fatalf("stored previous runtime = %#v, %v", stored.PreviousRuntime, err)
+	}
+}
+
+func TestUpdateReportsSupersededPackageCleanupFailureOnce(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	layout := testLayout(t)
+	manager := managerFor(t, layout, newArtifactServer(t, nil))
+	for _, version := range []string{"v1", "v2"} {
+		server := newArtifactServer(t, fixtureArchive(t, version))
+		manager.Client = &download.Client{HTTP: server.server.Client(), RedirectLimit: 2}
+		var err error
+		if version == "v1" {
+			_, err = manager.InstallWithOptions(context.Background(), server.manifest(version), Options{Channel: "stable"}, nil)
+		} else {
+			_, err = manager.UpdateWithOptions(context.Background(), server.manifest(version), Options{Channel: "stable"}, nil)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	superseded := filepath.Join(layout.Apps, "fixture", "v1")
+	if err := os.Chmod(superseded, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(superseded, 0o700) })
+
+	v3Server := newArtifactServer(t, fixtureArchive(t, "v3"))
+	manager.Client = &download.Client{HTTP: v3Server.server.Client(), RedirectLimit: 2}
+	updated, err := manager.UpdateWithOptions(context.Background(), v3Server.manifest("v3"), Options{Channel: "stable"}, nil)
+	if err != nil {
+		t.Fatalf("Update() error = %v, want the committed update to succeed", err)
+	}
+	if len(updated.Warnings) != 1 || !strings.Contains(updated.Warnings[0], superseded) {
+		t.Fatalf("Update() warnings = %q, want one cleanup warning for %s", updated.Warnings, superseded)
+	}
+	if updated.State.Current != "v3" || updated.State.Previous != "v2" {
+		t.Fatalf("state = %#v", updated.State)
+	}
+	assertCurrent(t, layout, "fixture", "v3")
 }
