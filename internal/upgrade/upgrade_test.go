@@ -472,7 +472,7 @@ func TestUpgradeDownloadsVerifiesAndReplacesCanonicalInstallation(t *testing.T) 
 
 // checkTestServer serves the official latest-release redirect shape and counts
 // only discovery requests, so tests can assert when Check touched the network.
-func checkTestServer(t *testing.T, latest string, fail *bool) (*httptest.Server, *int) {
+func checkTestServer(t *testing.T, latest string, fail bool) (*httptest.Server, *int) {
 	t.Helper()
 	requests := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -481,7 +481,7 @@ func checkTestServer(t *testing.T, latest string, fail *bool) (*httptest.Server,
 			return
 		}
 		requests++
-		if fail != nil && *fail {
+		if fail {
 			http.Error(w, "offline", http.StatusServiceUnavailable)
 			return
 		}
@@ -505,7 +505,7 @@ func checkTestService(t *testing.T, server *httptest.Server, cache, current stri
 func TestCheckRefusesDevelopmentAndUnstableVersionsWithoutNetwork(t *testing.T) {
 	for _, current := range []string{"", "  ", "development", "v", "1.2.3-rc1", "v1.2.3-rc.1", "01.2.3", "1.2", "garbage"} {
 		t.Run(current, func(t *testing.T) {
-			server, requests := checkTestServer(t, "9.9.9", nil)
+			server, requests := checkTestServer(t, "9.9.9", false)
 			dir := t.TempDir()
 			now := time.Unix(1000, 0)
 			if err := writeCache(filepath.Join(dir, "update-check.json"), "9.9.9", now); err != nil {
@@ -529,7 +529,7 @@ func TestCheckRefusesDevelopmentAndUnstableVersionsWithoutNetwork(t *testing.T) 
 func TestCheckNormalizesCurrentVersion(t *testing.T) {
 	for _, current := range []string{"v1.0.0", " 1.0.0\n", "\tv1.0.0 "} {
 		t.Run(current, func(t *testing.T) {
-			server, requests := checkTestServer(t, "2.0.0", nil)
+			server, requests := checkTestServer(t, "2.0.0", false)
 			now := time.Unix(1000, 0)
 			service := checkTestService(t, server, t.TempDir(), current, &now)
 			value, err := service.Check(context.Background())
@@ -541,7 +541,7 @@ func TestCheckNormalizesCurrentVersion(t *testing.T) {
 }
 
 func TestCheckUsesFreshCacheWithoutNetwork(t *testing.T) {
-	server, requests := checkTestServer(t, "3.0.0", nil)
+	server, requests := checkTestServer(t, "3.0.0", false)
 	dir := t.TempDir()
 	now := time.Unix(1000, 0)
 	if err := writeCache(filepath.Join(dir, "update-check.json"), "1.1.0", now); err != nil {
@@ -556,7 +556,7 @@ func TestCheckUsesFreshCacheWithoutNetwork(t *testing.T) {
 }
 
 func TestCheckCacheMissFetchesAndWritesCache(t *testing.T) {
-	server, requests := checkTestServer(t, "2.0.0", nil)
+	server, requests := checkTestServer(t, "2.0.0", false)
 	dir := filepath.Join(t.TempDir(), "cache", "tarlink")
 	now := time.Unix(1000, 0)
 	service := checkTestService(t, server, dir, "1.0.0", &now)
@@ -576,7 +576,7 @@ func TestCheckCacheMissFetchesAndWritesCache(t *testing.T) {
 }
 
 func TestCheckRefetchesStaleCache(t *testing.T) {
-	server, requests := checkTestServer(t, "2.0.0", nil)
+	server, requests := checkTestServer(t, "2.0.0", false)
 	dir := t.TempDir()
 	now := time.Unix(1000, 0)
 	if err := writeCache(filepath.Join(dir, "update-check.json"), "1.1.0", now); err != nil {
@@ -595,8 +595,7 @@ func TestCheckRefetchesStaleCache(t *testing.T) {
 }
 
 func TestCheckFetchFailureReturnsErrorWithCurrent(t *testing.T) {
-	fail := true
-	server, requests := checkTestServer(t, "2.0.0", &fail)
+	server, requests := checkTestServer(t, "2.0.0", true)
 	dir := t.TempDir()
 	now := time.Unix(1000, 0)
 	// A stale cache must not be used as a fallback by Check (unlike CheckFresh).
@@ -619,7 +618,7 @@ func TestCheckFetchFailureReturnsErrorWithCurrent(t *testing.T) {
 }
 
 func TestCheckCacheWriteFailureIsBestEffort(t *testing.T) {
-	server, requests := checkTestServer(t, "2.0.0", nil)
+	server, requests := checkTestServer(t, "2.0.0", false)
 	// The cache path is a regular file, so writing the cache always fails.
 	cache := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(cache, []byte("file"), 0600); err != nil {
@@ -635,5 +634,40 @@ func TestCheckCacheWriteFailureIsBestEffort(t *testing.T) {
 		if err != nil || value.Current != "1.0.0" || value.Latest != "2.0.0" || *requests != i {
 			t.Fatalf("check %d value=%#v err=%v requests=%d", i, value, err, *requests)
 		}
+	}
+}
+
+func TestCheckHonorsCancellationBeforeFetch(t *testing.T) {
+	server, requests := checkTestServer(t, "2.0.0", false)
+	dir := t.TempDir()
+	now := time.Unix(1000, 0)
+	if err := writeCache(filepath.Join(dir, "update-check.json"), "1.1.0", now); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(cacheMaxAge)
+	service := checkTestService(t, server, dir, "1.0.0", &now)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	value, err := service.Check(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want cancellation", err)
+	}
+	if value.Current != "1.0.0" || value.Latest != "" || *requests != 0 {
+		t.Fatalf("value=%#v requests=%d", value, *requests)
+	}
+}
+
+func TestCheckRefetchesCacheFromTheFuture(t *testing.T) {
+	server, requests := checkTestServer(t, "2.0.0", false)
+	dir := t.TempDir()
+	now := time.Unix(1000, 0)
+	// A cache stamped after the current clock (clock skew) is not trusted.
+	if err := writeCache(filepath.Join(dir, "update-check.json"), "1.1.0", now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	service := checkTestService(t, server, dir, "1.0.0", &now)
+	value, err := service.Check(context.Background())
+	if err != nil || value.Latest != "2.0.0" || *requests != 1 {
+		t.Fatalf("value=%#v err=%v requests=%d", value, err, *requests)
 	}
 }
