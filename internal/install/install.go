@@ -23,6 +23,7 @@ import (
 	"github.com/drobilica/tarlink/internal/manifest"
 	taruntime "github.com/drobilica/tarlink/internal/runtime"
 	"github.com/drobilica/tarlink/internal/state"
+	"golang.org/x/sys/unix"
 )
 
 var (
@@ -1191,78 +1192,173 @@ func writeRetainedIcon(destination string, content []byte) error {
 
 // activateMaterialized publishes a validated staged application and commits
 // its integration, active version, state, and retention policy atomically.
+//
+// Each phase pushes the undo for its change onto one ordered stack as soon as
+// the change exists. Until the state write commits, any failure unwinds the
+// stack newest first: the current link, then integration, then the package
+// directory and application root.
 func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed *state.State, options Options, progress SubjectProgress, materialized materializedArtifact) (outcome Outcome, returnErr error) {
 	itemFingerprint, err := item.ResolvedPackageFingerprint()
 	if err != nil {
 		return Outcome{}, fmt.Errorf("fingerprint manifest: %w", err)
 	}
-	applicationRoot := materialized.applicationRoot
-	iconSource := materialized.iconSource
-	iconSize := materialized.iconSize
+	var undo activationUndo
+	committed := false
+	defer func() {
+		if !committed {
+			returnErr = undo.unwind(returnErr)
+		}
+	}()
 
-	appRoot := filepath.Join(manager.Layout.Apps, item.ID)
-	appRootCreated := false
-	if _, err := os.Lstat(appRoot); os.IsNotExist(err) {
-		if err := os.Mkdir(appRoot, 0o700); err != nil {
-			return Outcome{}, err
-		}
-		appRootCreated = true
-	} else if err != nil {
-		return Outcome{}, err
-	}
-	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, appRoot); err != nil {
-		return Outcome{}, err
-	}
-	keepAppRoot := false
-	defer func() {
-		if appRootCreated && !keepAppRoot {
-			_ = os.Remove(appRoot)
-		}
-	}()
-	finalPath, err := manager.Layout.PackagePath(item.ID, item.Release.Version, itemFingerprint)
+	appRoot, finalPath, err := manager.publishPackage(item, itemFingerprint, materialized.applicationRoot, progress, &undo)
 	if err != nil {
-		return Outcome{}, err
-	}
-	if _, err := os.Lstat(finalPath); err == nil {
-		return Outcome{}, fmt.Errorf("%w: package directory already exists", ErrConflict)
-	} else if !os.IsNotExist(err) {
-		return Outcome{}, err
-	}
-	if parent := filepath.Dir(finalPath); parent != appRoot {
-		if err := os.MkdirAll(parent, 0o700); err != nil {
-			return Outcome{}, err
-		}
-	}
-	manager.report(progress, "installing", 0, 0)
-	if err := os.Rename(applicationRoot, finalPath); err != nil {
-		return Outcome{}, fmt.Errorf("publish version: %w", err)
-	}
-	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, finalPath); err != nil {
-		return Outcome{}, err
-	}
-	keepFinal := false
-	defer func() {
-		if keepFinal {
-			return
-		}
-		_ = filesystem.SafeRemove(appRoot, finalPath)
-		if filepath.Dir(finalPath) != appRoot {
-			_ = os.Remove(filepath.Dir(finalPath))
-		}
-		if appRootCreated {
-			_ = os.Remove(appRoot)
-		}
-	}()
-	if err := syncDirectory(appRoot); err != nil {
 		return Outcome{}, err
 	}
 
 	manager.report(progress, "integrating", 0, 0)
+	spec, err := manager.materializedIntegrationSpec(item, appRoot, finalPath, materialized)
+	if err != nil {
+		return Outcome{}, err
+	}
+	spec, paths, err := manager.integrateMaterialized(spec, installed, &undo)
+	if err != nil {
+		return Outcome{}, err
+	}
+	if err := manager.inject("after_integration"); err != nil {
+		return Outcome{}, err
+	}
+
+	if err := manager.activateMaterializedCurrent(item, installed, itemFingerprint, appRoot, progress, &undo); err != nil {
+		return Outcome{}, err
+	}
+	if err := manager.inject("after_activation"); err != nil {
+		return Outcome{}, err
+	}
+
+	newState := materializedState(item, installed, options, itemFingerprint, spec, paths, materialized.iconSource)
+	if err := manager.inject("before_state"); err != nil {
+		return Outcome{}, err
+	}
+	stateCommitted, stateErr := manager.persistState(newState)
+	if stateCommitted {
+		committed = true
+		outcome.State = newState
+	}
+	if stateErr != nil {
+		return outcome, stateErr
+	}
+
+	outcome.Warnings = manager.removeSupersededPackage(item.ID, installed, newState, appRoot, progress)
+	return outcome, nil
+}
+
+// activationUndo is the ordered undo stack of a materialized activation.
+// Unwinding runs the undos newest first and joins each failure into the
+// activation error; best-effort undos always report nil.
+type activationUndo []func() error
+
+func (undo *activationUndo) push(step func() error) {
+	*undo = append(*undo, step)
+}
+
+func (undo activationUndo) unwind(err error) error {
+	for index := len(undo) - 1; index >= 0; index-- {
+		err = integration.JoinRollback(err, undo[index]())
+	}
+	return err
+}
+
+// removeEmptyDirectory removes a directory this run created. A directory that
+// is already gone or still holds other content (an existing installation, or a
+// payload whose own removal failed and was reported) is not an undo failure.
+func removeEmptyDirectory(path string) error {
+	err := os.Remove(path)
+	if err == nil || os.IsNotExist(err) || errors.Is(err, unix.ENOTEMPTY) || errors.Is(err, unix.EEXIST) {
+		return nil
+	}
+	return err
+}
+
+// publishPackage moves the staged application root into its versioned package
+// directory, creating the application root and version directory when they
+// are absent. It pushes undos that remove the application root and version
+// directory it created and the published package directory.
+func (manager *Manager) publishPackage(item *manifest.Manifest, fingerprint, applicationRoot string, progress SubjectProgress, undo *activationUndo) (string, string, error) {
+	appRoot := filepath.Join(manager.Layout.Apps, item.ID)
+	appRootCreated := false
+	if _, err := os.Lstat(appRoot); os.IsNotExist(err) {
+		if err := os.Mkdir(appRoot, 0o700); err != nil {
+			return "", "", err
+		}
+		appRootCreated = true
+	} else if err != nil {
+		return "", "", err
+	}
+	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, appRoot); err != nil {
+		return "", "", err
+	}
+	undo.push(func() error {
+		if appRootCreated {
+			return removeEmptyDirectory(appRoot)
+		}
+		return nil
+	})
+	finalPath, err := manager.Layout.PackagePath(item.ID, item.Release.Version, fingerprint)
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := os.Lstat(finalPath); err == nil {
+		return "", "", fmt.Errorf("%w: package directory already exists", ErrConflict)
+	} else if !os.IsNotExist(err) {
+		return "", "", err
+	}
+	// Each directory this run creates (app root, version directory) has its own
+	// undo; the package undo removes only the package. An existing version
+	// directory must be an owned real directory, never a symlink.
+	parentCreated := false
+	if parent := filepath.Dir(finalPath); parent != appRoot {
+		if _, err := os.Lstat(parent); os.IsNotExist(err) {
+			parentCreated = true
+		} else if err != nil {
+			return "", "", err
+		} else if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, parent); err != nil {
+			// A planted symlink here would send the package outside the tree.
+			return "", "", err
+		}
+		if err := os.MkdirAll(parent, 0o700); err != nil {
+			return "", "", err
+		}
+		if parentCreated {
+			undo.push(func() error { return removeEmptyDirectory(parent) })
+		}
+	}
+	manager.report(progress, "installing", 0, 0)
+	if err := os.Rename(applicationRoot, finalPath); err != nil {
+		return "", "", fmt.Errorf("publish version: %w", err)
+	}
+	undo.push(func() error {
+		if err := filesystem.SafeRemove(appRoot, finalPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
+	if err := filesystem.CheckOwnedDirectoryWithin(manager.Layout.Home, finalPath); err != nil {
+		return "", "", err
+	}
+	if err := syncDirectory(appRoot); err != nil {
+		return "", "", err
+	}
+	return appRoot, finalPath, nil
+}
+
+// materializedIntegrationSpec describes the integration of the package
+// published at finalPath, including the expected desktop and icon digests.
+func (manager *Manager) materializedIntegrationSpec(item *manifest.Manifest, appRoot, finalPath string, materialized materializedArtifact) (integration.Spec, error) {
 	spec := integration.Spec{
 		ID: item.ID, Name: item.Name,
 		ApplicationRoot: appRoot, LocalBinDirectory: manager.Layout.Bin,
 		DesktopDirectory: manager.Layout.Desktop, IconDirectory: manager.Layout.Icons,
-		Icon: iconSource, IconSize: iconSize, IconSourceRoot: finalPath, DesktopEnabled: item.Desktop.Enabled,
+		Icon: materialized.iconSource, IconSize: materialized.iconSize, IconSourceRoot: finalPath, DesktopEnabled: item.Desktop.Enabled,
 		DesktopCategories: item.Desktop.Categories, WorkingDirectory: item.Desktop.WorkingDirectory == "application-root",
 	}
 	for _, executable := range item.Application.Executables {
@@ -1277,25 +1373,35 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
 	}
 	if spec.Icon != "" {
+		var err error
 		spec.IconSHA256, err = integration.IconDigest(spec.IconSourceRoot, spec.Icon)
 		if err != nil {
-			return Outcome{}, err
+			return integration.Spec{}, err
 		}
 	}
+	return spec, nil
+}
+
+// integrateMaterialized creates the integration for a fresh install or
+// replaces the owned integration of an update, and pushes the integration
+// cleanup, whose failure is reported as an incomplete rollback. It returns
+// the spec as recorded in state.
+func (manager *Manager) integrateMaterialized(spec integration.Spec, installed *state.State, undo *activationUndo) (integration.Spec, integration.Paths, error) {
 	var paths integration.Paths
-	cleanupIntegration := func() error { return nil }
+	var cleanupIntegration func() error
+	var err error
 	if installed == nil {
 		paths, cleanupIntegration, err = integration.Ensure(spec)
 		if err != nil {
-			return Outcome{}, err
+			return integration.Spec{}, integration.Paths{}, err
 		}
 	} else {
 		existingSpec, specErr := manager.integrationSpec(*installed, "", nil)
 		if specErr != nil {
-			return Outcome{}, specErr
+			return integration.Spec{}, integration.Paths{}, specErr
 		}
 		if err := integration.ValidateOwned(existingSpec); err != nil {
-			return Outcome{}, err
+			return integration.Spec{}, integration.Paths{}, err
 		}
 		if spec.DesktopEnabled {
 			spec.DesktopSHA256 = integration.DesktopDigest(spec, integration.ExpectedPaths(spec).Executables[0].Link)
@@ -1304,53 +1410,42 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		}
 		paths, cleanupIntegration, err = integration.Update(spec, existingSpec)
 		if err != nil {
-			return Outcome{}, err
+			return integration.Spec{}, integration.Paths{}, err
 		}
 		spec.DesktopEnabled = installed.DesktopEnabled
 	}
-	keepIntegration := false
-	defer func() {
-		if !keepIntegration {
-			returnErr = integration.JoinRollback(returnErr, cleanupIntegration())
-		}
-	}()
-	if err := manager.inject("after_integration"); err != nil {
-		return Outcome{}, err
-	}
+	undo.push(cleanupIntegration)
+	return spec, paths, nil
+}
 
-	oldVersion := ""
-	previousVersion := ""
-	if installed != nil {
-		oldVersion = installed.Current
-		previousVersion = installed.Previous
-	}
+// activateMaterializedCurrent switches the current link from the installed
+// version, if any, to the published package and pushes its restore, whose
+// failure is reported as an incomplete rollback.
+func (manager *Manager) activateMaterializedCurrent(item *manifest.Manifest, installed *state.State, fingerprint, appRoot string, progress SubjectProgress, undo *activationUndo) error {
 	manager.report(progress, "activating", 0, 0)
 	oldTarget := ""
 	if installed != nil {
+		var err error
 		oldTarget, err = manager.currentTarget(item.ID, installed.Current, installed.CurrentFingerprint)
 		if err != nil {
-			return Outcome{}, err
+			return err
 		}
 	}
-	newTarget, err := manager.currentTarget(item.ID, item.Release.Version, itemFingerprint)
+	newTarget, err := manager.currentTarget(item.ID, item.Release.Version, fingerprint)
 	if err != nil {
-		return Outcome{}, err
+		return err
 	}
 	restore, err := switchCurrent(appRoot, oldTarget, newTarget)
 	if err != nil {
-		return Outcome{}, err
+		return err
 	}
-	keepActivation := false
-	defer func() {
-		if keepActivation {
-			return
-		}
-		returnErr = integration.JoinRollback(returnErr, restore())
-	}()
-	if err := manager.inject("after_activation"); err != nil {
-		return Outcome{}, err
-	}
+	undo.push(restore)
+	return nil
+}
 
+// materializedState builds the state recorded for the activated package; the
+// installed version, if any, becomes the previous one.
+func materializedState(item *manifest.Manifest, installed *state.State, options Options, fingerprint string, spec integration.Spec, paths integration.Paths, iconSource string) state.State {
 	desktopEnabled := item.Desktop.Enabled
 	desktopPath := ""
 	if desktopEnabled {
@@ -1369,33 +1464,10 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 	}
 	newState := state.State{
 		Authority: item.Authority,
-		Schema:    state.Schema, App: item.ID, Current: item.Release.Version, CurrentFingerprint: itemFingerprint, Previous: oldVersion,
-		PreviousFingerprint: func() string {
-			if installed != nil {
-				return installed.CurrentFingerprint
-			}
-			return ""
-		}(),
-		PreviousArtifact: func() string {
-			if installed != nil {
-				return installed.Artifact
-			}
-			return ""
-		}(),
-		Channel: channel, PreviousChannel: func() string {
-			if installed != nil {
-				return installed.Channel
-			}
-			return ""
-		}(), Pinned: pinned,
+		Schema:    state.Schema, App: item.ID, Current: item.Release.Version, CurrentFingerprint: fingerprint,
+		Channel: channel, Pinned: pinned,
 		Executables: manifestExecutables(item.Application.Executables), Artifact: item.Release.Archive, DesktopEnabled: desktopEnabled,
 		Runtime: copyRuntime(item.Runtime),
-		PreviousRuntime: func() *manifest.Runtime {
-			if installed != nil {
-				return copyRuntime(installed.Runtime)
-			}
-			return nil
-		}(),
 		Integration: state.Integration{
 			DesktopEntry:      desktopPath,
 			DesktopSHA256:     spec.DesktopSHA256,
@@ -1404,6 +1476,13 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 			IconFile:          paths.IconFile, IconSHA256: spec.IconSHA256,
 			IconSize: spec.IconSize, IconSource: iconSource,
 		},
+	}
+	if installed != nil {
+		newState.Previous = installed.Current
+		newState.PreviousFingerprint = installed.CurrentFingerprint
+		newState.PreviousArtifact = installed.Artifact
+		newState.PreviousChannel = installed.Channel
+		newState.PreviousRuntime = copyRuntime(installed.Runtime)
 	}
 	for _, executable := range paths.Executables {
 		value := findManifestExecutable(item.Application.Executables, executable.Name)
@@ -1415,33 +1494,31 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		newState.Integration.PreviousIconSize = installed.Integration.IconSize
 		newState.Integration.PreviousIconSource = installed.Integration.IconSource
 	}
-	if err := manager.inject("before_state"); err != nil {
-		return Outcome{}, err
-	}
-	stateCommitted, stateErr := manager.persistState(newState)
-	if stateCommitted {
-		keepActivation = true
-		keepFinal = true
-		keepAppRoot = true
-		keepIntegration = true
-		outcome.State = newState
-	}
-	if stateErr != nil {
-		return outcome, stateErr
-	}
+	return newState
+}
 
-	if installed != nil && previousVersion != "" &&
-		(previousVersion != newState.Current || installed.PreviousFingerprint != newState.CurrentFingerprint) &&
-		(previousVersion != newState.Previous || installed.PreviousFingerprint != newState.PreviousFingerprint) {
-		manager.report(progress, "cleaning", 0, 0)
-		oldPath, pathErr := manager.Layout.PackagePath(item.ID, previousVersion, installed.PreviousFingerprint)
-		if pathErr != nil {
-			outcome.Warnings = append(outcome.Warnings, pathErr.Error())
-		} else if cleanupErr := filesystem.SafeRemove(appRoot, oldPath); cleanupErr != nil {
-			outcome.Warnings = append(outcome.Warnings, cleanupErr.Error())
-		}
+// removeSupersededPackage enforces current-plus-one-previous retention after
+// a committed update by removing the formerly previous package when it is
+// neither the new current nor the new previous package. Failures are
+// returned as warnings because the activation has already committed.
+func (manager *Manager) removeSupersededPackage(appID string, installed *state.State, newState state.State, appRoot string, progress SubjectProgress) []string {
+	if installed == nil || installed.Previous == "" {
+		return nil
 	}
-	return outcome, nil
+	previousVersion := installed.Previous
+	if (previousVersion == newState.Current && installed.PreviousFingerprint == newState.CurrentFingerprint) ||
+		(previousVersion == newState.Previous && installed.PreviousFingerprint == newState.PreviousFingerprint) {
+		return nil
+	}
+	manager.report(progress, "cleaning", 0, 0)
+	oldPath, err := manager.Layout.PackagePath(appID, previousVersion, installed.PreviousFingerprint)
+	if err != nil {
+		return []string{err.Error()}
+	}
+	if err := filesystem.SafeRemove(appRoot, oldPath); err != nil {
+		return []string{err.Error()}
+	}
+	return nil
 }
 
 func (manager *Manager) activateRetained(appID string, installed state.State, progress SubjectProgress) (_ Outcome, returnErr error) {
