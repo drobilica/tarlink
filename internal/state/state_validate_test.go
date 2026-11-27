@@ -154,6 +154,12 @@ func TestValidateErrorsAndOrder(t *testing.T) {
 		{"order icon size prev icon size", func(s *State) { s.Integration.IconSize = -1; s.Integration.PreviousIconSize = -1 }, "corrupt state: icon ownership size is invalid"},
 		{"order icon source prev icon", func(s *State) { s.Integration.IconSource = "/x"; s.Integration.PreviousIconSource = "" }, "corrupt state: icon source: must be a canonical relative path"},
 		{"order prev size prev sha", func(s *State) { s.Integration.PreviousIconSize = 100; s.Integration.PreviousIconSHA256 = "" }, "corrupt state: previous icon ownership size is unsupported"},
+		{"order icon sha icon requires desktop", func(s *State) {
+			s.DesktopEnabled = false
+			s.Integration.DesktopEntry, s.Integration.DesktopSHA256 = "", ""
+			s.Integration.IconSHA256 = ""
+		}, "corrupt state: icon ownership digest is invalid"},
+		{"order desktop entry req desktop sha", func(s *State) { s.Integration.DesktopEntry = ""; s.Integration.DesktopSHA256 = "" }, "corrupt state: desktop entry required when desktop integration is enabled"},
 		{"zero state", func(s *State) { *s = State{} }, "corrupt state: unsupported schema 0"},
 	}
 	for _, tc := range cases {
