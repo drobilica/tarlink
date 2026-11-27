@@ -781,3 +781,76 @@ func TestRemoveOwnedRemovesOnlyDesktopEntryAndIcon(t *testing.T) {
 		}
 	}
 }
+
+func TestJoinRollbackKeepsBothErrors(t *testing.T) {
+	cause := errors.New("cause")
+	if got := JoinRollback(cause, nil); got != cause {
+		t.Fatalf("JoinRollback(cause, nil) = %v, want cause unchanged", got)
+	}
+	undo := errors.New("undo failed")
+	got := JoinRollback(cause, undo)
+	if !errors.Is(got, cause) || !errors.Is(got, undo) || !errors.Is(got, ErrRollbackIncomplete) {
+		t.Fatalf("JoinRollback(cause, undo) = %v, want cause, undo and ErrRollbackIncomplete", got)
+	}
+}
+
+func TestUpdateRollsBackIconWhenDesktopReplacementFails(t *testing.T) {
+	root := t.TempDir()
+	previous := testSpec(root)
+	previous.IconDirectory = filepath.Join(root, "data", "icons", "hicolor")
+	previous.Icon = "icon.png"
+	previous.IconSourceRoot = previous.ApplicationRoot
+	if err := os.MkdirAll(previous.ApplicationRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldContent := []byte("old icon")
+	if err := os.WriteFile(filepath.Join(previous.ApplicationRoot, previous.Icon), oldContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDigest := sha256.Sum256(oldContent)
+	previous.IconSHA256 = hex.EncodeToString(oldDigest[:])
+	previous.DesktopSHA256 = DesktopDigest(previous, ExpectedPaths(previous).Executables[0].Link)
+	oldPaths, _, err := Ensure(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	next := previous
+	next.IconSourceRoot = filepath.Join(root, "next")
+	if err := os.MkdirAll(next.IconSourceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	newContent := []byte("new icon")
+	if err := os.WriteFile(filepath.Join(next.IconSourceRoot, next.Icon), newContent, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	newDigest := sha256.Sum256(newContent)
+	next.IconSHA256 = hex.EncodeToString(newDigest[:])
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
+
+	// Changing the name changes the desktop entry, which is published after
+	// the icon. A read-only applications directory makes that later step fail
+	// once the icon was already replaced, so Update must undo the icon itself.
+	next.Name = "Blender Next"
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	if err := os.Chmod(next.DesktopDirectory, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(next.DesktopDirectory, 0o700) })
+	paths, cleanup, err := Update(next, previous)
+	if err == nil {
+		t.Fatalf("Update succeeded with a read-only desktop directory: %+v", paths)
+	}
+	if cleanup != nil {
+		t.Fatal("failed Update returned a cleanup function")
+	}
+	if errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("Update error = %v, want a complete rollback", err)
+	}
+	if got, readErr := os.ReadFile(oldPaths.IconFile); readErr != nil || string(got) != string(oldContent) {
+		t.Fatalf("icon after failed Update = %q, %v; want the previous icon restored", got, readErr)
+	}
+}

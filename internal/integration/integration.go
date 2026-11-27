@@ -16,6 +16,20 @@ import (
 
 var ErrConflict = errors.New("integration path is occupied by a non-TarLink file")
 
+// ErrRollbackIncomplete reports that undoing a failed change also failed, so
+// files on disk may no longer match the recorded installation state.
+var ErrRollbackIncomplete = errors.New("rollback incomplete: on-disk installation may not match recorded state")
+
+// JoinRollback returns err unchanged when rollbackErr is nil. Otherwise it
+// keeps err and adds rollbackErr marked with ErrRollbackIncomplete so a failed
+// undo is never hidden behind the error that triggered it.
+func JoinRollback(err, rollbackErr error) error {
+	if rollbackErr == nil {
+		return err
+	}
+	return errors.Join(err, fmt.Errorf("%w: %w", ErrRollbackIncomplete, rollbackErr))
+}
+
 const maxDesktopBytes = 64 << 10
 
 // afterPublication is nil in production and is set only by tests to observe
@@ -282,8 +296,7 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 			continue
 		}
 		if err := detachOwned(old.Link, func(link string) error { return validateSymlinkForRemoval(link, old.Target) }); err != nil {
-			_ = rollback()
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		oldCopy := old
 		undo = append(undo, func() error { _, err := ensureSymlink(oldCopy.Link, oldCopy.Target); return err })
@@ -294,19 +307,16 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 	// or disappear entirely, before the icon file does.
 	if spec.Icon != "" {
 		if err := ensureIconSource(spec); err != nil {
-			_ = rollback()
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		content, err := readIconSource(spec)
 		if err != nil {
-			_ = rollback()
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		if previous.Icon == "" {
 			created, createErr := atomicCreateIcon(paths.IconFile, content)
 			if createErr != nil {
-				_ = rollback()
-				return Paths{}, nil, createErr
+				return Paths{}, nil, JoinRollback(createErr, rollback())
 			}
 			if created {
 				undo = append(undo, func() error { return os.Remove(paths.IconFile) })
@@ -314,27 +324,23 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 		} else if paths.IconFile == previousPaths.IconFile {
 			old, readErr := os.ReadFile(previousPaths.IconFile)
 			if readErr != nil {
-				_ = rollback()
-				return Paths{}, nil, readErr
+				return Paths{}, nil, JoinRollback(readErr, rollback())
 			}
 			if string(old) != string(content) {
 				undoFile, replaceErr := replaceOwned(previousPaths.IconFile, previous.IconSHA256, old, content, 0o644)
 				if replaceErr != nil {
-					_ = rollback()
-					return Paths{}, nil, replaceErr
+					return Paths{}, nil, JoinRollback(replaceErr, rollback())
 				}
 				undo = append(undo, undoFile)
 			}
 		} else {
 			old, readErr := os.ReadFile(previousPaths.IconFile)
 			if readErr != nil {
-				_ = rollback()
-				return Paths{}, nil, readErr
+				return Paths{}, nil, JoinRollback(readErr, rollback())
 			}
 			created, createErr := atomicCreateIcon(paths.IconFile, content)
 			if createErr != nil {
-				_ = rollback()
-				return Paths{}, nil, createErr
+				return Paths{}, nil, JoinRollback(createErr, rollback())
 			}
 			if created {
 				undo = append(undo, func() error { return os.Remove(paths.IconFile) })
@@ -347,8 +353,7 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 				return atomicCreateExisting(previousPaths.IconFile, oldCopy, 0o644)
 			})
 			if err := os.Remove(previousPaths.IconFile); err != nil && !os.IsNotExist(err) {
-				_ = rollback()
-				return Paths{}, nil, err
+				return Paths{}, nil, JoinRollback(err, rollback())
 			}
 		}
 		if afterPublication != nil {
@@ -360,19 +365,19 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 		if previous.DesktopEnabled {
 			old, err := os.ReadFile(previousPaths.DesktopEntry)
 			if err != nil {
-				return Paths{}, nil, err
+				return Paths{}, nil, JoinRollback(err, rollback())
 			}
 			if string(old) != string(content) {
 				undoFile, err := replaceOwned(previousPaths.DesktopEntry, previous.DesktopSHA256, old, content, 0o644)
 				if err != nil {
-					return Paths{}, nil, err
+					return Paths{}, nil, JoinRollback(err, rollback())
 				}
 				undo = append(undo, undoFile)
 			}
 		} else {
 			created, err := ensureDesktop(paths.DesktopEntry, spec.ID, content)
 			if err != nil {
-				return Paths{}, nil, err
+				return Paths{}, nil, JoinRollback(err, rollback())
 			}
 			if created {
 				undo = append(undo, func() error { return os.Remove(paths.DesktopEntry) })
@@ -381,15 +386,15 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 	} else if previous.DesktopEnabled {
 		old, err := os.ReadFile(previousPaths.DesktopEntry)
 		if err != nil {
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		if err := validateDesktop(previousPaths.DesktopEntry, previous.ID, previous.DesktopSHA256); err != nil {
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		if err := detachOwned(previousPaths.DesktopEntry, func(path string) error {
 			return validateDesktopForRemoval(path, previous.ID, previous.DesktopSHA256)
 		}); err != nil {
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		undo = append(undo, func() error { return atomicCreateExisting(previousPaths.DesktopEntry, old, 0o644) })
 	}
@@ -399,12 +404,10 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 	if spec.Icon == "" && previous.Icon != "" {
 		old, err := os.ReadFile(previousPaths.IconFile)
 		if err != nil {
-			_ = rollback()
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		if err := os.Remove(previousPaths.IconFile); err != nil && !os.IsNotExist(err) {
-			_ = rollback()
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, rollback())
 		}
 		undo = append(undo, func() error { return atomicCreateExisting(previousPaths.IconFile, old, 0o644) })
 	}

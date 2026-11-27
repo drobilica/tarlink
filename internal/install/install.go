@@ -1311,7 +1311,7 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 	keepIntegration := false
 	defer func() {
 		if !keepIntegration {
-			_ = cleanupIntegration()
+			returnErr = integration.JoinRollback(returnErr, cleanupIntegration())
 		}
 	}()
 	if err := manager.inject("after_integration"); err != nil {
@@ -1345,7 +1345,7 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 		if keepActivation {
 			return
 		}
-		_ = restore()
+		returnErr = integration.JoinRollback(returnErr, restore())
 	}()
 	if err := manager.inject("after_activation"); err != nil {
 		return Outcome{}, err
@@ -1444,7 +1444,7 @@ func (manager *Manager) activateMaterialized(item *manifest.Manifest, installed 
 	return outcome, nil
 }
 
-func (manager *Manager) activateRetained(appID string, installed state.State, progress SubjectProgress) (Outcome, error) {
+func (manager *Manager) activateRetained(appID string, installed state.State, progress SubjectProgress) (_ Outcome, returnErr error) {
 	appRoot := filepath.Join(manager.Layout.Apps, appID)
 	if err := manager.validateManagedApp(appID); err != nil {
 		return Outcome{}, err
@@ -1498,23 +1498,23 @@ func (manager *Manager) activateRetained(appID string, installed state.State, pr
 	// link itself is a symlink and is never used as an icon source root.
 	nextSpec.IconSourceRoot, err = manager.Layout.PackagePath(appID, installed.Previous, installed.PreviousFingerprint)
 	if err != nil {
-		_ = restore()
-		return Outcome{}, err
+		return Outcome{}, integration.JoinRollback(err, restore())
 	}
 	iconRestore, err := integration.SwitchIcon(spec, nextSpec)
 	if err != nil {
-		_ = restore()
-		return Outcome{}, err
+		return Outcome{}, integration.JoinRollback(err, restore())
 	}
 	iconCommitted := false
 	committed := false
 	defer func() {
-		if !committed {
-			if !iconCommitted {
-				_ = iconRestore()
-			}
-			_ = restore()
+		if committed {
+			return
 		}
+		var rollbackErr error
+		if !iconCommitted {
+			rollbackErr = iconRestore()
+		}
+		returnErr = integration.JoinRollback(returnErr, errors.Join(rollbackErr, restore()))
 	}()
 	installed.Current, installed.Previous = installed.Previous, installed.Current
 	installed.CurrentFingerprint, installed.PreviousFingerprint = installed.PreviousFingerprint, installed.CurrentFingerprint
