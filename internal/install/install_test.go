@@ -1674,3 +1674,92 @@ func TestRemoteIconReservedPathRejectsOccupiedAndSymlinkedSources(t *testing.T) 
 		})
 	}
 }
+
+// lockAppRootAt makes the application root read-only when the named failure
+// point is reached, so switching the current link back cannot succeed.
+func lockAppRootAt(t *testing.T, manager *Manager, layout filesystem.Layout, failAt string, injected error) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	appRoot := filepath.Join(layout.Apps, "fixture")
+	t.Cleanup(func() { _ = os.Chmod(appRoot, 0o700) })
+	manager.fail = func(stage string) error {
+		if stage != failAt {
+			return nil
+		}
+		if err := os.Chmod(appRoot, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		return injected
+	}
+}
+
+func TestFailedUpdateReportsIncompleteRollback(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+
+	injected := errors.New("injected state failure")
+	manager.fail = func(stage string) error {
+		if stage == "before_state" {
+			return injected
+		}
+		return nil
+	}
+	_, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil)
+	if !errors.Is(err, injected) || errors.Is(err, integration.ErrRollbackIncomplete) {
+		t.Fatalf("update with successful rollback error = %v, want only the injected failure", err)
+	}
+	assertCurrent(t, layout, "fixture", "v1")
+
+	lockAppRootAt(t, manager, layout, "before_state", injected)
+	_, err = manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil)
+	if !errors.Is(err, injected) {
+		t.Fatalf("update error = %v, want the injected failure kept", err)
+	}
+	if !errors.Is(err, integration.ErrRollbackIncomplete) {
+		t.Fatalf("update error = %v, want ErrRollbackIncomplete when the current link cannot be restored", err)
+	}
+}
+
+func TestFailedRollbackReportsIncompleteRestore(t *testing.T) {
+	layout := testLayout(t)
+	v1Server := newArtifactServer(t, fixtureArchive(t, "v1"))
+	manager := managerFor(t, layout, v1Server)
+	if _, err := manager.InstallWithOptions(context.Background(), v1Server.manifest("v1"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	v2Server := newArtifactServer(t, fixtureArchive(t, "v2"))
+	manager.Client = &download.Client{HTTP: v2Server.server.Client(), RedirectLimit: 2}
+	if _, err := manager.UpdateWithOptions(context.Background(), v2Server.manifest("v2"), Options{Channel: "stable"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	injected := errors.New("injected state failure")
+	manager.fail = func(stage string) error {
+		if stage == "before_state" {
+			return injected
+		}
+		return nil
+	}
+	_, err := manager.Rollback(context.Background(), "fixture", nil)
+	if !errors.Is(err, injected) || errors.Is(err, integration.ErrRollbackIncomplete) {
+		t.Fatalf("rollback with successful restore error = %v, want only the injected failure", err)
+	}
+	assertCurrent(t, layout, "fixture", "v2")
+
+	lockAppRootAt(t, manager, layout, "before_state", injected)
+	_, err = manager.Rollback(context.Background(), "fixture", nil)
+	if !errors.Is(err, injected) {
+		t.Fatalf("rollback error = %v, want the injected failure kept", err)
+	}
+	if !errors.Is(err, integration.ErrRollbackIncomplete) {
+		t.Fatalf("rollback error = %v, want ErrRollbackIncomplete when the current link cannot be restored", err)
+	}
+}
