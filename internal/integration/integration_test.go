@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -782,15 +783,24 @@ func TestRemoveOwnedRemovesOnlyDesktopEntryAndIcon(t *testing.T) {
 	}
 }
 
-func TestJoinRollbackKeepsBothErrors(t *testing.T) {
+func TestJoinRollbackKeepsCauseAndUndoFailure(t *testing.T) {
 	cause := errors.New("cause")
 	if got := JoinRollback(cause, nil); got != cause {
 		t.Fatalf("JoinRollback(cause, nil) = %v, want cause unchanged", got)
 	}
-	undo := errors.New("undo failed")
+	undo := errors.Join(errors.New("first undo"), errors.New("second undo"))
 	got := JoinRollback(cause, undo)
 	if !errors.Is(got, cause) || !errors.Is(got, undo) || !errors.Is(got, ErrRollbackIncomplete) {
 		t.Fatalf("JoinRollback(cause, undo) = %v, want cause, undo and ErrRollbackIncomplete", got)
+	}
+	want := "cause\n  " + ErrRollbackIncomplete.Error() + ": first undo\n  second undo"
+	if got.Error() != want {
+		t.Fatalf("message = %q, want %q", got.Error(), want)
+	}
+	outer := JoinRollback(fmt.Errorf("activate: %w", got), errors.New("outer undo"))
+	var rollback *RollbackError
+	if !errors.As(outer, &rollback) || rollback.Cause() != cause {
+		t.Fatalf("Cause() of nested rollback error = %v, want the original cause", rollback)
 	}
 }
 
@@ -852,5 +862,127 @@ func TestUpdateRollsBackIconWhenDesktopReplacementFails(t *testing.T) {
 	}
 	if got, readErr := os.ReadFile(oldPaths.IconFile); readErr != nil || string(got) != string(oldContent) {
 		t.Fatalf("icon after failed Update = %q, %v; want the previous icon restored", got, readErr)
+	}
+}
+
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+}
+
+func TestUpdateRemovesNewBinLinkWhenALaterStepFails(t *testing.T) {
+	skipIfRoot(t)
+	root := t.TempDir()
+	previous := testSpec(root)
+	if _, _, err := Ensure(previous); err != nil {
+		t.Fatal(err)
+	}
+	next := previous
+	next.Name = "Blender Next"
+	next.Executables = append(append([]ExecutableSpec(nil), previous.Executables...), ExecutableSpec{Name: "blender-cli", Path: "bin/blender-cli"})
+	next.DesktopSHA256 = DesktopDigest(next, ExpectedPaths(next).Executables[0].Link)
+	newLink := ExpectedPaths(next).Executables[1].Link
+	if err := os.Chmod(next.DesktopDirectory, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(next.DesktopDirectory, 0o700) })
+	if _, _, err := Update(next, previous); err == nil || errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("Update error = %v, want a failure with a complete rollback", err)
+	}
+	if _, err := os.Lstat(newLink); !os.IsNotExist(err) {
+		t.Fatalf("new bin link remains after failed Update: %v", err)
+	}
+	if _, err := os.Lstat(ExpectedPaths(previous).Executables[0].Link); err != nil {
+		t.Fatalf("existing bin link was removed: %v", err)
+	}
+}
+
+func TestEnsureReportsFailedCleanup(t *testing.T) {
+	skipIfRoot(t)
+	spec := iconSpec(t, t.TempDir())
+	// A user-owned file at the desktop entry path makes the last step fail.
+	if err := os.MkdirAll(spec.DesktopDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ExpectedPaths(spec).DesktopEntry, []byte("user-owned"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(spec.LocalBinDirectory, 0o700) })
+	original := afterPublication
+	afterPublication = func(stage string) {
+		if stage == "icon" {
+			if err := os.Chmod(spec.LocalBinDirectory, 0o500); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	t.Cleanup(func() { afterPublication = original })
+	_, cleanup, err := Ensure(spec)
+	if err == nil || cleanup != nil {
+		t.Fatalf("Ensure error = %v, want failure without cleanup", err)
+	}
+	if !errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("Ensure error = %v, want ErrRollbackIncomplete when a created link cannot be removed", err)
+	}
+}
+
+func TestSwitchIconUndoReportsFailureToRemoveNewIcon(t *testing.T) {
+	root := t.TempDir()
+	current := iconSpec(t, root)
+	if _, _, err := Ensure(current); err != nil {
+		t.Fatal(err)
+	}
+	next := current
+	next.Icon = "share/icon.svg"
+	content := []byte("<svg/>")
+	if err := os.WriteFile(filepath.Join(next.ApplicationRoot, next.Icon), content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+	next.IconSHA256 = hex.EncodeToString(digest[:])
+	undo, err := SwitchIcon(current, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Replace the new icon with a non-empty directory so removing it fails
+	// while restoring the previous icon still succeeds.
+	nextIcon := ExpectedPaths(next).IconFile
+	if err := os.Remove(nextIcon); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(nextIcon, "keep"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := undo(); err == nil {
+		t.Fatal("icon undo reported success although the new icon could not be removed")
+	}
+	if got, err := os.ReadFile(ExpectedPaths(current).IconFile); err != nil || string(got) != "png fixture" {
+		t.Fatalf("previous icon after undo = %q, %v", got, err)
+	}
+}
+
+func TestDetachOwnedReportsFileLeftDetached(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "entry")
+	if err := os.WriteFile(path, []byte("user file"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var detached string
+	rejected := errors.New("not owned")
+	err := detachOwned(path, func(temporary string) error {
+		detached = temporary
+		// Something recreates the path before the file can be moved back.
+		if err := os.WriteFile(path, []byte("new"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return rejected
+	})
+	if !errors.Is(err, rejected) || !errors.Is(err, ErrRollbackIncomplete) {
+		t.Fatalf("detachOwned error = %v, want the rejection and ErrRollbackIncomplete", err)
+	}
+	if got, readErr := os.ReadFile(detached); readErr != nil || string(got) != "user file" || !strings.Contains(err.Error(), detached) {
+		t.Fatalf("detached file %q = %q, %v; error %v should name it", detached, got, readErr, err)
 	}
 }

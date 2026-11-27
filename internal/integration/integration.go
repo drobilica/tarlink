@@ -20,14 +20,54 @@ var ErrConflict = errors.New("integration path is occupied by a non-TarLink file
 // files on disk may no longer match the recorded installation state.
 var ErrRollbackIncomplete = errors.New("rollback incomplete: on-disk installation may not match recorded state")
 
+// RollbackError is a failure whose undo also failed. Err is the failure that
+// started the rollback and decides how the error is classified; Rollback is
+// what could not be undone. errors.Is matches Err, Rollback and
+// ErrRollbackIncomplete.
+type RollbackError struct {
+	Err      error
+	Rollback error
+}
+
+func (e *RollbackError) Error() string {
+	undo := strings.ReplaceAll(e.Rollback.Error(), "\n", "\n  ")
+	return fmt.Sprintf("%v\n  %v: %s", e.Err, ErrRollbackIncomplete, undo)
+}
+
+func (e *RollbackError) Unwrap() []error {
+	return []error{e.Err, ErrRollbackIncomplete, e.Rollback}
+}
+
+// Cause returns the failure that started the rollback, skipping any nested
+// RollbackError wrappers.
+func (e *RollbackError) Cause() error {
+	var inner *RollbackError
+	if errors.As(e.Err, &inner) {
+		return inner.Cause()
+	}
+	return e.Err
+}
+
+// removeAll removes each path in order, ignoring paths that are already gone,
+// and joins every other failure.
+func removeAll(paths []string) error {
+	var errs []error
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // JoinRollback returns err unchanged when rollbackErr is nil. Otherwise it
-// keeps err and adds rollbackErr marked with ErrRollbackIncomplete so a failed
-// undo is never hidden behind the error that triggered it.
+// returns a RollbackError so a failed undo is never hidden behind the error
+// that triggered it.
 func JoinRollback(err, rollbackErr error) error {
 	if rollbackErr == nil {
 		return err
 	}
-	return errors.Join(err, fmt.Errorf("%w: %w", ErrRollbackIncomplete, rollbackErr))
+	return &RollbackError{Err: err, Rollback: rollbackErr}
 }
 
 const maxDesktopBytes = 64 << 10
@@ -259,20 +299,6 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 	}
 	paths := ExpectedPaths(spec)
 	previousPaths := ExpectedPaths(previous)
-	if len(spec.Executables) > 0 {
-		for _, executable := range paths.Executables {
-			if executable.Link == "" {
-				continue
-			}
-			created, err := ensureSymlink(executable.Link, executable.Target)
-			if err != nil {
-				return Paths{}, nil, err
-			}
-			if created {
-				previousPaths.Executables = append(previousPaths.Executables, executable)
-			}
-		}
-	}
 	var undo []func() error
 	rollback := func() error {
 		var errs []error
@@ -280,6 +306,22 @@ func Update(spec, previous Spec) (Paths, func() error, error) {
 			errs = appendIf(errs, undo[index]())
 		}
 		return errors.Join(errs...)
+	}
+	if len(spec.Executables) > 0 {
+		for _, executable := range paths.Executables {
+			if executable.Link == "" {
+				continue
+			}
+			created, err := ensureSymlink(executable.Link, executable.Target)
+			if err != nil {
+				return Paths{}, nil, JoinRollback(err, rollback())
+			}
+			if created {
+				previousPaths.Executables = append(previousPaths.Executables, executable)
+				link := executable.Link
+				undo = append(undo, func() error { return removeAll([]string{link}) })
+			}
+		}
 	}
 	for _, old := range previousPaths.Executables {
 		if old.Link == "" {
@@ -469,24 +511,24 @@ func SwitchIcon(current, next Spec) (func() error, error) {
 	if err != nil {
 		return nil, err
 	}
+	removeCreated := func() error {
+		if !created {
+			return nil
+		}
+		if err := os.Remove(nextPaths.IconFile); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
 	old, err := os.ReadFile(currentPaths.IconFile)
 	if err != nil {
-		if created {
-			_ = os.Remove(nextPaths.IconFile)
-		}
-		return nil, err
+		return nil, JoinRollback(err, removeCreated())
 	}
 	if err := os.Remove(currentPaths.IconFile); err != nil {
-		if created {
-			_ = os.Remove(nextPaths.IconFile)
-		}
-		return nil, err
+		return nil, JoinRollback(err, removeCreated())
 	}
 	return func() error {
-		if created {
-			_ = os.Remove(nextPaths.IconFile)
-		}
-		return atomicCreateExisting(currentPaths.IconFile, old, 0o644)
+		return errors.Join(removeCreated(), atomicCreateExisting(currentPaths.IconFile, old, 0o644))
 	}, nil
 }
 
@@ -502,10 +544,7 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 		}
 		createdLink, err := ensureSymlink(executable.Link, executable.Target)
 		if err != nil {
-			for _, link := range created {
-				_ = os.Remove(link)
-			}
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, removeAll(created))
 		}
 		if createdLink {
 			created = append(created, executable.Link)
@@ -519,10 +558,7 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 	if spec.Icon != "" {
 		createdIcon, err = ensureIcon(spec, paths.IconFile)
 		if err != nil {
-			for _, link := range created {
-				_ = os.Remove(link)
-			}
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, removeAll(created))
 		}
 		if afterPublication != nil {
 			afterPublication("icon")
@@ -533,16 +569,15 @@ func Ensure(spec Spec) (Paths, func() error, error) {
 		content := DesktopFile(spec, paths.Executables[0].Link)
 		createdDesktop, err = ensureDesktop(paths.DesktopEntry, spec.ID, content)
 		if err != nil {
-			if createdIcon {
-				_ = os.Remove(paths.IconFile)
-			}
+			var undo []string
 			if createdDesktop {
-				_ = os.Remove(paths.DesktopEntry)
+				undo = append(undo, paths.DesktopEntry)
 			}
-			for _, link := range created {
-				_ = os.Remove(link)
+			undo = append(undo, created...)
+			if createdIcon {
+				undo = append(undo, paths.IconFile)
 			}
-			return Paths{}, nil, err
+			return Paths{}, nil, JoinRollback(err, removeAll(undo))
 		}
 		if afterPublication != nil {
 			afterPublication("desktop-entry")
@@ -772,9 +807,9 @@ func detachOwned(path string, validate func(string) error) error {
 	}
 	if err := validate(temporaryPath); err != nil {
 		if _, pathErr := os.Lstat(path); errors.Is(pathErr, os.ErrNotExist) {
-			_ = os.Rename(temporaryPath, path)
+			return JoinRollback(err, os.Rename(temporaryPath, path))
 		}
-		return err
+		return JoinRollback(err, fmt.Errorf("%s was recreated; detached file left at %s", path, temporaryPath))
 	}
 	return os.Remove(temporaryPath)
 }
@@ -870,7 +905,7 @@ func replaceOwned(path, expected string, old, next []byte, mode os.FileMode) (fu
 	}
 	if _, err := atomicCreate(path, next, mode); err != nil {
 		_, restoreErr := atomicCreate(path, old, mode)
-		return nil, errors.Join(err, restoreErr)
+		return nil, JoinRollback(err, restoreErr)
 	}
 	return func() error {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {

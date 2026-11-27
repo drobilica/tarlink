@@ -8,15 +8,19 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/drobilica/tarlink/internal/artifactrepo"
 	"github.com/drobilica/tarlink/internal/download"
+	"github.com/drobilica/tarlink/internal/install"
+	"github.com/drobilica/tarlink/internal/integration"
 )
 
 func repositoryServiceDigest(content []byte) string {
@@ -463,5 +467,30 @@ func TestRuntimeSubjectProgressKeepsRuntimeIdentity(t *testing.T) {
 	}
 	if events[2].Subject != ProgressSubjectPackageArtifact || events[2].Description != "" {
 		t.Fatalf("package event = %+v", events[2])
+	}
+}
+
+func TestClassifyUsesTheFailureThatStartedAnIncompleteRollback(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		cause error
+		want  ErrorCode
+	}{
+		{"plain failure keeps no code", errors.New("disk write failed"), ""},
+		{"conflict stays a conflict", install.ErrConflict, CodeConflict},
+		{"nested rollback uses innermost cause", integration.JoinRollback(install.ErrPinned, errors.New("inner undo")), CodePinned},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// The undo failed with permission and conflict errors; neither may
+			// replace the code of the failure that started the rollback.
+			undo := errors.Join(syscall.EACCES, integration.ErrConflict)
+			err := classify("update", integration.JoinRollback(fmt.Errorf("activate: %w", test.cause), undo))
+			if got := CodeOf(err); got != test.want {
+				t.Fatalf("code = %q, want %q (err: %v)", got, test.want, err)
+			}
+			if !errors.Is(err, integration.ErrRollbackIncomplete) {
+				t.Fatalf("classified error lost ErrRollbackIncomplete: %v", err)
+			}
+		})
 	}
 }
